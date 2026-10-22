@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Margin, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Block, Padding, Paragraph},
 };
 use ratatui_textarea::{CursorMove, TextArea};
 use texo::theme;
@@ -197,13 +197,7 @@ impl Assistant {
         if area.width < SEND_WIDTH || area.height < INPUT_HEIGHT + 2 {
             return;
         }
-        frame.render_widget(
-            Block::default()
-                .style(theme::text())
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(theme::DIVIDER)),
-            area,
-        );
+        frame.render_widget(Block::default().style(theme::text()), area);
         let inner = area.inner(Margin {
             horizontal: theme::PANEL_PADDING,
             vertical: 1,

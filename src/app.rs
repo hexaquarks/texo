@@ -249,7 +249,9 @@ impl App {
                         if self.projects.select_at(layout.projects, mouse.row) {
                             self.activate_projects();
                         }
-                    } else if Assistant::send_button(layout.assistant).contains(position) {
+                    } else if Assistant::send_button(pane_content(layout.assistant))
+                        .contains(position)
+                    {
                         self.focus = Focus::Assistant;
                         if self.assistant.is_running() {
                             self.assistant.cancel();
@@ -258,13 +260,17 @@ impl App {
                         }
                     } else if layout.assistant.contains(position) {
                         self.focus = Focus::Assistant;
-                        self.assistant
-                            .click(layout.assistant, mouse.column, mouse.row);
+                        self.assistant.click(
+                            pane_content(layout.assistant),
+                            mouse.column,
+                            mouse.row,
+                        );
                     } else if layout.preview.contains(position) {
                         self.focus = Focus::Preview;
                     } else if layout.editor.contains(position) {
                         self.focus = Focus::Editor;
-                        self.editor.click(layout.editor, mouse.column, mouse.row);
+                        self.editor
+                            .click(pane_content(layout.editor), mouse.column, mouse.row);
                     }
                 } else if layout.editor.contains(position) {
                     self.editor.text.input(mouse);
@@ -649,22 +655,14 @@ impl App {
                 self.focus == Focus::Projects,
             );
         }
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::RIGHT)
-                .border_style(Style::default().fg(
-                    if matches!(self.focus, Focus::Editor | Focus::Assistant) {
-                        theme::ACCENT
-                    } else {
-                        theme::DIVIDER
-                    },
-                )),
-            layout.center,
-        );
-        self.draw_editor(frame, layout.editor);
+        let editor = draw_pane_border(frame, layout.editor, self.focus == Focus::Editor);
+        let assistant = draw_pane_border(frame, layout.assistant, self.focus == Focus::Assistant);
+        let preview = draw_pane_border(frame, layout.preview, self.focus == Focus::Preview);
+
+        self.draw_editor(frame, editor);
         self.assistant
-            .draw(frame, layout.assistant, self.focus == Focus::Assistant);
-        self.draw_preview(frame, layout.preview);
+            .draw(frame, assistant, self.focus == Focus::Assistant);
+        self.draw_preview(frame, preview);
         self.draw_diagnostics(frame, &layout);
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
@@ -750,10 +748,28 @@ impl App {
     }
 }
 
+fn pane_content(area: Rect) -> Rect {
+    Block::bordered().inner(area)
+}
+
+fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
+    let color = if focused {
+        theme::ACCENT
+    } else {
+        theme::DIVIDER
+    };
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(color)),
+        area,
+    );
+    pane_content(area)
+}
+
 #[derive(Default)]
 struct WorkspaceLayout {
     projects: Rect,
-    center: Rect,
     editor: Rect,
     assistant: Rect,
     preview: Rect,
@@ -790,16 +806,11 @@ impl WorkspaceLayout {
             Constraint::Percentage(PREVIEW_PERCENT),
         ])
         .areas(body);
-        let content = Rect {
-            width: center.width.saturating_sub(1),
-            ..center
-        };
         let [editor, assistant] =
             Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
-                .areas(content);
+                .areas(center);
         Self {
             projects,
-            center,
             editor,
             assistant,
             preview,
@@ -1064,6 +1075,59 @@ mod tests {
         assert!(app.export.is_none());
         assert!(app.status.contains("PDF changed"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn pane_selection_highlights_only_the_selected_border() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let area = Rect::new(0, 0, 160, 50);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        let layout = WorkspaceLayout::new(area, false, true, app.focus);
+        let panes = [layout.editor, layout.assistant, layout.preview];
+
+        for (selected, pane) in panes.iter().enumerate() {
+            // Border clicks select the pane without activating its content controls.
+            app.handle_event(
+                Event::Mouse(event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: pane.x,
+                    row: pane.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                area,
+            );
+            terminal.draw(|frame| app.draw(frame))?;
+            let buffer = terminal.backend().buffer();
+
+            for (index, pane) in panes.iter().enumerate() {
+                let color = if index == selected {
+                    theme::ACCENT
+                } else {
+                    theme::DIVIDER
+                };
+                for position in [
+                    (pane.x, pane.y),
+                    (pane.right() - 1, pane.y),
+                    (pane.x, pane.bottom() - 1),
+                    (pane.right() - 1, pane.bottom() - 1),
+                ] {
+                    assert_eq!(buffer[position].fg, color);
+                }
+            }
+        }
+
+        app.focus = Focus::Editor;
+        app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+        terminal.draw(|frame| app.draw(frame))?;
+        assert_eq!(
+            terminal.backend().buffer()[(layout.assistant.x, layout.assistant.y)].fg,
+            theme::ACCENT
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(layout.editor.x, layout.editor.y)].fg,
+            theme::DIVIDER
+        );
         Ok(())
     }
 
