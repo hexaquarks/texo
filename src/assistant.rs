@@ -253,7 +253,7 @@ impl Assistant {
         frame.render_widget(&self.input, input);
         let prompt = Rect::new(input.x + 1, input.y + 1, PROMPT_WIDTH, 1);
         frame.render_widget(
-            Paragraph::new("› ").style(Style::default().fg(theme::ACCENT).bg(theme::BUTTON)),
+            Paragraph::new("› ").style(Style::default().fg(theme::TEAL).bg(theme::BUTTON)),
             prompt,
         );
         frame.render_widget(
