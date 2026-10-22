@@ -18,6 +18,7 @@ const INPUT_HEIGHT: u16 = 3;
 const SEND_WIDTH: u16 = 10;
 const SCROLL_LINES: u16 = 3;
 
+#[derive(Clone)]
 pub struct ProposedEdit {
     pub source_before: String,
     pub source_after: String,
@@ -125,6 +126,16 @@ impl Assistant {
         }
     }
 
+    /// Attach the editor's actual result so both the user and future requests see what happened.
+    pub fn report_edit_result(&mut self, outcome: &str) {
+        if let Some(message) = self.messages.last_mut()
+            && message.role == "assistant"
+            && !message.error
+        {
+            message.content = format!("{outcome}\n\n{}", message.content);
+        }
+    }
+
     pub fn cancel(&mut self) {
         if self.job.take().is_some() {
             self.messages.push(Message::new(
@@ -211,7 +222,7 @@ impl Assistant {
         let hint = if self.is_running() {
             "Thinking…  Esc cancel"
         } else if self.proposal().is_some() {
-            "Edit ready · Actions to review"
+            "Not applied · Actions to review"
         } else if focused {
             "Enter send · Alt+Enter newline"
         } else {
@@ -265,8 +276,7 @@ impl Assistant {
             return;
         }
         if self.messages.is_empty() {
-            let introduction =
-                "Ask Texo to refine your resume.\nSuggested edits stay here until you apply them.";
+            let introduction = "Ask Texo to refine the open resume.\nRequested edits update the editor; Ctrl+S saves them.";
             frame.render_widget(Paragraph::new(introduction).style(theme::muted()), area);
             return;
         }
