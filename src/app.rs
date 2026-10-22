@@ -10,8 +10,7 @@ use ratatui::{
     },
     layout::{Constraint, Layout, Position, Rect},
     style::Style,
-    text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use texo::{preview::Preview, theme};
 
@@ -19,41 +18,32 @@ use crate::{
     actions::{Action, ActionMenu, ExportDialog},
     assistant::{Assistant, ProposedEdit},
     editor::Editor,
-    explorer::Explorer,
+    projects::Projects,
     proposal::ProposalReview,
     render_job::RenderJob,
 };
 
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const MIN_TERMINAL_WIDTH: u16 = 100;
-const MIN_TERMINAL_HEIGHT: u16 = 16;
-const TOOLBAR_HEIGHT: u16 = 4;
-const FOOTER_HEIGHT: u16 = 4;
-const BUILD_BUTTON_WIDTH: u16 = 13;
-const EXPORT_BUTTON_WIDTH: u16 = 10;
-const ACTIONS_BUTTON_WIDTH: u16 = 16;
-const EXPLORER_PERCENT: u16 = 16;
+const MULTIPANE_WIDTH: u16 = 100;
+const MULTIPANE_HEIGHT: u16 = 20;
+const SIDEBAR_WIDTH: u16 = 24;
 const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 55;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
-const PAGE_STATUS_WIDTH: u16 = 22;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Focus {
-    Explorer,
+    Projects,
     Editor,
-    Render,
-    Export,
-    Actions,
+    Preview,
     Assistant,
 }
 
 struct App {
     editor: Editor,
-    explorer: Explorer,
-    explorer_visible: bool,
-    workspace_path: String,
+    projects: Projects,
+    projects_visible: bool,
     preview: Preview,
     job: Option<RenderJob>,
     rendered_source: Option<String>,
@@ -82,13 +72,15 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
         if event::poll(EVENT_POLL_INTERVAL)? {
             let area = terminal.get_frame().area();
             let preview_was_loading = app.job.is_some();
+            let previous_focus = app.focus;
             let previous_document = app.editor.path.clone();
-            let explorer_was_visible = app.explorer_visible;
+            let projects_was_visible = app.projects_visible;
             let overlay_was_open = app.overlay_open();
             if app.handle_event(event::read()?, area) {
                 return Ok(());
             }
-            if explorer_was_visible != app.explorer_visible
+            if previous_focus != app.focus
+                || projects_was_visible != app.projects_visible
                 || overlay_was_open != app.overlay_open()
                 || previous_document != app.editor.path
                 || preview_was_loading != app.job.is_some()
@@ -112,13 +104,11 @@ impl App {
     }
 
     fn with_workspace(editor: Editor, preview: Preview, root: PathBuf) -> anyhow::Result<Self> {
-        let workspace_path = crate::workspace::display_path(&root);
-        let explorer = Explorer::new(root, &editor.path)?;
+        let projects = Projects::new(root, &editor.path)?;
         Ok(Self {
             editor,
-            explorer,
-            explorer_visible: true,
-            workspace_path,
+            projects,
+            projects_visible: true,
             preview,
             job: None,
             rendered_source: None,
@@ -219,7 +209,7 @@ impl App {
                     self.rendered_pdf = Some(document.pdf_path);
                     self.status.clear();
                     self.diagnostics = None;
-                    self.refresh_explorer();
+                    self.refresh_projects();
                 }
                 Err(error) => self.report_error(error),
             },
@@ -246,23 +236,18 @@ impl App {
                 self.editor.text.insert_str(text);
             }
             Event::Mouse(mouse) => {
-                let layout =
-                    WorkspaceLayout::new(area, self.diagnostics.is_some(), self.explorer_visible);
+                let layout = WorkspaceLayout::new(
+                    area,
+                    self.diagnostics.is_some(),
+                    self.projects_visible,
+                    self.focus,
+                );
                 let position = Position::new(mouse.column, mouse.row);
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                    if layout.render_button.contains(position) {
-                        self.focus = Focus::Render;
-                        self.start_render();
-                    } else if layout.export_button.contains(position) {
-                        self.focus = Focus::Export;
-                        self.open_export();
-                    } else if layout.actions_button.contains(position) {
-                        self.focus = Focus::Actions;
-                        self.actions = Some(ActionMenu::open());
-                    } else if layout.explorer.contains(position) {
-                        self.focus = Focus::Explorer;
-                        if self.explorer.select_at(layout.explorer, mouse.row) {
-                            self.activate_explorer();
+                    if layout.projects.contains(position) {
+                        self.focus = Focus::Projects;
+                        if self.projects.select_at(layout.projects, mouse.row) {
+                            self.activate_projects();
                         }
                     } else if Assistant::send_button(layout.assistant).contains(position) {
                         self.focus = Focus::Assistant;
@@ -275,6 +260,8 @@ impl App {
                         self.focus = Focus::Assistant;
                         self.assistant
                             .click(layout.assistant, mouse.column, mouse.row);
+                    } else if layout.preview.contains(position) {
+                        self.focus = Focus::Preview;
                     } else if layout.editor.contains(position) {
                         self.focus = Focus::Editor;
                         self.editor.click(layout.editor, mouse.column, mouse.row);
@@ -293,10 +280,10 @@ impl App {
                         MouseEventKind::ScrollUp => self.preview.scroll(true),
                         _ => {}
                     }
-                } else if layout.explorer.contains(position) {
+                } else if layout.projects.contains(position) {
                     match mouse.kind {
-                        MouseEventKind::ScrollDown => self.explorer.move_selection(true),
-                        MouseEventKind::ScrollUp => self.explorer.move_selection(false),
+                        MouseEventKind::ScrollDown => self.projects.move_selection(true),
+                        MouseEventKind::ScrollUp => self.projects.move_selection(false),
                         _ => {}
                     }
                 }
@@ -334,16 +321,18 @@ impl App {
             KeyCode::Char('p') => self.actions = Some(ActionMenu::open()),
             KeyCode::Char('e') => self.open_export(),
             KeyCode::Char('t') => {
-                self.explorer_visible = !self.explorer_visible;
-                if !self.explorer_visible && self.focus == Focus::Explorer {
+                self.projects_visible = !self.projects_visible;
+                if self.projects_visible {
+                    self.focus = Focus::Projects;
+                } else if self.focus == Focus::Projects {
                     self.focus = Focus::Editor;
                 }
             }
             KeyCode::Char('s') => match self.editor.save() {
                 Ok(()) => {
                     self.status = "Saved TeX document.".into();
-                    self.refresh_explorer();
-                    self.explorer.select_path(&self.editor.path);
+                    self.refresh_projects();
+                    self.projects.select_path(&self.editor.path);
                 }
                 Err(error) => self.report_error(error),
             },
@@ -393,15 +382,13 @@ impl App {
 
     fn handle_navigation_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::F(5) => self.refresh_explorer(),
+            KeyCode::F(5) => self.refresh_projects(),
             KeyCode::F(6) => {
                 self.focus = match self.focus {
                     Focus::Editor => Focus::Assistant,
-                    Focus::Assistant => Focus::Render,
-                    Focus::Render => Focus::Export,
-                    Focus::Export => Focus::Actions,
-                    Focus::Actions if self.explorer_visible => Focus::Explorer,
-                    Focus::Actions | Focus::Explorer => Focus::Editor,
+                    Focus::Assistant => Focus::Preview,
+                    Focus::Preview if self.projects_visible => Focus::Projects,
+                    Focus::Preview | Focus::Projects => Focus::Editor,
                 };
             }
             KeyCode::Esc if self.focus == Focus::Assistant && self.assistant.is_running() => {
@@ -421,19 +408,10 @@ impl App {
                     .diagnostic_scroll
                     .saturating_add(DIAGNOSTIC_SCROLL_LINES);
             }
-            KeyCode::Enter | KeyCode::Char(' ') if self.focus == Focus::Render => {
-                self.start_render()
-            }
-            KeyCode::Enter | KeyCode::Char(' ') if self.focus == Focus::Export => {
-                self.open_export()
-            }
-            KeyCode::Enter | KeyCode::Char(' ') if self.focus == Focus::Actions => {
-                self.actions = Some(ActionMenu::open())
-            }
             _ if self.focus == Focus::Assistant => {
                 self.assistant.input.input(key);
             }
-            _ if self.focus == Focus::Explorer => self.handle_explorer_key(key),
+            _ if self.focus == Focus::Projects => self.handle_projects_key(key),
             _ if self.focus == Focus::Editor => {
                 self.editor.text.input(key);
             }
@@ -530,7 +508,7 @@ impl App {
             Action::Build => 'b',
             Action::Export => 'e',
             Action::Save => 's',
-            Action::ToggleExplorer => 't',
+            Action::ToggleProjects => 't',
             Action::Quit => 'q',
             Action::FocusAssistant => 'j',
             Action::ClearChat => {
@@ -581,47 +559,39 @@ impl App {
             Ok(Some(path)) => {
                 self.status = format!("Exported {}", path.display());
                 self.export = None;
-                self.refresh_explorer();
+                self.refresh_projects();
             }
             Ok(None) => {}
             Err(error) => dialog.message = format!("{error:#}"),
         }
     }
 
-    fn handle_explorer_key(&mut self, key: KeyEvent) {
+    fn handle_projects_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.explorer.move_selection(false),
-            KeyCode::Down | KeyCode::Char('j') => self.explorer.move_selection(true),
-            KeyCode::Enter => self.activate_explorer(),
-            KeyCode::Right => {
-                if let Err(error) = self.explorer.expand_selected() {
-                    self.report_error(error);
-                }
-            }
-            KeyCode::Left => {
-                if let Err(error) = self.explorer.collapse_selected() {
-                    self.report_error(error);
-                }
-            }
+            KeyCode::Up | KeyCode::Char('k') => self.projects.move_selection(false),
+            KeyCode::Down | KeyCode::Char('j') => self.projects.move_selection(true),
+            KeyCode::Enter => self.activate_projects(),
             _ => {}
         }
     }
 
-    fn activate_explorer(&mut self) {
-        match self.explorer.activate() {
-            Ok(Some(path)) if path.is_dir() => match crate::workspace::project_document(&path) {
+    fn activate_projects(&mut self) {
+        let Some(path) = self.projects.selected_path() else {
+            return;
+        };
+        if path.is_dir() {
+            match crate::workspace::project_document(&path) {
                 Ok(Some(document)) => self.open_document(document),
                 Ok(None) => self.status = format!("No TeX document found in {}.", path.display()),
                 Err(error) => self.report_error(error),
-            },
-            Ok(Some(path)) => self.open_document(path),
-            Ok(None) => {}
-            Err(error) => self.report_error(error),
+            }
+        } else {
+            self.open_document(path);
         }
     }
 
-    fn refresh_explorer(&mut self) {
-        if let Err(error) = self.explorer.refresh() {
+    fn refresh_projects(&mut self) {
+        if let Err(error) = self.projects.refresh() {
             self.report_error(error);
         }
     }
@@ -665,25 +635,18 @@ impl App {
         let area = frame.area();
         frame.render_widget(Block::default().style(theme::text()), area);
 
-        if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
-            frame.render_widget(
-                Paragraph::new(format!(
-                    "Resize to at least {MIN_TERMINAL_WIDTH}×{MIN_TERMINAL_HEIGHT}. Ctrl+Q quits."
-                ))
-                .wrap(Wrap { trim: false }),
-                area,
-            );
-            return;
-        }
-
-        let layout = WorkspaceLayout::new(area, self.diagnostics.is_some(), self.explorer_visible);
-        self.draw_toolbar(frame, &layout);
-        if self.explorer_visible {
-            self.explorer.draw(
+        let layout = WorkspaceLayout::new(
+            area,
+            self.diagnostics.is_some(),
+            self.projects_visible,
+            self.focus,
+        );
+        if self.projects_visible {
+            self.projects.draw(
                 frame,
-                layout.explorer,
+                layout.projects,
                 &self.editor.path,
-                self.focus == Focus::Explorer,
+                self.focus == Focus::Projects,
             );
         }
         frame.render_widget(
@@ -692,16 +655,11 @@ impl App {
                 .border_style(theme::muted().fg(theme::DIVIDER)),
             layout.center,
         );
-        self.editor
-            .draw(frame, layout.editor, self.focus == Focus::Editor);
+        self.draw_editor(frame, layout.editor);
         self.assistant
             .draw(frame, layout.assistant, self.focus == Focus::Assistant);
-        if let Some(job) = &self.job {
-            Preview::draw_loading(frame, layout.preview, job.elapsed());
-        } else {
-            self.preview.draw(frame, layout.preview);
-        }
-        self.draw_footer(frame, &layout);
+        self.draw_preview(frame, layout.preview);
+        self.draw_diagnostics(frame, &layout);
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
         }
@@ -713,62 +671,63 @@ impl App {
         }
     }
 
-    fn draw_toolbar(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
-        let heading = Paragraph::new(Line::from(vec![
-            Span::styled(" texo  ", Style::default().fg(theme::ACCENT).bold()),
-            Span::styled(self.workspace_path.as_str(), theme::muted()),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .padding(Padding::vertical(1))
-                .border_style(Style::default().fg(theme::DIVIDER)),
-        );
-        frame.render_widget(heading, layout.heading);
-
-        let build_label = if self.job.is_some() {
-            "[Building…]"
-        } else {
-            "[Build ^B]"
-        };
-        for (area, label, focused) in [
-            (
-                layout.render_button,
-                build_label,
-                self.focus == Focus::Render,
-            ),
-            (
-                layout.export_button,
-                "[Export]",
-                self.focus == Focus::Export,
-            ),
-            (
-                layout.actions_button,
-                "[Actions ^P]",
-                self.focus == Focus::Actions,
-            ),
-        ] {
-            let background = if focused {
-                theme::SELECTION
+    fn draw_editor(&mut self, frame: &mut Frame, area: Rect) {
+        self.editor.draw(frame, area, self.focus == Focus::Editor);
+        if !area.is_empty() {
+            let modified = if self.editor.is_modified() {
+                " · unsaved"
             } else {
-                theme::BACKGROUND
+                ""
             };
+            let label = if self.status.is_empty() {
+                format!(
+                    "{}{}",
+                    crate::workspace::display_path(&self.editor.path),
+                    modified
+                )
+            } else {
+                self.status.clone()
+            };
+            let title = Rect::new(
+                area.x + theme::PANEL_PADDING,
+                area.y,
+                area.width.saturating_sub(theme::PANEL_PADDING * 2),
+                1,
+            );
             frame.render_widget(
-                Paragraph::new(label)
-                    .centered()
-                    .style(Style::default().fg(theme::ACCENT).bg(background))
-                    .block(
-                        Block::default()
-                            .borders(Borders::BOTTOM)
-                            .padding(Padding::vertical(1))
-                            .border_style(Style::default().fg(theme::DIVIDER)),
-                    ),
-                area,
+                Paragraph::new(label).style(theme::muted().bg(theme::EDITOR)),
+                title,
             );
         }
     }
 
-    fn draw_footer(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
+    fn draw_preview(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(job) = &self.job {
+            Preview::draw_loading(frame, area, job.elapsed());
+        } else {
+            self.preview.draw(frame, area);
+        }
+        if !area.is_empty() && self.job.is_none() {
+            let state = match &self.rendered_source {
+                Some(source) if *source != self.editor.source() => "PDF out of date",
+                Some(_) => "PDF",
+                None => "Preview",
+            };
+            let page = self.preview.page_status().unwrap_or_default();
+            let title = Rect::new(
+                area.x + theme::PANEL_PADDING,
+                area.y,
+                area.width.saturating_sub(theme::PANEL_PADDING * 2),
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new(format!("{state}  {page}")).style(theme::muted()),
+                title,
+            );
+        }
+    }
+
+    fn draw_diagnostics(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
         if let Some(diagnostics) = &self.diagnostics {
             let log = Paragraph::new(diagnostics.as_str())
                 .block(Block::default().title(" Build diagnostics · PgUp/PgDn scroll · Esc close "))
@@ -777,120 +736,63 @@ impl App {
                 .scroll((self.diagnostic_scroll, 0));
             frame.render_widget(log, layout.diagnostics);
         }
-
-        let saved = if self.editor.is_modified() {
-            "Unsaved"
-        } else {
-            "Saved"
-        };
-        let pdf = match &self.rendered_source {
-            Some(source) if *source == self.editor.source() => "PDF up to date",
-            Some(_) => "PDF out of date",
-            None => "PDF not built",
-        };
-        let footer = Line::from(vec![
-            Span::styled(format!(" {saved}  "), Style::default().fg(theme::ACCENT)),
-            Span::styled(format!("│  {pdf}    {}", self.status), theme::muted()),
-        ]);
-        let [status, pages] =
-            Layout::horizontal([Constraint::Min(1), Constraint::Length(PAGE_STATUS_WIDTH)])
-                .areas(layout.footer);
-        frame.render_widget(
-            Paragraph::new(footer).block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .padding(Padding::vertical(1))
-                    .border_style(Style::default().fg(theme::DIVIDER)),
-            ),
-            status,
-        );
-        let page_status = self
-            .preview
-            .page_status()
-            .map(|page| format!("{page}  Alt+←/→ "))
-            .unwrap_or_default();
-        frame.render_widget(
-            Paragraph::new(page_status)
-                .right_aligned()
-                .style(theme::muted())
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .padding(Padding::vertical(1))
-                        .border_style(Style::default().fg(theme::DIVIDER)),
-                ),
-            pages,
-        );
     }
 }
 
+#[derive(Default)]
 struct WorkspaceLayout {
-    explorer: Rect,
-    heading: Rect,
-    render_button: Rect,
-    export_button: Rect,
-    actions_button: Rect,
+    projects: Rect,
     center: Rect,
     editor: Rect,
     assistant: Rect,
     preview: Rect,
     diagnostics: Rect,
-    footer: Rect,
 }
 
 impl WorkspaceLayout {
-    fn new(area: Rect, show_diagnostics: bool, show_explorer: bool) -> Self {
+    fn new(area: Rect, show_diagnostics: bool, show_projects: bool, focus: Focus) -> Self {
         let diagnostics_height = if show_diagnostics {
-            DIAGNOSTICS_HEIGHT
+            DIAGNOSTICS_HEIGHT.min(area.height / 2)
         } else {
             0
         };
-        let [toolbar, body, diagnostics, footer] = Layout::vertical([
-            Constraint::Length(TOOLBAR_HEIGHT),
-            Constraint::Min(1),
-            Constraint::Length(diagnostics_height),
-            Constraint::Length(FOOTER_HEIGHT),
-        ])
-        .areas(area);
-        let [heading, render_button, export_button, actions_button] = Layout::horizontal([
-            Constraint::Min(1),
-            Constraint::Length(BUILD_BUTTON_WIDTH),
-            Constraint::Length(EXPORT_BUTTON_WIDTH),
-            Constraint::Length(ACTIONS_BUTTON_WIDTH),
-        ])
-        .areas(toolbar);
-        let sidebar_width = if show_explorer {
-            area.width * EXPLORER_PERCENT / 100
-        } else {
-            0
-        };
-        let [explorer, center, preview] = Layout::horizontal([
+        let [body, diagnostics] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(diagnostics_height)])
+                .areas(area);
+        if area.width < MULTIPANE_WIDTH || area.height < MULTIPANE_HEIGHT {
+            let mut layout = Self {
+                diagnostics,
+                ..Self::default()
+            };
+            match focus {
+                Focus::Editor => layout.editor = body,
+                Focus::Assistant => layout.assistant = body,
+                Focus::Projects => layout.projects = body,
+                Focus::Preview => layout.preview = body,
+            }
+            return layout;
+        }
+        let sidebar_width = if show_projects { SIDEBAR_WIDTH } else { 0 };
+        let [projects, center, preview] = Layout::horizontal([
             Constraint::Length(sidebar_width),
             Constraint::Min(1),
             Constraint::Percentage(PREVIEW_PERCENT),
         ])
         .areas(body);
-
-        let center_content = Rect {
+        let content = Rect {
             width: center.width.saturating_sub(1),
             ..center
         };
         let [editor, assistant] =
             Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
-                .areas(center_content);
-
+                .areas(content);
         Self {
-            explorer,
-            heading,
-            render_button,
-            export_button,
-            actions_button,
+            projects,
             center,
             editor,
             assistant,
             preview,
             diagnostics,
-            footer,
         }
     }
 }
@@ -979,10 +881,10 @@ mod tests {
     }
 
     #[test]
-    fn pane_focus_prevents_button_keystrokes_from_editing_text() -> anyhow::Result<()> {
+    fn preview_focus_keeps_keystrokes_out_of_the_editor() -> anyhow::Result<()> {
         let (_directory, mut app) = application()?;
         let original = app.editor.source();
-        app.focus = Focus::Render;
+        app.focus = Focus::Preview;
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         assert_eq!(app.editor.source(), original);
         app.focus = Focus::Editor;
@@ -1020,21 +922,21 @@ mod tests {
         let project = directory.path().join("Backend");
         std::fs::create_dir(&project)?;
         std::fs::write(project.join("main.tex"), "Backend resume")?;
-        app.refresh_explorer();
+        app.refresh_projects();
         app.editor.text.insert_str("Unsaved ");
         let original_path = app.editor.path.clone();
         let original_source = app.editor.source();
-        app.explorer.select_path(&project);
-        app.activate_explorer();
+        app.projects.select_path(&project);
+        app.activate_projects();
         assert_eq!(app.editor.path, original_path);
         assert_eq!(app.editor.source(), original_source);
         assert!(app.status.contains("Save your changes"));
 
         let empty = directory.path().join("Empty");
         std::fs::create_dir(&empty)?;
-        app.refresh_explorer();
-        app.explorer.select_path(&empty);
-        app.activate_explorer();
+        app.refresh_projects();
+        app.projects.select_path(&empty);
+        app.activate_projects();
         assert_eq!(app.editor.path, original_path);
         assert!(app.status.contains("No TeX document"));
         assert!(!empty.join("main.tex").exists());
@@ -1067,8 +969,8 @@ mod tests {
         app.assistant.input.insert_str("Old project question");
         app.start_render();
         assert!(app.job.is_some());
-        app.explorer.select_path(&second_project);
-        app.activate_explorer();
+        app.projects.select_path(&second_project);
+        app.activate_projects();
         assert_eq!(app.editor.path, second);
         assert_eq!(app.editor.source(), second_source);
         assert!(app.preview.page_status().is_none());
@@ -1155,13 +1057,50 @@ mod tests {
     }
 
     #[test]
+    fn narrow_layout_shows_each_focused_pane_and_tolerates_tiny_sizes() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        for (width, height) in [(1, 1), (20, 5), (40, 12), (80, 24)] {
+            for focus in [
+                Focus::Editor,
+                Focus::Assistant,
+                Focus::Projects,
+                Focus::Preview,
+            ] {
+                app.focus = focus;
+                let area = Rect::new(0, 0, width, height);
+                let layout = WorkspaceLayout::new(area, false, true, focus);
+                let visible = match focus {
+                    Focus::Editor => layout.editor,
+                    Focus::Assistant => layout.assistant,
+                    Focus::Projects => layout.projects,
+                    Focus::Preview => layout.preview,
+                };
+                assert_eq!(visible, area);
+                let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+                terminal.draw(|frame| app.draw(frame))?;
+            }
+        }
+        app.focus = Focus::Editor;
+        for expected in [
+            Focus::Assistant,
+            Focus::Preview,
+            Focus::Projects,
+            Focus::Editor,
+        ] {
+            app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+            assert!(app.focus == expected);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn layout_renders_both_panes_and_handles_small_terminals() -> anyhow::Result<()> {
         let (_directory, mut app) = application()?;
         let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
         terminal.draw(|frame| app.draw(frame))?;
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-        assert!(text.contains("[Build ^B]"));
+        assert!(text.contains("resumes"));
         assert!(text.contains("texo / chat"));
         assert!(text.contains("Original document"));
 
@@ -1174,7 +1113,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(text.contains("Resize to at least"));
+        assert!(text.contains("Original document"));
+        assert!(!text.contains("Resize to at least"));
         Ok(())
     }
 }
