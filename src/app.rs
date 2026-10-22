@@ -655,18 +655,23 @@ impl App {
                 self.focus == Focus::Projects,
             );
         }
-        let editor = draw_pane_border(frame, layout.editor, self.focus == Focus::Editor);
-        let assistant = draw_pane_border(frame, layout.assistant, self.focus == Focus::Assistant);
-        let preview = draw_pane_border(frame, layout.preview, self.focus == Focus::Preview);
+        self.draw_editor(frame, pane_content(layout.editor));
+        self.assistant.draw(
+            frame,
+            pane_content(layout.assistant),
+            self.focus == Focus::Assistant,
+        );
+        self.draw_preview(frame, pane_content(layout.preview));
 
-        self.draw_editor(frame, editor);
-        self.assistant
-            .draw(frame, assistant, self.focus == Focus::Assistant);
-        self.draw_preview(frame, preview);
-        // The editor and chat share a border row; keep the active editor's edge visible.
-        if self.focus == Focus::Editor {
-            draw_pane_border(frame, layout.editor, true);
+        // Draw frames last so pane contents cannot erase their shared edge.
+        for (pane, focus) in [
+            (layout.editor, Focus::Editor),
+            (layout.assistant, Focus::Assistant),
+            (layout.preview, Focus::Preview),
+        ] {
+            draw_pane_border(frame, pane, self.focus == focus);
         }
+        layout.draw_shared_border(frame, self.focus);
         self.draw_diagnostics(frame, &layout);
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
@@ -757,7 +762,7 @@ fn pane_content(area: Rect) -> Rect {
     Block::bordered().inner(area)
 }
 
-fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
+fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) {
     let color = if focused {
         theme::ACCENT
     } else {
@@ -769,7 +774,6 @@ fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
             .border_style(Style::default().fg(color)),
         area,
     );
-    pane_content(area)
 }
 
 #[derive(Default)]
@@ -821,6 +825,28 @@ impl WorkspaceLayout {
             assistant,
             preview,
             diagnostics,
+        }
+    }
+
+    fn draw_shared_border(&self, frame: &mut Frame, focus: Focus) {
+        if self.editor.is_empty() || self.assistant.is_empty() {
+            return;
+        }
+        let color = if matches!(focus, Focus::Editor | Focus::Assistant) {
+            theme::ACCENT
+        } else {
+            theme::DIVIDER
+        };
+        let border = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(color));
+        let row = Rect::new(self.assistant.x, self.assistant.y, self.assistant.width, 1);
+        frame.render_widget(border, row);
+        for (column, junction) in [(row.x, "├"), (row.right() - 1, "┤")] {
+            frame.render_widget(
+                Paragraph::new(junction).style(Style::default().fg(color)),
+                Rect::new(column, row.y, 1, 1),
+            );
         }
     }
 }
@@ -1131,6 +1157,22 @@ mod tests {
                     assert_eq!(buffer[position].fg, color);
                 }
             }
+        }
+
+        app.focus = Focus::Projects;
+        terminal.draw(|frame| app.draw(frame))?;
+        let buffer = terminal.backend().buffer();
+        let shared_row = layout.assistant.y;
+        assert_eq!(
+            buffer[(layout.editor.right() - 1, shared_row)].symbol(),
+            "┤"
+        );
+        assert_eq!(
+            buffer[(layout.editor.right() - 1, shared_row)].fg,
+            theme::DIVIDER
+        );
+        for row in shared_row - 1..=shared_row + 1 {
+            assert_ne!(buffer[(layout.editor.right() - 1, row)].symbol(), " ");
         }
 
         app.focus = Focus::Editor;
