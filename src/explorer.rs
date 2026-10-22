@@ -15,7 +15,7 @@ use ratatui::{
 use texo::theme;
 
 const TREE_INDENT_WIDTH: usize = 2;
-const TREE_ROW_HEIGHT: u16 = 1;
+const TREE_ROW_HEIGHT: u16 = 2;
 
 // Codicons from Kitty's bundled Nerd Font keep the outline icons consistent with the editor UI.
 const FOLDER_ICON: &str = "";
@@ -216,12 +216,8 @@ impl Explorer {
             .iter()
             .map(|entry| self.entry_item(entry, active_file, focused))
             .collect();
-        let selection_style = if focused {
-            Style::default().bg(theme::SELECTION)
-        } else {
-            Style::default()
-        };
-        let list = List::new(rows).highlight_style(selection_style);
+        // Highlight only the label row; the gap between entries stays unselected.
+        let list = List::new(rows);
         frame.render_stateful_widget(list, inner, &mut self.state);
     }
 
@@ -243,20 +239,26 @@ impl Explorer {
             } else {
                 COLLAPSED_ICON
             };
-            format!("{chevron} {FOLDER_ICON} ")
+            format!("{chevron} {FOLDER_ICON}  ")
         } else {
-            format!("  {FILE_ICON} ")
+            format!("  {FILE_ICON}  ")
         };
         let mut style = Style::default().fg(theme::TEXT);
-        if !focused && entry.path == active_file {
+        let selected = if focused {
+            self.selected_path().as_deref() == Some(entry.path.as_path())
+        } else {
+            entry.path == active_file
+        };
+        if selected {
             style = style.bg(theme::SELECTION);
         }
-        ListItem::new(Line::from(vec![
+        let label = Line::from(vec![
             Span::raw(" ".repeat(1 + entry.depth * TREE_INDENT_WIDTH)),
             Span::styled(marker, Style::default().fg(theme::FILE_ICON)),
             Span::raw(filename),
-        ]))
-        .style(style)
+        ])
+        .style(style);
+        ListItem::new(vec![label, Line::default()])
     }
 }
 
@@ -264,6 +266,30 @@ impl Explorer {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn selection_colors_only_the_label_and_leaves_the_row_gap_clear() -> Result<()> {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let directory = tempfile::tempdir()?;
+        let document = directory.path().join("main.tex");
+        fs::write(&document, "Resume")?;
+        let mut explorer = Explorer::new(directory.path().to_path_buf(), &document)?;
+        let mut terminal = Terminal::new(TestBackend::new(32, 8))?;
+
+        terminal.draw(|frame| explorer.draw(frame, frame.area(), &document, false))?;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(30, TREE_ROW_HEIGHT)].bg, theme::SELECTION);
+        assert_eq!(buffer[(30, TREE_ROW_HEIGHT + 1)].bg, theme::SIDEBAR);
+
+        explorer.select_path(directory.path());
+        terminal.draw(|frame| explorer.draw(frame, frame.area(), &document, true))?;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(30, 0)].bg, theme::SELECTION);
+        assert_eq!(buffer[(30, 1)].bg, theme::SIDEBAR);
+        assert_eq!(buffer[(30, TREE_ROW_HEIGHT)].bg, theme::SIDEBAR);
+        Ok(())
+    }
 
     #[test]
     fn expands_directories_and_ignores_generated_files() -> Result<()> {
@@ -322,7 +348,7 @@ mod tests {
         let area = Rect::new(0, 3, 30, 10);
 
         assert!(!explorer.select_at(area, 2));
-        assert!(explorer.select_at(area, 4));
+        assert!(explorer.select_at(area, 5));
         assert_eq!(explorer.selected_path(), Some(document.clone()));
         *explorer.state.offset_mut() = 1;
         assert!(explorer.select_at(area, 3));

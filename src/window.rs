@@ -8,6 +8,10 @@ const WINDOW_SIZE_PERCENT: u32 = 90;
 const FONT_SIZE_POINTS: u16 = 13;
 const FONT_FAMILY: &str = "Menlo";
 const WINDOW_PADDING_POINTS: u16 = 0;
+// Codicons used by the explorer: file/folder icons get two cells, chevrons one.
+// Fixed widths preserve the separate gap before labels when Kitty scales symbols.
+const TREE_FILE_ICON_CODEPOINTS: &str = "U+EA7B,U+EA83";
+const TREE_CHEVRON_CODEPOINTS: &str = "U+EAB4,U+EAB6";
 
 pub fn open(document: &Path) -> Result<()> {
     let display = DisplayInfo::all()?
@@ -56,6 +60,20 @@ fn workspace_command(document: &Path, display: &DisplayInfo) -> Result<Command> 
         .args(["--override", &format!("initial_window_height={height}")])
         .args(["--override", &format!("font_size={FONT_SIZE_POINTS}")])
         .args(["--override", &format!("font_family={FONT_FAMILY}")])
+        .args([
+            "--override",
+            &format!("narrow_symbols={TREE_FILE_ICON_CODEPOINTS} 2"),
+        ])
+        .args([
+            "--override",
+            &format!("narrow_symbols={TREE_CHEVRON_CODEPOINTS} 1"),
+        ])
+        .args([
+            "--override",
+            &format!(
+                "symbol_map={TREE_FILE_ICON_CODEPOINTS},{TREE_CHEVRON_CODEPOINTS} Symbols Nerd Font Mono"
+            ),
+        ])
         .args([
             "--override",
             &format!("macos_titlebar_color={}", theme::BACKGROUND),
