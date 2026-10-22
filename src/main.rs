@@ -2,6 +2,7 @@ mod app;
 mod editor;
 mod render_job;
 mod terminal;
+mod window;
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -9,6 +10,10 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(version, about = "A terminal workspace for LaTeX resumes")]
 struct Arguments {
+    /// Use the current terminal instead of opening a dedicated workspace window.
+    #[arg(long)]
+    inline: bool,
+
     /// TeX document to open or create.
     #[arg(default_value = "resume.tex")]
     file: PathBuf,
@@ -16,6 +21,9 @@ struct Arguments {
 
 fn main() -> anyhow::Result<()> {
     let arguments = Arguments::parse();
+    if !arguments.inline {
+        return window::open(&arguments.file);
+    }
     let editor = editor::Editor::open(arguments.file)?;
 
     ratatui::run(|terminal| {
