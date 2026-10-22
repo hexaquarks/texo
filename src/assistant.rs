@@ -13,7 +13,7 @@ use texo::theme;
 
 use crate::assistant_job::{AssistantJob, ConversationMessage};
 
-const INPUT_HEIGHT: u16 = 3;
+const INPUT_HEIGHT: u16 = 5;
 const SEND_WIDTH: u16 = 8;
 const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT + 1;
 const PROMPT_WIDTH: u16 = 2;
@@ -205,12 +205,14 @@ impl Assistant {
             area,
         );
         let inner = area.inner(Margin {
-            horizontal: 1,
+            horizontal: theme::PANEL_PADDING,
             vertical: 1,
         });
-        let [header, history, composer] = Layout::vertical([
+        let [header, _, history, _, composer] = Layout::vertical([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
+            Constraint::Length(1),
             Constraint::Length(COMPOSER_HEIGHT),
         ])
         .areas(inner);
@@ -245,7 +247,7 @@ impl Assistant {
             Style::default()
         });
         frame.render_widget(&self.input, input);
-        let prompt = Rect::new(input.x, input.y + 1, PROMPT_WIDTH, 1);
+        let prompt = Rect::new(input.x + 1, input.y + 2, PROMPT_WIDTH, 1);
         frame.render_widget(
             Paragraph::new("> ").style(Style::default().fg(theme::ACCENT)),
             prompt,
@@ -308,7 +310,7 @@ fn new_input() -> TextArea<'static> {
 
 fn composer_layout(area: Rect) -> [Rect; 3] {
     let inner = area.inner(Margin {
-        horizontal: 1,
+        horizontal: theme::PANEL_PADDING,
         vertical: 1,
     });
     let [_, composer] =
@@ -327,7 +329,7 @@ fn composer_layout_from_row(area: Rect) -> [Rect; 3] {
 fn input_block(focused: bool) -> Block<'static> {
     Block::default()
         .borders(Borders::TOP)
-        .padding(Padding::new(PROMPT_WIDTH, 0, 0, 0))
+        .padding(Padding::new(PROMPT_WIDTH + 1, 1, 1, 1))
         .border_style(Style::default().fg(if focused {
             theme::MUTED
         } else {
@@ -351,18 +353,27 @@ fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
     } else {
         theme::text()
     };
-    let content_width = usize::from(width.saturating_sub(PROMPT_WIDTH)).max(1);
+    let content_width = usize::from(width.saturating_sub(PROMPT_WIDTH + 2)).max(1);
+    let padded_blank = || Line::from(" ".repeat(usize::from(width))).style(style);
     let mut lines = Vec::new();
+    if is_user {
+        lines.push(padded_blank());
+    }
+    let mut first_line = true;
     for paragraph in message.content.lines() {
         for text in textwrap::wrap(paragraph, content_width) {
-            let marker = if lines.is_empty() { prefix } else { "  " };
-            let mut line = Line::from(format!("{marker}{text}")).style(style);
+            let marker = if first_line { prefix } else { "  " };
+            first_line = false;
+            let mut line = Line::from(format!(" {marker}{text}")).style(style);
             if is_user {
                 let padding = usize::from(width).saturating_sub(line.width());
                 line.spans.push(Span::raw(" ".repeat(padding)));
             }
             lines.push(line);
         }
+    }
+    if is_user {
+        lines.push(padded_blank());
     }
     lines.push(Line::default());
     lines
@@ -394,7 +405,7 @@ mod tests {
         assert!(rendered.contains("* Tighter wording."));
         assert!(rendered.contains("Facts preserved."));
         assert_eq!(buffer[(59, 0)].bg, theme::ELEVATED);
-        assert_eq!(buffer[(59, 2)].bg, theme::BACKGROUND);
+        assert_eq!(buffer[(59, 3)].bg, theme::BACKGROUND);
         assert!(!rendered.contains("◉"));
     }
 
@@ -421,8 +432,9 @@ mod tests {
         assistant.input.insert_str("hello world");
         let area = Rect::new(20, 10, 70, 15);
         let input = Assistant::input_area(area);
-        assert!(assistant.click(area, input.x + 4, input.y + 1));
+        assert!(assistant.click(area, input.x + 5, input.y + 2));
         assert_eq!(assistant.input.cursor(), (0, 2));
+        assert!(!assistant.click(area, input.x + 5, input.y + 1));
         assert!(!assistant.click(area, area.x + 2, area.y + 2));
         assert_eq!(assistant.input.cursor(), (0, 2));
     }
