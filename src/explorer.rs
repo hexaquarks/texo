@@ -216,13 +216,6 @@ impl Explorer {
 
     fn entry_item(&self, entry: &Entry, active_file: &Path) -> ListItem<'static> {
         let expanded = self.expanded.contains(&entry.path);
-        let icon = if !entry.directory {
-            "  "
-        } else if expanded {
-            "⌄ "
-        } else {
-            "› "
-        };
         let filename = if entry.path == self.root && self.name() == "resumes" {
             "My resumes".to_owned()
         } else {
@@ -233,7 +226,22 @@ impl Explorer {
                 .to_string_lossy()
                 .into_owned()
         };
-        let marker = if entry.directory { "▱ " } else { "▤ " };
+        // ASCII markers remain legible without a patched font or icon fallback.
+        let marker = if entry.directory && expanded {
+            "[-] "
+        } else if entry.directory {
+            "[+] "
+        } else {
+            match entry
+                .path
+                .extension()
+                .and_then(|extension| extension.to_str())
+            {
+                Some("tex") => " T  ",
+                Some("pdf") => " P  ",
+                _ => " -  ",
+            }
+        };
         let mut style = Style::default().fg(theme::TEXT);
         if entry.path == active_file {
             style = style.bg(theme::SELECTION);
@@ -241,7 +249,6 @@ impl Explorer {
         ListItem::new(vec![
             Line::from(vec![
                 Span::raw(" ".repeat(entry.depth * TREE_INDENT_WIDTH)),
-                Span::styled(icon, theme::muted()),
                 Span::styled(marker, Style::default().fg(theme::FILE_ICON)),
                 Span::raw(filename),
             ]),

@@ -1169,7 +1169,7 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
         assert!(text.contains("[Build ^B]"));
-        assert!(text.contains("ASSISTANT"));
+        assert!(text.contains("texo / chat"));
         assert!(text.contains("Original document"));
 
         let mut small_terminal = Terminal::new(TestBackend::new(30, 8))?;
