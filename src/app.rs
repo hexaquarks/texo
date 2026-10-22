@@ -15,25 +15,35 @@ use ratatui::{
 };
 use texo::{preview::Preview, theme};
 
-use crate::{editor::Editor, explorer::Explorer, render_job::RenderJob};
+use crate::{
+    actions::{Action, ActionMenu, ExportDialog},
+    editor::Editor,
+    explorer::Explorer,
+    render_job::RenderJob,
+};
 
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MIN_TERMINAL_WIDTH: u16 = 100;
 const MIN_TERMINAL_HEIGHT: u16 = 16;
 const TOOLBAR_HEIGHT: u16 = 2;
 const FOOTER_HEIGHT: u16 = 2;
-const RENDER_BUTTON_WIDTH: u16 = 20;
+const BUILD_BUTTON_WIDTH: u16 = 13;
+const EXPORT_BUTTON_WIDTH: u16 = 10;
+const ACTIONS_BUTTON_WIDTH: u16 = 16;
 const EXPLORER_PERCENT: u16 = 16;
 const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 67;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
+const PAGE_STATUS_WIDTH: u16 = 22;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Focus {
     Explorer,
     Editor,
     Render,
+    Export,
+    Actions,
 }
 
 struct App {
@@ -44,6 +54,9 @@ struct App {
     preview: Preview,
     job: Option<RenderJob>,
     rendered_source: Option<String>,
+    rendered_pdf: Option<PathBuf>,
+    actions: Option<ActionMenu>,
+    export: Option<ExportDialog>,
     status: String,
     diagnostics: Option<String>,
     diagnostic_scroll: u16,
@@ -53,6 +66,9 @@ struct App {
 
 pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> anyhow::Result<()> {
     let mut app = App::with_workspace(editor, Preview::detect(), root)?;
+    if !app.editor.is_modified() {
+        app.start_render();
+    }
 
     loop {
         app.receive_render();
@@ -61,10 +77,13 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
         if event::poll(EVENT_POLL_INTERVAL)? {
             let area = terminal.get_frame().area();
             let explorer_was_visible = app.explorer_visible;
+            let overlay_was_open = app.actions.is_some() || app.export.is_some();
             if app.handle_event(event::read()?, area) {
                 return Ok(());
             }
-            if explorer_was_visible != app.explorer_visible {
+            if explorer_was_visible != app.explorer_visible
+                || overlay_was_open != (app.actions.is_some() || app.export.is_some())
+            {
                 // Repaint cells formerly occupied by the terminal's PDF image placement.
                 terminal.clear()?;
             }
@@ -94,7 +113,10 @@ impl App {
             preview,
             job: None,
             rendered_source: None,
-            status: "Edit your document, then select Render or press Ctrl+R.".into(),
+            rendered_pdf: None,
+            actions: None,
+            export: None,
+            status: String::new(),
             diagnostics: None,
             diagnostic_scroll: 0,
             focus: Focus::Editor,
@@ -111,7 +133,7 @@ impl App {
             Ok(job) => {
                 self.job = Some(job);
                 self.diagnostics = None;
-                self.status = "Rendering… You can continue editing.".into();
+                self.status = "Building…".into();
             }
             Err(error) => self.report_error(error),
         }
@@ -127,7 +149,8 @@ impl App {
             Ok(document) => match self.preview.set_pages(document.pages) {
                 Ok(()) => {
                     self.rendered_source = Some(document.source);
-                    self.status = format!("Rendered {}", document.pdf_path.display());
+                    self.rendered_pdf = Some(document.pdf_path);
+                    self.status.clear();
                     self.diagnostics = None;
                     self.refresh_explorer();
                 }
@@ -144,6 +167,9 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event, area: Rect) -> bool {
+        if self.actions.is_some() || self.export.is_some() {
+            return self.handle_overlay(event, area);
+        }
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => return self.handle_key(key),
             Event::Paste(text) if self.focus == Focus::Editor => {
@@ -159,6 +185,12 @@ impl App {
                     if layout.render_button.contains(position) {
                         self.focus = Focus::Render;
                         self.start_render();
+                    } else if layout.export_button.contains(position) {
+                        self.focus = Focus::Export;
+                        self.open_export();
+                    } else if layout.actions_button.contains(position) {
+                        self.focus = Focus::Actions;
+                        self.actions = Some(ActionMenu::open());
                     } else if layout.explorer.contains(position) {
                         self.focus = Focus::Explorer;
                         if self.explorer.select_at(layout.explorer, mouse.row) {
@@ -169,6 +201,12 @@ impl App {
                     }
                 } else if layout.editor.contains(position) {
                     self.editor.text.input(mouse);
+                } else if layout.preview.contains(position) {
+                    match mouse.kind {
+                        MouseEventKind::ScrollDown => self.preview.scroll(false),
+                        MouseEventKind::ScrollUp => self.preview.scroll(true),
+                        _ => {}
+                    }
                 } else if layout.explorer.contains(position) {
                     match mouse.kind {
                         MouseEventKind::ScrollDown => self.explorer.move_selection(true),
@@ -205,8 +243,10 @@ impl App {
 
     fn handle_control_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('r') => self.start_render(),
-            KeyCode::Char('b') => {
+            KeyCode::Char('b') => self.start_render(),
+            KeyCode::Char('p') => self.actions = Some(ActionMenu::open()),
+            KeyCode::Char('e') => self.open_export(),
+            KeyCode::Char('t') => {
                 self.explorer_visible = !self.explorer_visible;
                 if !self.explorer_visible && self.focus == Focus::Explorer {
                     self.focus = Focus::Editor;
@@ -237,6 +277,14 @@ impl App {
         let result = match key.code {
             KeyCode::Left => self.preview.previous_page(),
             KeyCode::Right => self.preview.next_page(),
+            KeyCode::Up => {
+                self.preview.scroll(true);
+                Ok(())
+            }
+            KeyCode::Down => {
+                self.preview.scroll(false);
+                Ok(())
+            }
             _ => {
                 if self.focus == Focus::Editor {
                     self.editor.text.input(key);
@@ -255,8 +303,10 @@ impl App {
             KeyCode::F(6) => {
                 self.focus = match self.focus {
                     Focus::Editor => Focus::Render,
-                    Focus::Render if self.explorer_visible => Focus::Explorer,
-                    Focus::Render | Focus::Explorer => Focus::Editor,
+                    Focus::Render => Focus::Export,
+                    Focus::Export => Focus::Actions,
+                    Focus::Actions if self.explorer_visible => Focus::Explorer,
+                    Focus::Actions | Focus::Explorer => Focus::Editor,
                 };
             }
             KeyCode::Esc if self.diagnostics.is_some() => self.diagnostics = None,
@@ -273,11 +323,117 @@ impl App {
             KeyCode::Enter | KeyCode::Char(' ') if self.focus == Focus::Render => {
                 self.start_render()
             }
+            KeyCode::Enter | KeyCode::Char(' ') if self.focus == Focus::Export => {
+                self.open_export()
+            }
+            KeyCode::Enter | KeyCode::Char(' ') if self.focus == Focus::Actions => {
+                self.actions = Some(ActionMenu::open())
+            }
             _ if self.focus == Focus::Explorer => self.handle_explorer_key(key),
             _ if self.focus == Focus::Editor => {
                 self.editor.text.input(key);
             }
             _ => {}
+        }
+    }
+
+    fn open_export(&mut self) {
+        if self.rendered_source.as_deref() != Some(self.editor.source().as_str())
+            || self.rendered_pdf.is_none()
+        {
+            self.status = "Build the current document with Ctrl+B before exporting.".into();
+            return;
+        }
+        self.export = Some(ExportDialog::new(&self.editor.path));
+    }
+
+    fn handle_overlay(&mut self, event: Event, area: Rect) -> bool {
+        match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+                    return self.handle_key(key);
+                }
+                if key.code == KeyCode::Esc {
+                    self.actions = None;
+                    self.export = None;
+                } else if let Some(menu) = &mut self.actions {
+                    match key.code {
+                        KeyCode::Up => menu.move_selection(false),
+                        KeyCode::Down => menu.move_selection(true),
+                        KeyCode::Enter => {
+                            let action = menu.selected();
+                            self.actions = None;
+                            return self.perform_action(action);
+                        }
+                        _ => {}
+                    }
+                } else if key.code == KeyCode::Enter {
+                    self.finish_export();
+                } else if let Some(dialog) = &mut self.export {
+                    dialog.input.input(key);
+                    dialog.edited();
+                }
+            }
+            Event::Paste(text) => {
+                if let Some(dialog) = &mut self.export {
+                    dialog.edited();
+                    dialog.input.insert_str(text.replace(['\n', '\r'], ""));
+                }
+            }
+            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(action) = self
+                    .actions
+                    .as_mut()
+                    .and_then(|menu| menu.click(area, mouse.column, mouse.row))
+                {
+                    self.actions = None;
+                    return self.perform_action(action);
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn perform_action(&mut self, action: Action) -> bool {
+        let key = match action {
+            Action::Build => 'b',
+            Action::Export => 'e',
+            Action::Save => 's',
+            Action::ToggleExplorer => 't',
+            Action::Quit => 'q',
+            Action::ScrollUp | Action::ScrollDown => {
+                self.preview.scroll(matches!(action, Action::ScrollUp));
+                return false;
+            }
+            Action::PreviousPage | Action::NextPage => {
+                let code = if matches!(action, Action::PreviousPage) {
+                    KeyCode::Left
+                } else {
+                    KeyCode::Right
+                };
+                self.handle_alt_key(KeyEvent::new(code, KeyModifiers::ALT));
+                return false;
+            }
+        };
+        self.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL))
+    }
+
+    fn finish_export(&mut self) {
+        let Some(dialog) = &mut self.export else {
+            return;
+        };
+        let Some(source) = &self.rendered_pdf else {
+            return;
+        };
+        match dialog.export(source, &self.editor.path) {
+            Ok(Some(path)) => {
+                self.status = format!("Exported {}", path.display());
+                self.export = None;
+                self.refresh_explorer();
+            }
+            Ok(None) => {}
+            Err(error) => dialog.message = format!("{error:#}"),
         }
     }
 
@@ -338,9 +494,13 @@ impl App {
                 self.editor = editor;
                 self.preview.clear();
                 self.rendered_source = None;
+                self.rendered_pdf = None;
                 self.diagnostics = None;
                 self.focus = Focus::Editor;
-                self.status = "Document opened. Ctrl+R to render.".into();
+                self.status.clear();
+                if !self.editor.is_modified() {
+                    self.start_render();
+                }
             }
             Err(error) => self.report_error(error),
         }
@@ -398,6 +558,12 @@ impl App {
         );
         self.preview.draw(frame, layout.preview);
         self.draw_footer(frame, &layout);
+        if let Some(menu) = &mut self.actions {
+            menu.draw(frame);
+        }
+        if let Some(export) = &mut self.export {
+            export.draw(frame);
+        }
     }
 
     fn draw_toolbar(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
@@ -412,27 +578,45 @@ impl App {
         );
         frame.render_widget(heading, layout.heading);
 
-        let label = if self.job.is_some() {
-            "Rendering…"
+        let build_label = if self.job.is_some() {
+            "[Building…]"
         } else {
-            "Render  Ctrl+R"
+            "[Build ^B]"
         };
-        let foreground = if self.job.is_some() {
-            theme::MUTED
-        } else {
-            theme::TEXT
-        };
-        let background = if self.focus == Focus::Render {
-            theme::SELECTION
-        } else {
-            theme::BUTTON
-        };
-        frame.render_widget(
-            Paragraph::new(label)
-                .centered()
-                .style(Style::default().fg(foreground).bg(background)),
-            layout.render_button,
-        );
+        for (area, label, focused) in [
+            (
+                layout.render_button,
+                build_label,
+                self.focus == Focus::Render,
+            ),
+            (
+                layout.export_button,
+                "[Export]",
+                self.focus == Focus::Export,
+            ),
+            (
+                layout.actions_button,
+                "[Actions ^P]",
+                self.focus == Focus::Actions,
+            ),
+        ] {
+            let background = if focused {
+                theme::SELECTION
+            } else {
+                theme::BACKGROUND
+            };
+            frame.render_widget(
+                Paragraph::new(label)
+                    .centered()
+                    .style(Style::default().fg(theme::ACCENT).bg(background))
+                    .block(
+                        Block::default()
+                            .borders(Borders::BOTTOM)
+                            .border_style(Style::default().fg(theme::DIVIDER)),
+                    ),
+                area,
+            );
+        }
     }
 
     fn draw_footer(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
@@ -459,13 +643,32 @@ impl App {
             Span::styled(format!(" {saved}  "), Style::default().fg(theme::ACCENT)),
             Span::styled(format!("│  {pdf}    {}", self.status), theme::muted()),
         ]);
+        let [status, pages] =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(PAGE_STATUS_WIDTH)])
+                .areas(layout.footer);
         frame.render_widget(
             Paragraph::new(footer).block(
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(Style::default().fg(theme::DIVIDER)),
             ),
-            layout.footer,
+            status,
+        );
+        let page_status = self
+            .preview
+            .page_status()
+            .map(|page| format!("{page}  Alt+←/→ "))
+            .unwrap_or_default();
+        frame.render_widget(
+            Paragraph::new(page_status)
+                .right_aligned()
+                .style(theme::muted())
+                .block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(theme::DIVIDER)),
+                ),
+            pages,
         );
     }
 }
@@ -474,6 +677,8 @@ struct WorkspaceLayout {
     explorer: Rect,
     heading: Rect,
     render_button: Rect,
+    export_button: Rect,
+    actions_button: Rect,
     center: Rect,
     editor: Rect,
     assistant: Rect,
@@ -500,9 +705,13 @@ impl WorkspaceLayout {
             Constraint::Length(FOOTER_HEIGHT),
         ])
         .areas(area);
-        let [heading, render_button] =
-            Layout::horizontal([Constraint::Min(1), Constraint::Length(RENDER_BUTTON_WIDTH)])
-                .areas(toolbar);
+        let [heading, render_button, export_button, actions_button] = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Length(BUILD_BUTTON_WIDTH),
+            Constraint::Length(EXPORT_BUTTON_WIDTH),
+            Constraint::Length(ACTIONS_BUTTON_WIDTH),
+        ])
+        .areas(toolbar);
         let sidebar_width = if show_explorer {
             area.width * EXPLORER_PERCENT / 100
         } else {
@@ -527,6 +736,8 @@ impl WorkspaceLayout {
             explorer,
             heading,
             render_button,
+            export_button,
+            actions_button,
             center,
             editor,
             assistant,
@@ -568,8 +779,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         assert_eq!(app.editor.source(), original);
-        app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
-        app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+        app.focus = Focus::Editor;
         app.handle_event(
             Event::Paste("Pasted\ntext".into()),
             Rect::new(0, 0, 100, 30),
@@ -599,13 +809,37 @@ mod tests {
     }
 
     #[test]
+    fn export_rejects_stale_buffers_and_modal_typing_does_not_edit_source() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        app.rendered_source = Some(app.editor.source());
+        app.rendered_pdf = Some(app.editor.path.with_extension("pdf"));
+        app.open_export();
+        assert!(app.export.is_some());
+        let original = app.editor.source();
+        app.handle_event(
+            Event::Paste("new destination".into()),
+            Rect::new(0, 0, 160, 50),
+        );
+        assert_eq!(app.editor.source(), original);
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Rect::new(0, 0, 160, 50),
+        );
+        app.editor.text.insert_str("changed");
+        app.open_export();
+        assert!(app.export.is_none());
+        assert!(app.status.contains("Build the current"));
+        Ok(())
+    }
+
+    #[test]
     fn layout_renders_both_panes_and_handles_small_terminals() -> anyhow::Result<()> {
         let (_directory, mut app) = application()?;
         let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
         terminal.draw(|frame| app.draw(frame))?;
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-        assert!(text.contains("Render  Ctrl+R"));
+        assert!(text.contains("[Build ^B]"));
         assert!(text.contains("ASSISTANT"));
         assert!(text.contains("Original document"));
 

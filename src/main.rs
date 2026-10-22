@@ -1,3 +1,4 @@
+mod actions;
 mod app;
 mod editor;
 mod explorer;
