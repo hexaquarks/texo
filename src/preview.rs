@@ -24,7 +24,7 @@ const LOADING_FRAMES: [&str; 6] = ["[=   ]", "[ =  ]", "[  = ]", "[   =]", "[  =
 const SCROLL_LINES: u32 = 3;
 const EMPTY_NOTICE: &str =
     "Your PDF will appear here.\n\nBuild your document to update the preview.\n\nCtrl+B  to build";
-const UNSUPPORTED_NOTICE: &str = "Preview needs a graphics-capable terminal.\n\nLaunch texo in its dedicated window to see your PDF here.";
+const UNSUPPORTED_NOTICE: &str = "Preview needs a graphics-capable terminal.\n\nRun texo in a terminal with image support to see your PDF here.";
 
 pub struct Preview {
     picker: Option<Picker>,
