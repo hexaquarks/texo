@@ -6,6 +6,7 @@ use std::{
         mpsc::{self, Receiver, TryRecvError},
     },
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow};
@@ -15,6 +16,7 @@ pub struct RenderJob {
     result: Receiver<Result<RenderedDocument>>,
     cancelled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    started: Instant,
 }
 
 impl RenderJob {
@@ -33,7 +35,12 @@ impl RenderJob {
             result,
             cancelled,
             worker: Some(worker),
+            started: Instant::now(),
         })
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
     }
 
     pub fn poll(&self) -> Option<Result<RenderedDocument>> {

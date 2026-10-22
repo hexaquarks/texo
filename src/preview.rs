@@ -1,10 +1,12 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use image::{DynamicImage, imageops::FilterType};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::Style,
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Block, Clear, Paragraph, Wrap},
 };
 use ratatui_image::{
     Resize, StatefulImage,
@@ -16,6 +18,9 @@ use crate::pdf::PdfPages;
 use crate::theme;
 
 const EMPTY_STATE_HEIGHT: u16 = 7;
+const LOADING_STATE_HEIGHT: u16 = 3;
+const LOADING_FRAME_MS: u128 = 150;
+const LOADING_FRAMES: [&str; 6] = ["[=   ]", "[ =  ]", "[  = ]", "[   =]", "[  = ]", "[ =  ]"];
 const SCROLL_LINES: u32 = 3;
 const EMPTY_NOTICE: &str =
     "Your PDF will appear here.\n\nBuild your document to update the preview.\n\nCtrl+B  to build";
@@ -183,6 +188,29 @@ impl Preview {
             .map(|pages| format!("{} / {}", self.page_index + 1, pages.page_count()))
     }
 
+    pub fn draw_loading(frame: &mut Frame, area: Rect, elapsed: Duration) {
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::PREVIEW)),
+            area,
+        );
+        let phase = (elapsed.as_millis() / LOADING_FRAME_MS) % LOADING_FRAMES.len() as u128;
+        let label = format!(
+            "{}  Building PDF\n\nThe preview will appear when ready.",
+            LOADING_FRAMES[phase as usize]
+        );
+        let [_, message, _] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(LOADING_STATE_HEIGHT),
+            Constraint::Fill(1),
+        ])
+        .areas(area);
+        frame.render_widget(
+            Paragraph::new(label).centered().style(theme::muted()),
+            message,
+        );
+    }
+
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::PREVIEW)),
@@ -238,6 +266,31 @@ fn viewport_crop(page_height: u32, viewport_height: u32, scroll: u32) -> (u32, u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_state_replaces_previous_content_and_animates() -> anyhow::Result<()> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(60, 20))?;
+        let mut captures = Vec::new();
+        for elapsed in [Duration::ZERO, Duration::from_millis(150)] {
+            terminal.draw(|frame| {
+                frame.render_widget(Paragraph::new("Previous PDF"), frame.area());
+                Preview::draw_loading(frame, frame.area(), elapsed);
+            })?;
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("Building PDF"));
+            assert!(!text.contains("Previous PDF"));
+            captures.push(text);
+        }
+        assert_ne!(captures[0], captures[1]);
+        Ok(())
+    }
 
     #[test]
     fn fitting_width_preserves_portrait_and_landscape_proportions() {
