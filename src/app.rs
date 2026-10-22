@@ -8,7 +8,7 @@ use ratatui::{
     crossterm::event::{
         self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
     },
-    layout::{Constraint, Layout, Position, Rect},
+    layout::{Constraint, Layout, Position, Rect, Spacing},
     style::Style,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -663,6 +663,10 @@ impl App {
         self.assistant
             .draw(frame, assistant, self.focus == Focus::Assistant);
         self.draw_preview(frame, preview);
+        // The editor and chat share a border row; keep the active editor's edge visible.
+        if self.focus == Focus::Editor {
+            draw_pane_border(frame, layout.editor, true);
+        }
         self.draw_diagnostics(frame, &layout);
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
@@ -809,6 +813,7 @@ impl WorkspaceLayout {
         .areas(body);
         let [editor, assistant] =
             Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
+                .spacing(Spacing::Overlap(1))
                 .areas(center);
         Self {
             projects,
@@ -1087,7 +1092,7 @@ mod tests {
         let layout = WorkspaceLayout::new(area, false, true, app.focus);
         let panes = [layout.editor, layout.assistant, layout.preview];
         assert_eq!(layout.preview.x, layout.editor.right());
-        assert_eq!(layout.assistant.y, layout.editor.bottom());
+        assert_eq!(layout.assistant.y + 1, layout.editor.bottom());
 
         for (selected, pane) in panes.iter().enumerate() {
             // Border clicks select the pane without activating its content controls.
@@ -1110,17 +1115,19 @@ mod tests {
             assert_eq!(buffer[(layout.preview.x, border_row)].symbol(), "│");
 
             for (index, pane) in panes.iter().enumerate() {
-                let color = if index == selected {
-                    theme::ACCENT
-                } else {
-                    theme::DIVIDER
-                };
                 for position in [
                     (pane.x, pane.y),
                     (pane.right() - 1, pane.y),
                     (pane.x, pane.bottom() - 1),
                     (pane.right() - 1, pane.bottom() - 1),
                 ] {
+                    let shared_edge = index < 2 && position.1 == layout.assistant.y;
+                    let highlighted = index == selected || (shared_edge && selected < 2);
+                    let color = if highlighted {
+                        theme::ACCENT
+                    } else {
+                        theme::DIVIDER
+                    };
                     assert_eq!(buffer[position].fg, color);
                 }
             }
