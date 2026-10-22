@@ -27,7 +27,7 @@ const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MULTIPANE_WIDTH: u16 = 100;
 const MULTIPANE_HEIGHT: u16 = 20;
 const SIDEBAR_WIDTH: u16 = 24;
-const PANE_GAP: u16 = 1;
+const PANE_COLUMN_GAP: u16 = 1;
 const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 55;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
@@ -807,11 +807,10 @@ impl WorkspaceLayout {
             Constraint::Min(1),
             Constraint::Percentage(PREVIEW_PERCENT),
         ])
-        .spacing(PANE_GAP)
+        .spacing(PANE_COLUMN_GAP)
         .areas(body);
         let [editor, assistant] =
             Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
-                .spacing(PANE_GAP)
                 .areas(center);
         Self {
             projects,
@@ -1089,8 +1088,8 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
         let layout = WorkspaceLayout::new(area, false, true, app.focus);
         let panes = [layout.editor, layout.assistant, layout.preview];
-        assert_eq!(layout.preview.x - layout.editor.right(), PANE_GAP);
-        assert_eq!(layout.assistant.y - layout.editor.bottom(), PANE_GAP);
+        assert_eq!(layout.preview.x - layout.editor.right(), PANE_COLUMN_GAP);
+        assert_eq!(layout.assistant.y, layout.editor.bottom());
 
         for (selected, pane) in panes.iter().enumerate() {
             // Border clicks select the pane without activating its content controls.
@@ -1107,9 +1106,6 @@ mod tests {
             let buffer = terminal.backend().buffer();
             for row in area.top()..area.bottom() {
                 assert_eq!(buffer[(layout.editor.right(), row)].symbol(), " ");
-            }
-            for column in layout.editor.left()..layout.editor.right() {
-                assert_eq!(buffer[(column, layout.editor.bottom())].symbol(), " ");
             }
 
             for (index, pane) in panes.iter().enumerate() {
