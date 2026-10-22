@@ -27,7 +27,6 @@ const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MULTIPANE_WIDTH: u16 = 100;
 const MULTIPANE_HEIGHT: u16 = 20;
 const SIDEBAR_WIDTH: u16 = 24;
-const PANE_COLUMN_GAP: u16 = 1;
 const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 55;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
@@ -807,7 +806,6 @@ impl WorkspaceLayout {
             Constraint::Min(1),
             Constraint::Percentage(PREVIEW_PERCENT),
         ])
-        .spacing(PANE_COLUMN_GAP)
         .areas(body);
         let [editor, assistant] =
             Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
@@ -1088,7 +1086,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
         let layout = WorkspaceLayout::new(area, false, true, app.focus);
         let panes = [layout.editor, layout.assistant, layout.preview];
-        assert_eq!(layout.preview.x - layout.editor.right(), PANE_COLUMN_GAP);
+        assert_eq!(layout.preview.x, layout.editor.right());
         assert_eq!(layout.assistant.y, layout.editor.bottom());
 
         for (selected, pane) in panes.iter().enumerate() {
@@ -1104,9 +1102,12 @@ mod tests {
             );
             terminal.draw(|frame| app.draw(frame))?;
             let buffer = terminal.backend().buffer();
-            for row in area.top()..area.bottom() {
-                assert_eq!(buffer[(layout.editor.right(), row)].symbol(), " ");
-            }
+            let border_row = layout.editor.y + 1;
+            assert_eq!(
+                buffer[(layout.editor.right() - 1, border_row)].symbol(),
+                "│"
+            );
+            assert_eq!(buffer[(layout.preview.x, border_row)].symbol(), "│");
 
             for (index, pane) in panes.iter().enumerate() {
                 let color = if index == selected {
