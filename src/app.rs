@@ -1,25 +1,66 @@
 use ratatui::{
     DefaultTerminal, Frame,
-    crossterm::event::{self, Event, KeyCode, KeyEventKind},
-    widgets::{Block, Paragraph},
+    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    layout::{Constraint, Layout},
+    widgets::Paragraph,
 };
 
-pub fn run(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
-    loop {
-        terminal.draw(draw)?;
+use crate::editor::Editor;
 
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
-        {
-            return Ok(());
+pub fn run(terminal: &mut DefaultTerminal, mut editor: Editor) -> anyhow::Result<()> {
+    let mut status = String::from("Ctrl+S save | Ctrl+Z undo | Ctrl+Y redo | Ctrl+Q quit");
+    let mut confirm_quit = false;
+
+    loop {
+        terminal.draw(|frame| draw(frame, &mut editor, &status))?;
+
+        match event::read()? {
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    match key.code {
+                        KeyCode::Char('q') => {
+                            if !editor.is_modified() || confirm_quit {
+                                return Ok(());
+                            }
+                            confirm_quit = true;
+                            status = "Unsaved changes. Ctrl+Q again to discard, or Ctrl+S to save."
+                                .into();
+                            continue;
+                        }
+                        KeyCode::Char('s') => {
+                            status = match editor.save() {
+                                Ok(()) => "Saved.".into(),
+                                Err(error) => format!("Save failed: {error:#}"),
+                            };
+                        }
+                        KeyCode::Char('z') => {
+                            editor.text.undo();
+                        }
+                        KeyCode::Char('y') => {
+                            editor.text.redo();
+                        }
+                        _ => {
+                            editor.text.input(key);
+                        }
+                    }
+                } else {
+                    editor.text.input(key);
+                }
+                confirm_quit = false;
+            }
+            Event::Paste(text) => {
+                editor.text.insert_str(text);
+                confirm_quit = false;
+            }
+            _ => {}
         }
     }
 }
 
-fn draw(frame: &mut Frame) {
-    let welcome =
-        Paragraph::new("texo\n\nPress q or Esc to quit.").block(Block::bordered().title("texo"));
+fn draw(frame: &mut Frame, editor: &mut Editor, status: &str) {
+    let [document, footer] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
 
-    frame.render_widget(welcome, frame.area());
+    editor.draw(frame, document, true);
+    frame.render_widget(Paragraph::new(status), footer);
 }
