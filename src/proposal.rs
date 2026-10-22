@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::Style,
     text::{Line, Text},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
 };
 use texo::theme;
 
@@ -136,6 +136,7 @@ impl ProposalReview {
 fn source_block(title: &str) -> Block<'_> {
     Block::default()
         .title(title)
+        .padding(Padding::uniform(1))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::DIVIDER))
 }
