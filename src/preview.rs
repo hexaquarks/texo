@@ -24,10 +24,9 @@ const LOADING_FRAMES: [&str; 6] = ["[=   ]", "[ =  ]", "[  = ]", "[   =]", "[  =
 const SCROLL_LINES: u32 = 3;
 const EMPTY_NOTICE: &str =
     "Your PDF will appear here.\n\nBuild your document to update the preview.\n\nCtrl+B  to build";
-const UNSUPPORTED_NOTICE: &str = "Preview needs a graphics-capable terminal.\n\nRun texo in a terminal with image support to see your PDF here.";
 
 pub struct Preview {
-    picker: Option<Picker>,
+    picker: Picker,
     notice: String,
     pages: Option<PdfPages>,
     page_index: usize,
@@ -42,8 +41,8 @@ pub struct Preview {
 impl Default for Preview {
     fn default() -> Self {
         Self {
-            picker: None,
-            notice: UNSUPPORTED_NOTICE.into(),
+            picker: Picker::halfblocks(),
+            notice: EMPTY_NOTICE.into(),
             pages: None,
             page_index: 0,
             image: None,
@@ -59,14 +58,14 @@ impl Default for Preview {
 impl Preview {
     /// Query graphics support after entering the alternate screen, before reading input events.
     pub fn detect() -> Self {
-        match Picker::from_query_stdio() {
-            Ok(picker) if picker.protocol_type() != ProtocolType::Halfblocks => Self {
-                picker: Some(picker),
-                notice: EMPTY_NOTICE.into(),
-                ..Self::default()
-            },
-            _ => Self::default(),
+        Self {
+            picker: Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks()),
+            ..Self::default()
         }
+    }
+
+    pub fn uses_basic_rendering(&self) -> bool {
+        self.picker.protocol_type() == ProtocolType::Halfblocks
     }
 
     pub fn clear(&mut self) {
@@ -74,11 +73,7 @@ impl Preview {
         self.set_source(None);
         self.scroll_pixels = 0;
         self.page_index = 0;
-        self.notice = if self.picker.is_some() {
-            EMPTY_NOTICE.into()
-        } else {
-            UNSUPPORTED_NOTICE.into()
-        };
+        self.notice = EMPTY_NOTICE.into();
     }
 
     pub fn set_pages(&mut self, pages: PdfPages) -> Result<()> {
@@ -125,9 +120,6 @@ impl Preview {
     }
 
     pub fn scroll(&mut self, up: bool) {
-        let Some(picker) = &self.picker else {
-            return;
-        };
         let Some(page) = &self.fitted_page else {
             return;
         };
@@ -135,7 +127,7 @@ impl Preview {
             return;
         };
 
-        let step = SCROLL_LINES * u32::from(picker.font_size().height);
+        let step = SCROLL_LINES * u32::from(self.picker.font_size().height);
         let maximum_scroll = page.height().saturating_sub(viewport_height);
         self.scroll_pixels = if up {
             self.scroll_pixels.saturating_sub(step)
@@ -147,10 +139,10 @@ impl Preview {
     // Cache the resized page separately from its visible crop so scrolling does
     // not repeatedly resample document text or reload the PDF from disk.
     fn prepare_viewport(&mut self, area: Rect) {
-        let (Some(picker), Some(source)) = (&self.picker, &self.source_page) else {
+        let Some(source) = &self.source_page else {
             return;
         };
-        let font = picker.font_size();
+        let font = self.picker.font_size();
         let width = u32::from(area.width) * u32::from(font.width);
         let height = u32::from(area.height) * u32::from(font.height);
         if width == 0 || height == 0 {
@@ -177,7 +169,7 @@ impl Preview {
             return;
         }
         let visible = page.crop_imm(0, offset, width, visible_height);
-        self.image = Some(picker.new_resize_protocol(visible));
+        self.image = Some(self.picker.new_resize_protocol(visible));
         self.viewport_pixels = Some((width, height));
         self.displayed_scroll = Some(offset);
     }
@@ -229,6 +221,13 @@ impl Preview {
                 if let Some(Err(error)) = image.last_encoding_result() {
                     self.notice = format!("Could not display the preview: {error}");
                     self.image = None;
+                    if !self.uses_basic_rendering() {
+                        // Keep the page visible even if a detected graphics protocol cannot encode it.
+                        self.picker = Picker::halfblocks();
+                        self.fitted_page = None;
+                        self.viewport_pixels = None;
+                        self.displayed_scroll = None;
+                    }
                 }
             }
             None => {
@@ -301,11 +300,7 @@ mod tests {
 
     #[test]
     fn preview_scrolls_in_lines_and_clamps_after_viewport_resize() {
-        let picker = Picker::halfblocks();
-        let mut preview = Preview {
-            picker: Some(picker),
-            ..Preview::default()
-        };
+        let mut preview = Preview::default();
         preview.set_source(Some(DynamicImage::new_rgb8(120, 200)));
         preview.prepare_viewport(Rect::new(0, 0, 10, 5));
         assert_eq!(preview.fitted_page.as_ref().unwrap().width(), 100);

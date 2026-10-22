@@ -720,6 +720,11 @@ impl App {
                 None => "Preview",
             };
             let page = self.preview.page_status().unwrap_or_default();
+            let quality = if self.preview.uses_basic_rendering() {
+                " · basic preview"
+            } else {
+                ""
+            };
             let title = Rect::new(
                 area.x + theme::PANEL_PADDING,
                 area.y,
@@ -727,7 +732,7 @@ impl App {
                 1,
             );
             frame.render_widget(
-                Paragraph::new(format!("{state}  {page}")).style(theme::muted()),
+                Paragraph::new(format!("{state}  {page}{quality}")).style(theme::muted()),
                 title,
             );
         }
