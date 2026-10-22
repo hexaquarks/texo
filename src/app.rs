@@ -5,11 +5,12 @@ use ratatui::{
     crossterm::event::{
         self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
     },
-    layout::{Constraint, Layout, Position, Rect},
-    style::{Color, Style},
-    widgets::{Block, Paragraph, Wrap},
+    layout::{Constraint, Layout, Margin, Position, Rect},
+    style::Style,
+    text::{Line, Span},
+    widgets::{Block, Padding, Paragraph, Wrap},
 };
-use texo::preview::Preview;
+use texo::{preview::Preview, theme};
 
 use crate::{editor::Editor, render_job::RenderJob};
 
@@ -19,6 +20,8 @@ const MIN_TERMINAL_HEIGHT: u16 = 16;
 const TOOLBAR_HEIGHT: u16 = 3;
 const FOOTER_HEIGHT: u16 = 2;
 const RENDER_BUTTON_WIDTH: u16 = 20;
+const WORKSPACE_MARGIN: u16 = 1;
+const PANEL_GAP: u16 = 2;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
 
@@ -226,6 +229,8 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
+        frame.render_widget(Block::default().style(theme::text()), area);
+
         if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
             frame.render_widget(
                 Paragraph::new(format!(
@@ -250,14 +255,17 @@ impl App {
             .rendered_source
             .as_ref()
             .is_some_and(|source| *source != self.editor.source());
-        let title = if preview_is_stale {
-            "texo · Preview out of date — render again"
+        let state = if preview_is_stale {
+            "Preview out of date"
         } else {
-            "texo · LaTeX workspace"
+            "LaTeX workspace"
         };
+        let heading = Line::from(vec![
+            Span::styled("texo", Style::default().fg(theme::ACCENT).bold()),
+            Span::styled(format!("    /    {state}"), theme::muted()),
+        ]);
         frame.render_widget(
-            Paragraph::new(title)
-                .block(Block::default().padding(ratatui::widgets::Padding::vertical(1))),
+            Paragraph::new(heading).block(Block::default().padding(Padding::vertical(1))),
             layout.heading,
         );
 
@@ -266,34 +274,47 @@ impl App {
         } else {
             "Render  Ctrl+R"
         };
-        let color = if self.job.is_some() {
-            Color::DarkGray
+        let background = if self.job.is_some() {
+            theme::ELEVATED
         } else if self.focus == Focus::Render {
-            Color::Yellow
+            theme::TEXT
         } else {
-            Color::Cyan
+            theme::BUTTON
         };
         let button = Paragraph::new(label)
             .centered()
-            .block(Block::bordered())
-            .style(Style::default().fg(color));
+            .block(Block::default().padding(Padding::vertical(1)))
+            .style(Style::default().fg(theme::BACKGROUND).bg(background).bold());
         frame.render_widget(button, layout.render_button);
     }
 
     fn draw_footer(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
         if let Some(diagnostics) = &self.diagnostics {
             let log = Paragraph::new(diagnostics.as_str())
-                .block(Block::bordered().title(" Diagnostics · PgUp/PgDn scroll · Esc close "))
-                .style(Style::default().fg(Color::LightRed))
+                .block(
+                    Block::default()
+                        .title(" Build diagnostics · PgUp/PgDn scroll · Esc close ")
+                        .padding(Padding::horizontal(theme::PANEL_PADDING)),
+                )
+                .style(Style::default().fg(theme::ERROR).bg(theme::ELEVATED))
                 .wrap(Wrap { trim: false })
                 .scroll((self.diagnostic_scroll, 0));
             frame.render_widget(log, layout.diagnostics);
         }
 
-        let footer = format!(
-            "{}\nCtrl+S save · Ctrl+Z/Y undo/redo · F6 focus · Alt+←/→ page · Ctrl+Q quit",
-            self.status
-        );
+        let footer = vec![
+            Line::styled(self.status.as_str(), theme::muted()),
+            Line::from(vec![
+                Span::styled("Ctrl+S", Style::default().fg(theme::ACCENT)),
+                Span::styled(" save     ", theme::muted()),
+                Span::styled("Ctrl+R", Style::default().fg(theme::ACCENT)),
+                Span::styled(" render     ", theme::muted()),
+                Span::styled("F6", Style::default().fg(theme::ACCENT)),
+                Span::styled(" focus     ", theme::muted()),
+                Span::styled("Ctrl+Q", Style::default().fg(theme::ACCENT)),
+                Span::styled(" quit", theme::muted()),
+            ]),
+        ];
         frame.render_widget(Paragraph::new(footer), layout.footer);
     }
 }
@@ -314,9 +335,12 @@ impl WorkspaceLayout {
         } else {
             0
         };
-        let [toolbar, body, diagnostics, footer] = Layout::vertical([
+        let area = area.inner(Margin::new(WORKSPACE_MARGIN, WORKSPACE_MARGIN));
+        let [toolbar, _, body, _, diagnostics, footer] = Layout::vertical([
             Constraint::Length(TOOLBAR_HEIGHT),
+            Constraint::Length(1),
             Constraint::Min(1),
+            Constraint::Length(1),
             Constraint::Length(diagnostics_height),
             Constraint::Length(FOOTER_HEIGHT),
         ])
@@ -324,8 +348,12 @@ impl WorkspaceLayout {
         let [heading, render_button] =
             Layout::horizontal([Constraint::Min(1), Constraint::Length(RENDER_BUTTON_WIDTH)])
                 .areas(toolbar);
-        let [editor, preview] =
-            Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(body);
+        let [editor, _, preview] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(PANEL_GAP),
+            Constraint::Fill(1),
+        ])
+        .areas(body);
 
         Self {
             heading,

@@ -3,11 +3,13 @@ use std::{fs, io::ErrorKind, path::PathBuf};
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
-    layout::Rect,
-    style::{Color, Style},
-    widgets::Block,
+    layout::{Constraint, Layout, Rect},
+    style::Style,
+    text::{Line, Span},
+    widgets::{Block, Padding, Paragraph},
 };
 use ratatui_textarea::TextArea;
+use texo::theme;
 
 const TAB_WIDTH: u8 = 4;
 const STARTER_DOCUMENT: &str =
@@ -36,7 +38,11 @@ impl Editor {
         // Keep the final empty line so opening and saving preserves a trailing newline.
         let mut text = TextArea::new(source.split('\n').map(String::from).collect());
         text.set_tab_length(TAB_WIDTH);
-        text.set_line_number_style(Style::default().fg(Color::DarkGray));
+        text.set_style(Style::default().fg(theme::TEXT).bg(theme::EDITOR));
+        text.set_line_number_style(theme::muted().bg(theme::EDITOR));
+        text.set_cursor_line_style(Style::default().bg(theme::ELEVATED));
+        text.set_cursor_style(Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT));
+        text.set_selection_style(Style::default().bg(theme::ELEVATED));
 
         Ok(Self {
             path,
@@ -71,24 +77,47 @@ impl Editor {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
-        let modified = if self.is_modified() { " *" } else { "" };
-        let border_color = if focused {
-            Color::Cyan
+        let modified = if self.is_modified() {
+            "  ·  unsaved"
         } else {
-            Color::DarkGray
+            ""
         };
         let filename = self
             .path
             .file_name()
             .unwrap_or(self.path.as_os_str())
             .to_string_lossy();
-        let title = format!(" {filename}{modified} ");
-        self.text.set_block(
-            Block::bordered()
-                .title(title)
-                .border_style(Style::default().fg(border_color)),
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::EDITOR)),
+            area,
         );
-        frame.render_widget(&self.text, area);
+        let [header, content] = Layout::vertical([
+            Constraint::Length(theme::PANEL_HEADER_HEIGHT),
+            Constraint::Min(0),
+        ])
+        .areas(area);
+        let heading_color = if focused { theme::ACCENT } else { theme::MUTED };
+        let heading = Line::from(vec![
+            Span::styled("SOURCE", Style::default().fg(heading_color).bold()),
+            Span::styled(format!("   {filename}{modified}"), theme::muted()),
+        ]);
+        frame.render_widget(
+            Paragraph::new(heading).block(Block::default().padding(Padding::new(
+                theme::PANEL_PADDING,
+                theme::PANEL_PADDING,
+                1,
+                0,
+            ))),
+            header,
+        );
+
+        self.text.set_block(Block::default().padding(Padding::new(
+            theme::PANEL_PADDING,
+            theme::PANEL_PADDING,
+            0,
+            1,
+        )));
+        frame.render_widget(&self.text, content);
     }
 }
 

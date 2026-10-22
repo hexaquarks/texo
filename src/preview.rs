@@ -1,8 +1,10 @@
 use anyhow::Result;
 use ratatui::{
     Frame,
-    layout::Rect,
-    widgets::{Block, Paragraph, Wrap},
+    layout::{Constraint, Layout, Margin, Rect},
+    style::Style,
+    text::{Line, Span},
+    widgets::{Block, Padding, Paragraph, Wrap},
 };
 use ratatui_image::{
     StatefulImage,
@@ -11,6 +13,9 @@ use ratatui_image::{
 };
 
 use crate::pdf::PdfPages;
+use crate::theme;
+
+const EMPTY_STATE_HEIGHT: u16 = 7;
 
 pub struct Preview {
     picker: Option<Picker>,
@@ -25,7 +30,7 @@ impl Default for Preview {
         Self {
             picker: None,
             notice: String::from(
-                "PDF preview needs a terminal with Kitty, iTerm2, or Sixel graphics support.",
+                "Preview needs a graphics-capable terminal.\n\nLaunch texo in its dedicated window to see your PDF here.",
             ),
             pages: None,
             page_index: 0,
@@ -40,7 +45,9 @@ impl Preview {
         match Picker::from_query_stdio() {
             Ok(picker) if picker.protocol_type() != ProtocolType::Halfblocks => Self {
                 picker: Some(picker),
-                notice: String::from("Render your TeX document to preview it here."),
+                notice: String::from(
+                    "Your PDF will appear here.\n\nRender your document to update the preview.\n\nCtrl+R  to render",
+                ),
                 ..Self::default()
             },
             _ => Self::default(),
@@ -88,17 +95,37 @@ impl Preview {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::PREVIEW)),
+            area,
+        );
+        let [header, body] = Layout::vertical([
+            Constraint::Length(theme::PANEL_HEADER_HEIGHT),
+            Constraint::Min(0),
+        ])
+        .areas(area);
         let title = match &self.pages {
             Some(pages) => format!(
-                " PDF · page {}/{} · Alt+Left/Right ",
+                "   Page {} of {}  ·  Alt+←/→",
                 self.page_index + 1,
                 pages.page_count()
             ),
-            None => String::from(" PDF preview "),
+            None => String::from("   PDF preview"),
         };
-        let border = Block::bordered().title(title);
-        let content = border.inner(area);
-        frame.render_widget(border, area);
+        let heading = Line::from(vec![
+            Span::styled("PREVIEW", theme::muted().bold()),
+            Span::styled(title, theme::muted()),
+        ]);
+        frame.render_widget(
+            Paragraph::new(heading).block(Block::default().padding(Padding::new(
+                theme::PANEL_PADDING,
+                theme::PANEL_PADDING,
+                1,
+                0,
+            ))),
+            header,
+        );
+        let content = body.inner(Margin::new(theme::PANEL_PADDING, 1));
 
         match &mut self.image {
             Some(image) => {
@@ -108,10 +135,21 @@ impl Preview {
                     self.image = None;
                 }
             }
-            None => frame.render_widget(
-                Paragraph::new(self.notice.as_str()).wrap(Wrap { trim: false }),
-                content,
-            ),
+            None => {
+                let [_, message, _] = Layout::vertical([
+                    Constraint::Fill(1),
+                    Constraint::Length(EMPTY_STATE_HEIGHT),
+                    Constraint::Fill(1),
+                ])
+                .areas(content);
+                frame.render_widget(
+                    Paragraph::new(self.notice.as_str())
+                        .centered()
+                        .style(theme::muted())
+                        .wrap(Wrap { trim: false }),
+                    message,
+                );
+            }
         }
     }
 }
