@@ -22,7 +22,7 @@ pub enum Action {
     Build,
     Export,
     Save,
-    ToggleExplorer,
+    ToggleProjects,
     PreviousPage,
     NextPage,
     ScrollUp,
@@ -38,8 +38,8 @@ const ACTIONS: [(Action, &str); 12] = [
     (Action::Export, "Export PDF                        Ctrl+E"),
     (Action::Save, "Save TeX                          Ctrl+S"),
     (
-        Action::ToggleExplorer,
-        "Show / hide files                 Ctrl+T",
+        Action::ToggleProjects,
+        "Show / hide projects              Ctrl+T",
     ),
     (
         Action::PreviousPage,

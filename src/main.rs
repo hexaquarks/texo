@@ -3,7 +3,7 @@ mod app;
 mod assistant;
 mod assistant_job;
 mod editor;
-mod explorer;
+mod projects;
 mod proposal;
 mod render_job;
 mod terminal;
