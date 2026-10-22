@@ -27,6 +27,7 @@ const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MULTIPANE_WIDTH: u16 = 100;
 const MULTIPANE_HEIGHT: u16 = 20;
 const SIDEBAR_WIDTH: u16 = 24;
+const PANE_GAP: u16 = 1;
 const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 55;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
@@ -249,7 +250,9 @@ impl App {
                         if self.projects.select_at(layout.projects, mouse.row) {
                             self.activate_projects();
                         }
-                    } else if Assistant::send_button(layout.assistant).contains(position) {
+                    } else if Assistant::send_button(pane_content(layout.assistant))
+                        .contains(position)
+                    {
                         self.focus = Focus::Assistant;
                         if self.assistant.is_running() {
                             self.assistant.cancel();
@@ -258,13 +261,17 @@ impl App {
                         }
                     } else if layout.assistant.contains(position) {
                         self.focus = Focus::Assistant;
-                        self.assistant
-                            .click(layout.assistant, mouse.column, mouse.row);
+                        self.assistant.click(
+                            pane_content(layout.assistant),
+                            mouse.column,
+                            mouse.row,
+                        );
                     } else if layout.preview.contains(position) {
                         self.focus = Focus::Preview;
                     } else if layout.editor.contains(position) {
                         self.focus = Focus::Editor;
-                        self.editor.click(layout.editor, mouse.column, mouse.row);
+                        self.editor
+                            .click(pane_content(layout.editor), mouse.column, mouse.row);
                     }
                 } else if layout.editor.contains(position) {
                     self.editor.text.input(mouse);
@@ -649,11 +656,14 @@ impl App {
                 self.focus == Focus::Projects,
             );
         }
-        self.draw_editor(frame, layout.editor);
+        let editor = draw_pane_border(frame, layout.editor, self.focus == Focus::Editor);
+        let assistant = draw_pane_border(frame, layout.assistant, self.focus == Focus::Assistant);
+        let preview = draw_pane_border(frame, layout.preview, self.focus == Focus::Preview);
+
+        self.draw_editor(frame, editor);
         self.assistant
-            .draw(frame, layout.assistant, self.focus == Focus::Assistant);
-        self.draw_preview(frame, layout.preview);
-        layout.draw_separators(frame, self.focus);
+            .draw(frame, assistant, self.focus == Focus::Assistant);
+        self.draw_preview(frame, preview);
         self.draw_diagnostics(frame, &layout);
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
@@ -702,9 +712,8 @@ impl App {
         } else {
             self.preview.draw(frame, area);
         }
-        if !area.is_empty() {
+        if !area.is_empty() && self.job.is_none() {
             let state = match &self.rendered_source {
-                _ if self.job.is_some() => "Rendering PDF…",
                 Some(source) if *source != self.editor.source() => "PDF out of date",
                 Some(_) => "PDF",
                 None => "Preview",
@@ -741,6 +750,25 @@ impl App {
     }
 }
 
+fn pane_content(area: Rect) -> Rect {
+    Block::bordered().inner(area)
+}
+
+fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
+    let color = if focused {
+        theme::ACCENT
+    } else {
+        theme::DIVIDER
+    };
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(color)),
+        area,
+    );
+    pane_content(area)
+}
+
 #[derive(Default)]
 struct WorkspaceLayout {
     projects: Rect,
@@ -748,8 +776,6 @@ struct WorkspaceLayout {
     assistant: Rect,
     preview: Rect,
     diagnostics: Rect,
-    vertical_separator: Rect,
-    horizontal_separator: Rect,
 }
 
 impl WorkspaceLayout {
@@ -776,71 +802,23 @@ impl WorkspaceLayout {
             return layout;
         }
         let sidebar_width = if show_projects { SIDEBAR_WIDTH } else { 0 };
-        let [projects, center, vertical_separator, preview] = Layout::horizontal([
+        let [projects, center, preview] = Layout::horizontal([
             Constraint::Length(sidebar_width),
             Constraint::Min(1),
-            Constraint::Length(1),
             Constraint::Percentage(PREVIEW_PERCENT),
         ])
+        .spacing(PANE_GAP)
         .areas(body);
-        let [editor, horizontal_separator, assistant] = Layout::vertical([
-            Constraint::Percentage(EDITOR_PERCENT),
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
-        .areas(center);
+        let [editor, assistant] =
+            Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
+                .spacing(PANE_GAP)
+                .areas(center);
         Self {
             projects,
             editor,
             assistant,
             preview,
             diagnostics,
-            vertical_separator,
-            horizontal_separator,
-        }
-    }
-
-    fn draw_separators(&self, frame: &mut Frame, focus: Focus) {
-        for (pane, pane_focus) in [
-            (self.editor, Focus::Editor),
-            (self.assistant, Focus::Assistant),
-        ] {
-            let segment = Rect::new(
-                self.vertical_separator.x,
-                pane.y,
-                self.vertical_separator.width,
-                pane.height,
-            );
-            let active = focus == pane_focus || focus == Focus::Preview;
-            let color = if active {
-                theme::ACCENT
-            } else {
-                theme::DIVIDER
-            };
-            frame.render_widget(
-                Block::default()
-                    .borders(Borders::LEFT)
-                    .border_style(Style::default().fg(color)),
-                segment,
-            );
-        }
-        let active = matches!(focus, Focus::Editor | Focus::Assistant);
-        let color = if active {
-            theme::ACCENT
-        } else {
-            theme::DIVIDER
-        };
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(color)),
-            self.horizontal_separator,
-        );
-        if !self.vertical_separator.is_empty() && !self.horizontal_separator.is_empty() {
-            frame.render_widget(
-                Paragraph::new("┤").style(Style::default().fg(theme::DIVIDER)),
-                Rect::new(self.vertical_separator.x, self.horizontal_separator.y, 1, 1),
-            );
         }
     }
 }
@@ -1105,22 +1083,17 @@ mod tests {
     }
 
     #[test]
-    fn pane_selection_highlights_titles_and_shared_separators() -> anyhow::Result<()> {
+    fn pane_selection_highlights_only_the_selected_border() -> anyhow::Result<()> {
         let (_directory, mut app) = application()?;
         let area = Rect::new(0, 0, 160, 50);
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
         let layout = WorkspaceLayout::new(area, false, true, app.focus);
         let panes = [layout.editor, layout.assistant, layout.preview];
-        let titles = [
-            (layout.editor.x + theme::PANEL_PADDING, layout.editor.y),
-            (
-                layout.assistant.x + theme::PANEL_PADDING,
-                layout.assistant.y + 1,
-            ),
-            (layout.preview.x + theme::PANEL_PADDING, layout.preview.y),
-        ];
+        assert_eq!(layout.preview.x - layout.editor.right(), PANE_GAP);
+        assert_eq!(layout.assistant.y - layout.editor.bottom(), PANE_GAP);
 
         for (selected, pane) in panes.iter().enumerate() {
+            // Border clicks select the pane without activating its content controls.
             app.handle_event(
                 Event::Mouse(event::MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),
@@ -1132,32 +1105,41 @@ mod tests {
             );
             terminal.draw(|frame| app.draw(frame))?;
             let buffer = terminal.backend().buffer();
-            for (index, position) in titles.iter().enumerate() {
-                let color = if index == selected {
-                    theme::ACCENT
-                } else {
-                    theme::MUTED
-                };
-                assert_eq!(buffer[*position].fg, color);
+            for row in area.top()..area.bottom() {
+                assert_eq!(buffer[(layout.editor.right(), row)].symbol(), " ");
             }
-            for (index, pane) in panes[..2].iter().enumerate() {
-                let color = if selected == index || selected == 2 {
+            for column in layout.editor.left()..layout.editor.right() {
+                assert_eq!(buffer[(column, layout.editor.bottom())].symbol(), " ");
+            }
+
+            for (index, pane) in panes.iter().enumerate() {
+                let color = if index == selected {
                     theme::ACCENT
                 } else {
                     theme::DIVIDER
                 };
-                assert_eq!(buffer[(layout.vertical_separator.x, pane.y)].fg, color);
+                for position in [
+                    (pane.x, pane.y),
+                    (pane.right() - 1, pane.y),
+                    (pane.x, pane.bottom() - 1),
+                    (pane.right() - 1, pane.bottom() - 1),
+                ] {
+                    assert_eq!(buffer[position].fg, color);
+                }
             }
-            assert_eq!(
-                buffer[(layout.preview.right() - 1, area.bottom() - 1)].symbol(),
-                " "
-            );
         }
+
         app.focus = Focus::Editor;
         app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
         terminal.draw(|frame| app.draw(frame))?;
-        assert_eq!(terminal.backend().buffer()[titles[1]].fg, theme::ACCENT);
-        assert_eq!(terminal.backend().buffer()[titles[0]].fg, theme::MUTED);
+        assert_eq!(
+            terminal.backend().buffer()[(layout.assistant.x, layout.assistant.y)].fg,
+            theme::ACCENT
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(layout.editor.x, layout.editor.y)].fg,
+            theme::DIVIDER
+        );
         Ok(())
     }
 
