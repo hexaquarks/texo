@@ -150,10 +150,11 @@ impl Explorer {
         let path = entry.path.clone();
         if entry.directory {
             if !self.expanded.remove(&path) {
-                self.expanded.insert(path);
+                self.expanded.insert(path.clone());
             }
             self.refresh()?;
-            return Ok(None);
+            // The workspace root is navigation only; other folders can open a project.
+            return Ok((path != self.root).then_some(path));
         }
         Ok(Some(path))
     }
@@ -278,7 +279,7 @@ mod tests {
         );
         assert!(!explorer.entries.iter().any(|entry| entry.path == nested));
         explorer.select_path(&root.join("sections"));
-        assert!(explorer.activate()?.is_none());
+        assert_eq!(explorer.activate()?, Some(root.join("sections")));
         explorer.select_path(&nested);
         assert_eq!(explorer.activate()?, Some(nested));
         Ok(())

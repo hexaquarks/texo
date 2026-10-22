@@ -82,6 +82,7 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
 
         if event::poll(EVENT_POLL_INTERVAL)? {
             let area = terminal.get_frame().area();
+            let previous_document = app.editor.path.clone();
             let explorer_was_visible = app.explorer_visible;
             let overlay_was_open = app.overlay_open();
             if app.handle_event(event::read()?, area) {
@@ -89,6 +90,7 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
             }
             if explorer_was_visible != app.explorer_visible
                 || overlay_was_open != app.overlay_open()
+                || previous_document != app.editor.path
             {
                 // Repaint cells formerly occupied by the terminal's PDF image placement.
                 terminal.clear()?;
@@ -620,6 +622,11 @@ impl App {
 
     fn activate_explorer(&mut self) {
         match self.explorer.activate() {
+            Ok(Some(path)) if path.is_dir() => match crate::workspace::project_document(&path) {
+                Ok(Some(document)) => self.open_document(document),
+                Ok(None) => self.status = format!("No TeX document found in {}.", path.display()),
+                Err(error) => self.report_error(error),
+            },
             Ok(Some(path)) => self.open_document(path),
             Ok(None) => {}
             Err(error) => self.report_error(error),
@@ -641,11 +648,6 @@ impl App {
             self.status = "Save your changes with Ctrl+S before opening another document.".into();
             return;
         }
-        if self.job.is_some() {
-            self.status =
-                "Wait for the current render to finish before switching documents.".into();
-            return;
-        }
         if path.extension().is_none_or(|extension| extension != "tex") {
             self.status =
                 "Select a .tex document to edit. Other files are shown for context.".into();
@@ -653,6 +655,8 @@ impl App {
         }
         match Editor::open(path) {
             Ok(editor) => {
+                // Drop joins the cancelled worker before a new document can receive a result.
+                self.job = None;
                 self.assistant.reset();
                 self.proposal_review = None;
                 self.editor = editor;
@@ -1022,6 +1026,90 @@ mod tests {
         assert_eq!(app.editor.path, second);
         assert_eq!(app.editor.source(), "Second document");
         assert!(app.rendered_source.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn project_selection_preserves_unsaved_and_missing_documents() -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        let project = directory.path().join("Backend");
+        std::fs::create_dir(&project)?;
+        std::fs::write(project.join("main.tex"), "Backend resume")?;
+        app.refresh_explorer();
+        app.editor.text.insert_str("Unsaved ");
+        let original_path = app.editor.path.clone();
+        let original_source = app.editor.source();
+        app.explorer.select_path(&project);
+        app.activate_explorer();
+        assert_eq!(app.editor.path, original_path);
+        assert_eq!(app.editor.source(), original_source);
+        assert!(app.status.contains("Save your changes"));
+
+        let empty = directory.path().join("Empty");
+        std::fs::create_dir(&empty)?;
+        app.refresh_explorer();
+        app.explorer.select_path(&empty);
+        app.activate_explorer();
+        assert_eq!(app.editor.path, original_path);
+        assert!(app.status.contains("No TeX document"));
+        assert!(!empty.join("main.tex").exists());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires Tectonic and Poppler"]
+    fn project_selection_replaces_editor_and_preview_during_a_build() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let first_project = directory.path().join("AI engineering");
+        let second_project = directory.path().join("Backend");
+        std::fs::create_dir(&first_project)?;
+        std::fs::create_dir(&second_project)?;
+        let first = first_project.join("main.tex");
+        let second = second_project.join("main.tex");
+        std::fs::write(
+            &first,
+            "\\documentclass{article}\n\\begin{document}First resume\\end{document}\n",
+        )?;
+        let second_source = include_str!("../tests/fixtures/two-pages.tex");
+        std::fs::write(&second, second_source)?;
+        let editor = Editor::open(first)?;
+        let mut app =
+            App::with_workspace(editor, Preview::default(), directory.path().to_path_buf())?;
+        app.start_render();
+        finish_test_render(&mut app)?;
+        assert_eq!(app.preview.page_status().as_deref(), Some("1 / 1"));
+
+        app.assistant.input.insert_str("Old project question");
+        app.start_render();
+        assert!(app.job.is_some());
+        app.explorer.select_path(&second_project);
+        app.activate_explorer();
+        assert_eq!(app.editor.path, second);
+        assert_eq!(app.editor.source(), second_source);
+        assert!(app.preview.page_status().is_none());
+        assert!(app.rendered_pdf.is_none());
+        assert_eq!(app.assistant.input.lines(), &[""]);
+        assert!(app.job.is_some());
+        finish_test_render(&mut app)?;
+        assert_eq!(app.preview.page_status().as_deref(), Some("1 / 2"));
+        assert_eq!(app.rendered_source.as_deref(), Some(second_source));
+        assert_eq!(app.rendered_pdf, Some(second.with_extension("pdf")));
+        Ok(())
+    }
+
+    fn finish_test_render(app: &mut App) -> anyhow::Result<()> {
+        const BUILD_TIMEOUT: Duration = Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        while app.job.is_some() {
+            anyhow::ensure!(started.elapsed() < BUILD_TIMEOUT, "Build did not finish");
+            app.receive_render();
+            std::thread::sleep(EVENT_POLL_INTERVAL);
+        }
+        anyhow::ensure!(
+            app.diagnostics.is_none(),
+            "Build failed: {:?}",
+            app.diagnostics
+        );
         Ok(())
     }
 
