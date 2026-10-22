@@ -20,27 +20,30 @@ pub struct Preview {
     image: Option<StatefulProtocol>,
 }
 
-impl Preview {
-    /// Query graphics support after entering the alternate screen, before reading input events.
-    pub fn detect() -> Self {
-        let (picker, notice) = match Picker::from_query_stdio() {
-            Ok(picker) if picker.protocol_type() != ProtocolType::Halfblocks => (
-                Some(picker),
-                String::from("Render your TeX document to preview it here."),
-            ),
-            _ => (
-                None,
-                String::from(
-                    "PDF preview needs a terminal with Kitty, iTerm2, or Sixel graphics support.",
-                ),
-            ),
-        };
+impl Default for Preview {
+    fn default() -> Self {
         Self {
-            picker,
-            notice,
+            picker: None,
+            notice: String::from(
+                "PDF preview needs a terminal with Kitty, iTerm2, or Sixel graphics support.",
+            ),
             pages: None,
             page_index: 0,
             image: None,
+        }
+    }
+}
+
+impl Preview {
+    /// Query graphics support after entering the alternate screen, before reading input events.
+    pub fn detect() -> Self {
+        match Picker::from_query_stdio() {
+            Ok(picker) if picker.protocol_type() != ProtocolType::Halfblocks => Self {
+                picker: Some(picker),
+                notice: String::from("Render your TeX document to preview it here."),
+                ..Self::default()
+            },
+            _ => Self::default(),
         }
     }
 
@@ -98,7 +101,13 @@ impl Preview {
         frame.render_widget(border, area);
 
         match &mut self.image {
-            Some(image) => frame.render_stateful_widget(StatefulImage::default(), content, image),
+            Some(image) => {
+                frame.render_stateful_widget(StatefulImage::default(), content, image);
+                if let Some(Err(error)) = image.last_encoding_result() {
+                    self.notice = format!("Could not display the preview: {error}");
+                    self.image = None;
+                }
+            }
             None => frame.render_widget(
                 Paragraph::new(self.notice.as_str()).wrap(Wrap { trim: false }),
                 content,
