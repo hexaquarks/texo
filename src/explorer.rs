@@ -7,16 +7,15 @@ use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState},
 };
 use texo::theme;
 
 const TREE_INDENT_WIDTH: usize = 2;
-const EXPLORER_HEADER_HEIGHT: u16 = 2;
-const WORKSPACE_HEADER_HEIGHT: u16 = 1;
+const TREE_ROW_HEIGHT: u16 = 2;
 
 struct Entry {
     path: PathBuf,
@@ -39,6 +38,11 @@ impl Explorer {
             entries: Vec::new(),
             state: ListState::default(),
         };
+        for ancestor in active_file.ancestors().skip(1) {
+            if ancestor.starts_with(&explorer.root) {
+                explorer.expanded.insert(ancestor.to_path_buf());
+            }
+        }
         explorer.refresh()?;
         explorer.select_path(active_file);
         Ok(explorer)
@@ -54,8 +58,14 @@ impl Explorer {
 
     pub fn refresh(&mut self) -> Result<()> {
         let selected_path = self.selected_path();
-        let mut entries = Vec::new();
-        self.collect_children(&self.root, 0, &mut entries)?;
+        let mut entries = vec![Entry {
+            path: self.root.clone(),
+            directory: true,
+            depth: 0,
+        }];
+        if self.expanded.contains(&self.root) {
+            self.collect_children(&self.root, 1, &mut entries)?;
+        }
         self.entries = entries;
         if let Some(path) = selected_path {
             self.select_path(&path);
@@ -168,7 +178,7 @@ impl Explorer {
         if self.expanded.remove(&path) {
             self.refresh()?;
         } else if let Some(parent) = path.parent()
-            && parent != self.root
+            && parent.starts_with(&self.root)
         {
             self.select_path(parent);
         }
@@ -176,11 +186,10 @@ impl Explorer {
     }
 
     pub fn select_at(&mut self, area: Rect, row: u16) -> bool {
-        let header_height = EXPLORER_HEADER_HEIGHT + WORKSPACE_HEADER_HEIGHT;
-        if row < area.y + header_height {
+        if row < area.y || row >= area.bottom() {
             return false;
         }
-        let index = usize::from(row - area.y - header_height) + self.state.offset();
+        let index = usize::from((row - area.y) / TREE_ROW_HEIGHT) + self.state.offset();
         if index < self.entries.len() {
             self.state.select(Some(index));
             return true;
@@ -188,46 +197,20 @@ impl Explorer {
         false
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, active_file: &Path, focused: bool) {
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, active_file: &Path, _focused: bool) {
         let panel = Block::default()
             .borders(Borders::RIGHT)
             .border_style(Style::default().fg(theme::DIVIDER))
             .style(Style::default().bg(theme::SIDEBAR));
         let inner = panel.inner(area);
         frame.render_widget(panel, area);
-        let [header, workspace, tree] = Layout::vertical([
-            Constraint::Length(EXPLORER_HEADER_HEIGHT),
-            Constraint::Length(WORKSPACE_HEADER_HEIGHT),
-            Constraint::Min(0),
-        ])
-        .areas(inner);
-        let heading_style = if focused {
-            Style::default().fg(theme::TEXT)
-        } else {
-            theme::muted()
-        };
-        frame.render_widget(
-            Paragraph::new(" EXPLORER  ·  F5 refresh").style(heading_style),
-            header,
-        );
-        frame.render_widget(
-            Paragraph::new(format!("⌄ {}", self.name().to_uppercase()))
-                .style(theme::muted().bold()),
-            workspace,
-        );
-
         let rows: Vec<ListItem> = self
             .entries
             .iter()
             .map(|entry| self.entry_item(entry, active_file))
             .collect();
-        let highlight = if focused {
-            theme::SELECTION
-        } else {
-            theme::ELEVATED
-        };
-        let list = List::new(rows).highlight_style(Style::default().bg(highlight));
-        frame.render_stateful_widget(list, tree, &mut self.state);
+        let list = List::new(rows).highlight_style(Style::default().bg(theme::SELECTION));
+        frame.render_stateful_widget(list, inner, &mut self.state);
     }
 
     fn entry_item(&self, entry: &Entry, active_file: &Path) -> ListItem<'static> {
@@ -239,26 +222,30 @@ impl Explorer {
         } else {
             "› "
         };
-        let filename = entry.path.file_name().unwrap_or_default().to_string_lossy();
-        let marker = match entry
-            .path
-            .extension()
-            .and_then(|extension| extension.to_str())
-        {
-            Some("tex") => "TᴇX ",
-            Some("pdf") => "PDF ",
-            _ => "    ",
+        let filename = if entry.path == self.root && self.name() == "resumes" {
+            "My resumes".to_owned()
+        } else {
+            entry
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
         };
+        let marker = if entry.directory { "▱ " } else { "▤ " };
         let mut style = Style::default().fg(theme::TEXT);
         if entry.path == active_file {
-            style = style.bg(theme::ELEVATED);
+            style = style.bg(theme::SELECTION);
         }
-        ListItem::new(Line::from(vec![
-            Span::raw(" ".repeat(entry.depth * TREE_INDENT_WIDTH)),
-            Span::styled(icon, theme::muted()),
-            Span::styled(marker, Style::default().fg(theme::FILE_ICON)),
-            Span::raw(filename.into_owned()),
-        ]))
+        ListItem::new(vec![
+            Line::from(vec![
+                Span::raw(" ".repeat(entry.depth * TREE_INDENT_WIDTH)),
+                Span::styled(icon, theme::muted()),
+                Span::styled(marker, Style::default().fg(theme::FILE_ICON)),
+                Span::raw(filename),
+            ]),
+            Line::raw(""),
+        ])
         .style(style)
     }
 }
@@ -294,6 +281,43 @@ mod tests {
         assert!(explorer.activate()?.is_none());
         explorer.select_path(&nested);
         assert_eq!(explorer.activate()?, Some(nested));
+        Ok(())
+    }
+
+    #[test]
+    fn reveals_active_document_and_collapses_workspace_root() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().to_path_buf();
+        fs::create_dir_all(root.join("AI engineering/sections"))?;
+        let document = root.join("AI engineering/sections/main.tex");
+        fs::write(&document, "Resume")?;
+        let mut explorer = Explorer::new(root.clone(), &document)?;
+        assert_eq!(explorer.selected_path(), Some(document.clone()));
+
+        explorer.select_path(&root);
+        explorer.activate()?;
+        assert_eq!(explorer.entries.len(), 1);
+        assert_eq!(explorer.selected_path(), Some(root));
+        explorer.activate()?;
+        assert!(explorer.entries.iter().any(|entry| entry.path == document));
+        Ok(())
+    }
+
+    #[test]
+    fn mouse_selection_accounts_for_row_spacing_and_scrolling() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let document = directory.path().join("resume.tex");
+        fs::write(&document, "Resume")?;
+        let mut explorer = Explorer::new(directory.path().to_path_buf(), &document)?;
+        let area = Rect::new(0, 3, 30, 10);
+
+        assert!(!explorer.select_at(area, 2));
+        assert!(explorer.select_at(area, 6));
+        assert_eq!(explorer.selected_path(), Some(document.clone()));
+        *explorer.state.offset_mut() = 1;
+        assert!(explorer.select_at(area, 3));
+        assert_eq!(explorer.selected_path(), Some(document));
+        assert!(!explorer.select_at(area, 13));
         Ok(())
     }
 

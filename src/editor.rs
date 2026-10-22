@@ -1,14 +1,18 @@
-use std::{fs, io::ErrorKind, path::PathBuf};
+use std::{fs, io::ErrorKind, path::PathBuf, sync::OnceLock};
 
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
-    style::Style,
-    text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph},
+    layout::Rect,
+    style::{Color, Style},
+    widgets::{Block, Padding},
 };
 use ratatui_textarea::TextArea;
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{StyleModifier, Theme, ThemeItem},
+    parsing::SyntaxSet,
+};
 use texo::theme;
 
 const TAB_WIDTH: u8 = 4;
@@ -19,6 +23,7 @@ pub struct Editor {
     pub path: PathBuf,
     pub text: TextArea<'static>,
     saved_source: Option<String>,
+    highlighting: Highlighting,
 }
 
 impl Editor {
@@ -40,14 +45,15 @@ impl Editor {
         text.set_tab_length(TAB_WIDTH);
         text.set_style(Style::default().fg(theme::TEXT).bg(theme::EDITOR));
         text.set_line_number_style(theme::muted().bg(theme::EDITOR));
-        text.set_cursor_line_style(Style::default().bg(theme::ELEVATED));
+        text.set_cursor_line_style(Style::default());
         text.set_cursor_style(Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT));
-        text.set_selection_style(Style::default().bg(theme::ELEVATED));
+        text.set_selection_style(Style::default().bg(theme::SELECTION));
 
         Ok(Self {
             path,
             text,
             saved_source,
+            highlighting: Highlighting::new()?,
         })
     }
 
@@ -77,56 +83,185 @@ impl Editor {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
-        let modified = if self.is_modified() {
-            "  ·  unsaved"
-        } else {
-            ""
-        };
-        let filename = self
-            .path
-            .file_name()
-            .unwrap_or(self.path.as_os_str())
-            .to_string_lossy();
         let panel = Block::default()
-            .borders(Borders::RIGHT)
-            .border_style(Style::default().fg(theme::DIVIDER))
-            .style(Style::default().bg(theme::EDITOR));
-        let area_inner = panel.inner(area);
-        frame.render_widget(panel, area);
-        let [header, content] = Layout::vertical([
-            Constraint::Length(theme::PANEL_HEADER_HEIGHT),
-            Constraint::Min(0),
-        ])
-        .areas(area_inner);
-        let heading_color = if focused { theme::ACCENT } else { theme::MUTED };
-        let heading = vec![
-            Line::from(vec![
-                Span::styled(
-                    " TᴇX ",
-                    Style::default().fg(theme::FILE_ICON).bg(theme::ELEVATED),
-                ),
-                Span::styled(
-                    format!("{filename}{modified}  "),
-                    Style::default().fg(heading_color).bg(theme::ELEVATED),
-                ),
-            ]),
-            Line::styled(format!("  {filename}"), theme::muted()),
-        ];
-        frame.render_widget(Paragraph::new(heading), header);
+            .style(Style::default().bg(theme::EDITOR))
+            .padding(Padding::new(
+                theme::PANEL_PADDING,
+                theme::PANEL_PADDING,
+                0,
+                0,
+            ));
+        let content = panel.inner(area);
+        self.text.set_block(panel);
+        self.text.set_cursor_style(if focused {
+            Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT)
+        } else {
+            Style::default()
+        });
+        frame.render_widget(&self.text, area);
 
-        self.text.set_block(Block::default().padding(Padding::new(
-            theme::PANEL_PADDING,
-            theme::PANEL_PADDING,
-            0,
-            1,
-        )));
-        frame.render_widget(&self.text, content);
+        self.highlighting.update(self.text.lines());
+        self.draw_highlighting(frame, content, focused);
+    }
+
+    fn draw_highlighting(&self, frame: &mut Frame, content: Rect, focused: bool) {
+        let (scroll_row, scroll_column) = self.text.scroll_offset();
+        let number_width = self.text.line_number_width();
+        let cursor = self.text.cursor();
+
+        // Let the editor own glyphs, scrolling, tabs, selection, and cursor backgrounds.
+        // Only recolor the text cells, using its screen mapping for wide Unicode characters.
+        for y in 0..content.height {
+            let row = usize::from(scroll_row + y);
+            if row >= self.text.lines().len() {
+                break;
+            }
+
+            for x in 0..content.width {
+                let display_column = usize::from(scroll_column) + usize::from(x);
+                let Some(column) = display_column.checked_sub(usize::from(number_width)) else {
+                    continue;
+                };
+                let position = self.text.screen_to_data(row, column);
+                if focused && position == cursor {
+                    continue;
+                }
+
+                if let Some(color) = self.highlighting.colors[row].get(position.1) {
+                    frame.buffer_mut()[(content.x + x, content.y + y)].set_fg(*color);
+                }
+            }
+        }
+    }
+}
+
+struct Highlighting {
+    theme: Theme,
+    source: Vec<String>,
+    colors: Vec<Vec<Color>>,
+}
+
+impl Highlighting {
+    fn new() -> Result<Self> {
+        let mut syntax_theme = Theme::default();
+        syntax_theme.settings.foreground = Some(syntax_color(theme::TEXT));
+        // These are standard TextMate scopes provided by Syntect's bundled LaTeX grammar.
+        for (scope, color) in [
+            ("support.function, keyword, storage", theme::SYNTAX_COMMAND),
+            (
+                "string, entity.name, variable.parameter",
+                theme::SYNTAX_ARGUMENT,
+            ),
+            ("comment", theme::MUTED),
+            ("punctuation", theme::TEXT),
+        ] {
+            syntax_theme.scopes.push(ThemeItem {
+                scope: scope.parse()?,
+                style: StyleModifier {
+                    foreground: Some(syntax_color(color)),
+                    ..StyleModifier::default()
+                },
+            });
+        }
+
+        Ok(Self {
+            theme: syntax_theme,
+            source: Vec::new(),
+            colors: Vec::new(),
+        })
+    }
+
+    fn update(&mut self, lines: &[String]) {
+        if self.source == lines {
+            return;
+        }
+
+        static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+        let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+        let syntax = syntaxes
+            .find_syntax_by_extension("tex")
+            .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
+        let mut highlighter = HighlightLines::new(syntax, &self.theme);
+
+        // Preserve parser state across lines, including multiline comments and arguments.
+        self.colors = lines
+            .iter()
+            .map(|line| {
+                let terminated = format!("{line}\n");
+                match highlighter.highlight_line(&terminated, syntaxes) {
+                    Ok(tokens) => tokens
+                        .into_iter()
+                        .flat_map(|(style, text)| {
+                            let color = style.foreground;
+                            text.chars()
+                                .map(move |_| Color::Rgb(color.r, color.g, color.b))
+                        })
+                        .take(line.chars().count())
+                        .collect(),
+                    Err(_) => vec![theme::TEXT; line.chars().count()],
+                }
+            })
+            .collect();
+        self.source = lines.to_vec();
+    }
+}
+
+fn syntax_color(color: Color) -> syntect::highlighting::Color {
+    let (r, g, b) = match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => unreachable!("The workspace syntax palette uses RGB colors"),
+    };
+    syntect::highlighting::Color {
+        r,
+        g,
+        b,
+        a: u8::MAX,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn syntax_colors_follow_tex_commands_and_comments_after_edits() -> Result<()> {
+        let mut highlighting = Highlighting::new()?;
+        highlighting.update(&[r"\section{Experience} % Notes".to_owned()]);
+        assert_eq!(highlighting.colors[0][1], theme::SYNTAX_COMMAND);
+        assert_eq!(highlighting.colors[0][9], theme::SYNTAX_ARGUMENT);
+        assert_eq!(*highlighting.colors[0].last().unwrap(), theme::MUTED);
+
+        highlighting.update(&["Plain résumé".to_owned()]);
+        assert_eq!(highlighting.colors[0], vec![theme::TEXT; 12]);
+        Ok(())
+    }
+
+    #[test]
+    fn rendering_preserves_selection_and_maps_scrolled_unicode() -> Result<()> {
+        use ratatui::{Terminal, backend::TestBackend};
+        use ratatui_textarea::CursorMove;
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        fs::write(&path, "李\t\\section{Résumé} % Notes")?;
+        let mut editor = Editor::open(path)?;
+        editor.text.select_all();
+        editor.text.move_cursor(CursorMove::End);
+        let mut terminal = Terminal::new(TestBackend::new(18, 4))?;
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+
+        assert!(editor.text.scroll_offset().1 > 0);
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .any(|cell| cell.bg == theme::SELECTION)
+        );
+        assert!(buffer.content().iter().any(|cell| cell.fg == theme::MUTED));
+        assert_eq!(editor.source(), "李\t\\section{Résumé} % Notes");
+        Ok(())
+    }
 
     #[test]
     fn opening_and_saving_preserves_unicode_and_trailing_newlines() -> Result<()> {
