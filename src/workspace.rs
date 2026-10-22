@@ -32,7 +32,7 @@ impl Workspace {
             let root = path
                 .canonicalize()
                 .context("Could not open the workspace")?;
-            let document = first_document(&root)?.unwrap_or_else(|| root.join(DEFAULT_DOCUMENT));
+            let document = project_document(&root)?.unwrap_or_else(|| root.join(DEFAULT_DOCUMENT));
             return Ok(Self { root, document });
         }
 
@@ -66,6 +66,17 @@ fn abbreviate_home(path: &Path, home: Option<&Path>) -> String {
         return format!("~/{}", relative.display());
     }
     path.display().to_string()
+}
+
+/// Prefer a project's entry document over alphabetically earlier section files.
+pub fn project_document(root: &Path) -> Result<Option<PathBuf>> {
+    for filename in [DEFAULT_DOCUMENT, "resume.tex"] {
+        let path = root.join(filename);
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+    }
+    first_document(root)
 }
 
 // Bound startup work for large workspaces and never traverse directory symlinks.
@@ -109,13 +120,29 @@ mod tests {
         fs::write(root.join("A-generated/ignored.tex"), "ignored")?;
         fs::create_dir(root.join("AI engineering"))?;
         fs::write(root.join("AI engineering/main.tex"), "first")?;
-        fs::write(root.join("resume.tex"), "second")?;
+        fs::write(root.join("second.tex"), "second")?;
 
         let workspace = Workspace::resolve(Some(root))?;
         assert_eq!(
             workspace.document,
             root.canonicalize()?.join("AI engineering/main.tex")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn project_discovery_prefers_entry_documents_and_handles_empty_folders() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        assert!(project_document(root)?.is_none());
+        fs::write(root.join("a-section.tex"), "section")?;
+        fs::write(root.join("resume.tex"), "resume")?;
+        assert_eq!(project_document(root)?, Some(root.join("resume.tex")));
+        fs::write(root.join("main.tex"), "main")?;
+        assert_eq!(project_document(root)?, Some(root.join("main.tex")));
+        fs::remove_file(root.join("main.tex"))?;
+        fs::remove_file(root.join("resume.tex"))?;
+        assert_eq!(project_document(root)?, Some(root.join("a-section.tex")));
         Ok(())
     }
 
