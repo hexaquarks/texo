@@ -5,8 +5,9 @@ use display_info::DisplayInfo;
 use texo::theme;
 
 const WINDOW_SIZE_PERCENT: u32 = 90;
-const FONT_SIZE_POINTS: u16 = 14;
-const WINDOW_PADDING_POINTS: u16 = 12;
+const FONT_SIZE_POINTS: u16 = 13;
+const FONT_FAMILY: &str = "Menlo";
+const WINDOW_PADDING_POINTS: u16 = 0;
 
 pub fn open(document: &Path) -> Result<()> {
     let display = DisplayInfo::all()?
@@ -52,6 +53,11 @@ fn workspace_command(document: &Path, display: &DisplayInfo) -> Result<Command> 
         .args(["--override", &format!("initial_window_width={width}")])
         .args(["--override", &format!("initial_window_height={height}")])
         .args(["--override", &format!("font_size={FONT_SIZE_POINTS}")])
+        .args(["--override", &format!("font_family={FONT_FAMILY}")])
+        .args([
+            "--override",
+            &format!("macos_titlebar_color={}", theme::BACKGROUND),
+        ])
         .args([
             "--override",
             &format!("window_padding_width={WINDOW_PADDING_POINTS}"),

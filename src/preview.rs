@@ -3,8 +3,8 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::Style,
-    text::{Line, Span},
-    widgets::{Block, Padding, Paragraph, Wrap},
+    text::Line,
+    widgets::{Block, Paragraph, Wrap},
 };
 use ratatui_image::{
     StatefulImage,
@@ -16,6 +16,8 @@ use crate::pdf::PdfPages;
 use crate::theme;
 
 const EMPTY_STATE_HEIGHT: u16 = 7;
+const EMPTY_NOTICE: &str = "Your PDF will appear here.\n\nRender your document to update the preview.\n\nCtrl+R  to render";
+const UNSUPPORTED_NOTICE: &str = "Preview needs a graphics-capable terminal.\n\nLaunch texo in its dedicated window to see your PDF here.";
 
 pub struct Preview {
     picker: Option<Picker>,
@@ -29,9 +31,7 @@ impl Default for Preview {
     fn default() -> Self {
         Self {
             picker: None,
-            notice: String::from(
-                "Preview needs a graphics-capable terminal.\n\nLaunch texo in its dedicated window to see your PDF here.",
-            ),
+            notice: UNSUPPORTED_NOTICE.into(),
             pages: None,
             page_index: 0,
             image: None,
@@ -45,13 +45,22 @@ impl Preview {
         match Picker::from_query_stdio() {
             Ok(picker) if picker.protocol_type() != ProtocolType::Halfblocks => Self {
                 picker: Some(picker),
-                notice: String::from(
-                    "Your PDF will appear here.\n\nRender your document to update the preview.\n\nCtrl+R  to render",
-                ),
+                notice: EMPTY_NOTICE.into(),
                 ..Self::default()
             },
             _ => Self::default(),
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.pages = None;
+        self.image = None;
+        self.page_index = 0;
+        self.notice = if self.picker.is_some() {
+            EMPTY_NOTICE.into()
+        } else {
+            UNSUPPORTED_NOTICE.into()
+        };
     }
 
     pub fn set_pages(&mut self, pages: PdfPages) -> Result<()> {
@@ -104,27 +113,19 @@ impl Preview {
             Constraint::Min(0),
         ])
         .areas(area);
-        let title = match &self.pages {
+        let details = match &self.pages {
             Some(pages) => format!(
-                "   Page {} of {}  ·  Alt+←/→",
+                "  Page {} of {}  ·  Alt+←/→",
                 self.page_index + 1,
                 pages.page_count()
             ),
-            None => String::from("   PDF preview"),
+            None => String::from("  Render to preview"),
         };
-        let heading = Line::from(vec![
-            Span::styled("PREVIEW", theme::muted().bold()),
-            Span::styled(title, theme::muted()),
-        ]);
-        frame.render_widget(
-            Paragraph::new(heading).block(Block::default().padding(Padding::new(
-                theme::PANEL_PADDING,
-                theme::PANEL_PADDING,
-                1,
-                0,
-            ))),
-            header,
-        );
+        let heading = vec![
+            Line::styled("  PDF preview", Style::default().fg(theme::TEXT)),
+            Line::styled(details, theme::muted()),
+        ];
+        frame.render_widget(Paragraph::new(heading), header);
         let content = body.inner(Margin::new(theme::PANEL_PADDING, 1));
 
         match &mut self.image {

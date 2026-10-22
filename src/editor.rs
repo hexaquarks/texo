@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Padding, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph},
 };
 use ratatui_textarea::TextArea;
 use texo::theme;
@@ -87,29 +87,32 @@ impl Editor {
             .file_name()
             .unwrap_or(self.path.as_os_str())
             .to_string_lossy();
-        frame.render_widget(
-            Block::default().style(Style::default().bg(theme::EDITOR)),
-            area,
-        );
+        let panel = Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(theme::DIVIDER))
+            .style(Style::default().bg(theme::EDITOR));
+        let area_inner = panel.inner(area);
+        frame.render_widget(panel, area);
         let [header, content] = Layout::vertical([
             Constraint::Length(theme::PANEL_HEADER_HEIGHT),
             Constraint::Min(0),
         ])
-        .areas(area);
+        .areas(area_inner);
         let heading_color = if focused { theme::ACCENT } else { theme::MUTED };
-        let heading = Line::from(vec![
-            Span::styled("SOURCE", Style::default().fg(heading_color).bold()),
-            Span::styled(format!("   {filename}{modified}"), theme::muted()),
-        ]);
-        frame.render_widget(
-            Paragraph::new(heading).block(Block::default().padding(Padding::new(
-                theme::PANEL_PADDING,
-                theme::PANEL_PADDING,
-                1,
-                0,
-            ))),
-            header,
-        );
+        let heading = vec![
+            Line::from(vec![
+                Span::styled(
+                    " TᴇX ",
+                    Style::default().fg(theme::FILE_ICON).bg(theme::ELEVATED),
+                ),
+                Span::styled(
+                    format!("{filename}{modified}  "),
+                    Style::default().fg(heading_color).bg(theme::ELEVATED),
+                ),
+            ]),
+            Line::styled(format!("  {filename}"), theme::muted()),
+        ];
+        frame.render_widget(Paragraph::new(heading), header);
 
         self.text.set_block(Block::default().padding(Padding::new(
             theme::PANEL_PADDING,
