@@ -3,11 +3,11 @@ use std::{fs, io::ErrorKind, path::PathBuf, sync::OnceLock};
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Position, Rect},
     style::{Color, Style},
     widgets::{Block, Padding},
 };
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{CursorMove, TextArea};
 use syntect::{
     easy::HighlightLines,
     highlighting::{StyleModifier, Theme, ThemeItem},
@@ -63,6 +63,36 @@ impl Editor {
 
     pub fn is_modified(&self) -> bool {
         self.saved_source.as_deref() != Some(self.source().as_str())
+    }
+
+    pub fn click(&mut self, area: Rect, column: u16, row: u16) {
+        if !area.contains(Position::new(column, row)) {
+            return;
+        }
+
+        let content = self.text.block().map_or(area, |block| block.inner(area));
+        let (scroll_row, scroll_column) = self.text.scroll_offset();
+        let display_row = usize::from(row.saturating_sub(content.y)) + usize::from(scroll_row);
+        let display_column =
+            usize::from(column.saturating_sub(content.x)) + usize::from(scroll_column);
+        let text_column = display_column.saturating_sub(usize::from(self.text.line_number_width()));
+        let position = self.text.screen_to_data(display_row, text_column);
+
+        self.text.cancel_selection();
+        self.text.move_cursor(CursorMove::Jump(
+            u16::try_from(position.0).unwrap_or(u16::MAX),
+            u16::try_from(position.1).unwrap_or(u16::MAX),
+        ));
+    }
+
+    pub fn replace_source(&mut self, source: &str) -> bool {
+        if self.source() == source {
+            return false;
+        }
+
+        self.text.select_all();
+        self.text.insert_str(source);
+        true
     }
 
     pub fn save(&mut self) -> Result<()> {
@@ -222,6 +252,47 @@ fn syntax_color(color: Color) -> syntect::highlighting::Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacing_source_preserves_native_undo_history() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        fs::write(&path, "Original résumé\n")?;
+        let mut editor = Editor::open(path)?;
+        editor.text.insert_str("Earlier edit\n");
+        let before_proposal = editor.source();
+
+        assert!(editor.replace_source("Revised résumé\nSecond line\n"));
+        assert_eq!(editor.source(), "Revised résumé\nSecond line\n");
+        assert!(editor.text.undo());
+        assert!(editor.text.undo());
+        assert_eq!(editor.source(), before_proposal);
+        assert!(editor.text.undo());
+        assert_eq!(editor.source(), "Original résumé\n");
+        Ok(())
+    }
+
+    #[test]
+    fn clicking_maps_tabs_unicode_and_scrolled_rows_to_characters() -> Result<()> {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        fs::write(&path, ["李\t\\section{Résumé}"; 8].join("\n"))?;
+        let mut editor = Editor::open(path)?;
+        editor.text.move_cursor(CursorMove::Bottom);
+        let mut terminal = Terminal::new(TestBackend::new(40, 4))?;
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        let (scroll_row, _) = editor.text.scroll_offset();
+        assert!(scroll_row > 0);
+
+        let text_start = theme::PANEL_PADDING + editor.text.line_number_width();
+        editor.click(Rect::new(0, 0, 40, 4), text_start + u16::from(TAB_WIDTH), 0);
+        assert_eq!(editor.text.cursor(), (usize::from(scroll_row), 2));
+        editor.text.insert_str("CLICK");
+        assert!(editor.text.lines()[usize::from(scroll_row)].starts_with("李\tCLICK\\section"));
+        Ok(())
+    }
 
     #[test]
     fn syntax_colors_follow_tex_commands_and_comments_after_edits() -> Result<()> {

@@ -1,7 +1,10 @@
 mod actions;
 mod app;
+mod assistant;
+mod assistant_job;
 mod editor;
 mod explorer;
+mod proposal;
 mod render_job;
 mod terminal;
 mod window;
