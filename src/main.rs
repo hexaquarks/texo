@@ -1,5 +1,6 @@
 mod app;
 mod editor;
+mod explorer;
 mod render_job;
 mod terminal;
 mod window;
