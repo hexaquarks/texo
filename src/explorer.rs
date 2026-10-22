@@ -15,7 +15,13 @@ use ratatui::{
 use texo::theme;
 
 const TREE_INDENT_WIDTH: usize = 2;
-const TREE_ROW_HEIGHT: u16 = 3;
+const TREE_ROW_HEIGHT: u16 = 1;
+
+// Codicons from Kitty's bundled Nerd Font keep the outline icons consistent with the editor UI.
+const FOLDER_ICON: &str = "";
+const FILE_ICON: &str = "";
+const EXPANDED_ICON: &str = "";
+const COLLAPSED_ICON: &str = "";
 
 struct Entry {
     path: PathBuf,
@@ -198,7 +204,7 @@ impl Explorer {
         false
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, active_file: &Path, _focused: bool) {
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, active_file: &Path, focused: bool) {
         let panel = Block::default()
             .borders(Borders::RIGHT)
             .border_style(Style::default().fg(theme::DIVIDER))
@@ -208,13 +214,18 @@ impl Explorer {
         let rows: Vec<ListItem> = self
             .entries
             .iter()
-            .map(|entry| self.entry_item(entry, active_file))
+            .map(|entry| self.entry_item(entry, active_file, focused))
             .collect();
-        let list = List::new(rows).highlight_style(Style::default().bg(theme::SELECTION));
+        let selection_style = if focused {
+            Style::default().bg(theme::SELECTION)
+        } else {
+            Style::default()
+        };
+        let list = List::new(rows).highlight_style(selection_style);
         frame.render_stateful_widget(list, inner, &mut self.state);
     }
 
-    fn entry_item(&self, entry: &Entry, active_file: &Path) -> ListItem<'static> {
+    fn entry_item(&self, entry: &Entry, active_file: &Path, focused: bool) -> ListItem<'static> {
         let expanded = self.expanded.contains(&entry.path);
         let filename = if entry.path == self.root && self.name() == "resumes" {
             "My resumes".to_owned()
@@ -226,37 +237,25 @@ impl Explorer {
                 .to_string_lossy()
                 .into_owned()
         };
-        // ASCII markers remain legible without a patched font or icon fallback.
-        let marker = if entry.directory && expanded {
-            "[-] "
-        } else if entry.directory {
-            "[+] "
+        let marker = if entry.directory {
+            let chevron = if expanded {
+                EXPANDED_ICON
+            } else {
+                COLLAPSED_ICON
+            };
+            format!("{chevron} {FOLDER_ICON} ")
         } else {
-            match entry
-                .path
-                .extension()
-                .and_then(|extension| extension.to_str())
-            {
-                Some("tex") => " T  ",
-                Some("pdf") => " P  ",
-                _ => " -  ",
-            }
+            format!("  {FILE_ICON} ")
         };
         let mut style = Style::default().fg(theme::TEXT);
-        if entry.path == active_file {
+        if !focused && entry.path == active_file {
             style = style.bg(theme::SELECTION);
         }
-        ListItem::new(vec![
-            Line::raw(""),
-            Line::from(vec![
-                Span::raw(
-                    " ".repeat(usize::from(theme::PANEL_PADDING) + entry.depth * TREE_INDENT_WIDTH),
-                ),
-                Span::styled(marker, Style::default().fg(theme::FILE_ICON)),
-                Span::raw(filename),
-            ]),
-            Line::raw(""),
-        ])
+        ListItem::new(Line::from(vec![
+            Span::raw(" ".repeat(1 + entry.depth * TREE_INDENT_WIDTH)),
+            Span::styled(marker, Style::default().fg(theme::FILE_ICON)),
+            Span::raw(filename),
+        ]))
         .style(style)
     }
 }
@@ -323,7 +322,7 @@ mod tests {
         let area = Rect::new(0, 3, 30, 10);
 
         assert!(!explorer.select_at(area, 2));
-        assert!(explorer.select_at(area, 6));
+        assert!(explorer.select_at(area, 4));
         assert_eq!(explorer.selected_path(), Some(document.clone()));
         *explorer.state.offset_mut() = 1;
         assert!(explorer.select_at(area, 3));
