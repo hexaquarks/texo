@@ -13,9 +13,9 @@ use texo::theme;
 
 use crate::assistant_job::{AssistantJob, ConversationMessage};
 
-const INPUT_HEIGHT: u16 = 5;
+const INPUT_HEIGHT: u16 = 3;
 const SEND_WIDTH: u16 = 8;
-const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT + 1;
+const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT;
 const PROMPT_WIDTH: u16 = 2;
 const SCROLL_LINES: u16 = 3;
 
@@ -172,7 +172,7 @@ impl Assistant {
     }
 
     pub fn click(&mut self, area: Rect, column: u16, row: u16) -> bool {
-        let content = input_block(false).inner(Self::input_area(area));
+        let content = input_block().inner(Self::input_area(area));
         if !content.contains(Position::new(column, row)) {
             return false;
         }
@@ -190,7 +190,7 @@ impl Assistant {
     }
 
     pub fn send_button(area: Rect) -> Rect {
-        composer_layout(area)[2]
+        composer_layout(area)[1]
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
@@ -239,22 +239,22 @@ impl Assistant {
         );
         self.draw_history(frame, history);
 
-        let [input, shortcuts, send] = composer_layout_from_row(composer);
-        self.input.set_block(input_block(focused));
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::BUTTON)),
+            composer,
+        );
+        let [input, send] = composer_layout_from_row(composer);
+        self.input.set_block(input_block());
         self.input.set_cursor_style(if focused {
             Style::default().add_modifier(Modifier::REVERSED)
         } else {
             Style::default()
         });
         frame.render_widget(&self.input, input);
-        let prompt = Rect::new(input.x + 1, input.y + 2, PROMPT_WIDTH, 1);
+        let prompt = Rect::new(input.x + 1, input.y + 1, PROMPT_WIDTH, 1);
         frame.render_widget(
-            Paragraph::new("> ").style(Style::default().fg(theme::ACCENT)),
+            Paragraph::new("› ").style(Style::default().fg(theme::ACCENT).bg(theme::BUTTON)),
             prompt,
-        );
-        frame.render_widget(
-            Paragraph::new("Ctrl+J focus  /  PgUp/PgDn history").style(theme::muted()),
-            shortcuts,
         );
         frame.render_widget(
             Paragraph::new(if self.is_running() {
@@ -263,7 +263,7 @@ impl Assistant {
                 "[send]"
             })
             .right_aligned()
-            .style(theme::muted()),
+            .style(theme::muted().bg(theme::BUTTON)),
             send,
         );
     }
@@ -301,14 +301,14 @@ impl Assistant {
 
 fn new_input() -> TextArea<'static> {
     let mut input = TextArea::default();
-    input.set_style(theme::text());
+    input.set_style(theme::text().bg(theme::BUTTON));
     input.set_cursor_line_style(Style::default());
     input.set_placeholder_text("Ask Texo...");
-    input.set_placeholder_style(theme::muted());
+    input.set_placeholder_style(theme::muted().bg(theme::BUTTON));
     input
 }
 
-fn composer_layout(area: Rect) -> [Rect; 3] {
+fn composer_layout(area: Rect) -> [Rect; 2] {
     let inner = area.inner(Margin {
         horizontal: theme::PANEL_PADDING,
         vertical: 1,
@@ -318,23 +318,17 @@ fn composer_layout(area: Rect) -> [Rect; 3] {
     composer_layout_from_row(composer)
 }
 
-fn composer_layout_from_row(area: Rect) -> [Rect; 3] {
-    let [input, footer] =
-        Layout::vertical([Constraint::Length(INPUT_HEIGHT), Constraint::Length(1)]).areas(area);
-    let [shortcuts, send] =
-        Layout::horizontal([Constraint::Min(1), Constraint::Length(SEND_WIDTH)]).areas(footer);
-    [input, shortcuts, send]
+fn composer_layout_from_row(area: Rect) -> [Rect; 2] {
+    let [input, button_column] =
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(SEND_WIDTH)]).areas(area);
+    let send = Rect::new(button_column.x, button_column.y + 1, button_column.width, 1);
+    [input, send]
 }
 
-fn input_block(focused: bool) -> Block<'static> {
+fn input_block() -> Block<'static> {
     Block::default()
-        .borders(Borders::TOP)
+        .style(Style::default().bg(theme::BUTTON))
         .padding(Padding::new(PROMPT_WIDTH + 1, 1, 1, 1))
-        .border_style(Style::default().fg(if focused {
-            theme::MUTED
-        } else {
-            theme::DIVIDER
-        }))
 }
 
 fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
@@ -432,9 +426,9 @@ mod tests {
         assistant.input.insert_str("hello world");
         let area = Rect::new(20, 10, 70, 15);
         let input = Assistant::input_area(area);
-        assert!(assistant.click(area, input.x + 5, input.y + 2));
+        assert!(assistant.click(area, input.x + 5, input.y + 1));
         assert_eq!(assistant.input.cursor(), (0, 2));
-        assert!(!assistant.click(area, input.x + 5, input.y + 1));
+        assert!(!assistant.click(area, input.x + 5, input.y));
         assert!(!assistant.click(area, area.x + 2, area.y + 2));
         assert_eq!(assistant.input.cursor(), (0, 2));
     }
