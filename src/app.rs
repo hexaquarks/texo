@@ -17,8 +17,10 @@ use texo::{preview::Preview, theme};
 
 use crate::{
     actions::{Action, ActionMenu, ExportDialog},
+    assistant::Assistant,
     editor::Editor,
     explorer::Explorer,
+    proposal::ProposalReview,
     render_job::RenderJob,
 };
 
@@ -44,6 +46,7 @@ enum Focus {
     Render,
     Export,
     Actions,
+    Assistant,
 }
 
 struct App {
@@ -57,6 +60,8 @@ struct App {
     rendered_pdf: Option<PathBuf>,
     actions: Option<ActionMenu>,
     export: Option<ExportDialog>,
+    assistant: Assistant,
+    proposal_review: Option<ProposalReview>,
     status: String,
     diagnostics: Option<String>,
     diagnostic_scroll: u16,
@@ -72,17 +77,18 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
 
     loop {
         app.receive_render();
+        app.receive_assistant();
         terminal.draw(|frame| app.draw(frame))?;
 
         if event::poll(EVENT_POLL_INTERVAL)? {
             let area = terminal.get_frame().area();
             let explorer_was_visible = app.explorer_visible;
-            let overlay_was_open = app.actions.is_some() || app.export.is_some();
+            let overlay_was_open = app.overlay_open();
             if app.handle_event(event::read()?, area) {
                 return Ok(());
             }
             if explorer_was_visible != app.explorer_visible
-                || overlay_was_open != (app.actions.is_some() || app.export.is_some())
+                || overlay_was_open != app.overlay_open()
             {
                 // Repaint cells formerly occupied by the terminal's PDF image placement.
                 terminal.clear()?;
@@ -116,12 +122,60 @@ impl App {
             rendered_pdf: None,
             actions: None,
             export: None,
+            assistant: Assistant::new(),
+            proposal_review: None,
             status: String::new(),
             diagnostics: None,
             diagnostic_scroll: 0,
             focus: Focus::Editor,
             confirm_quit: false,
         })
+    }
+
+    fn overlay_open(&self) -> bool {
+        self.actions.is_some() || self.export.is_some() || self.proposal_review.is_some()
+    }
+
+    fn send_message(&mut self) {
+        match self
+            .assistant
+            .submit(self.editor.source(), &self.editor.path)
+        {
+            Ok(()) => self.status.clear(),
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    fn receive_assistant(&mut self) {
+        if let Some(result) = self.assistant.poll() {
+            self.status = match result {
+                Ok(()) if self.assistant.proposal().is_some() => {
+                    "Suggested edit ready. Ctrl+P → Review suggested TeX edit.".into()
+                }
+                Ok(()) => String::new(),
+                Err(_) => "Assistant failed. See its message for details.".into(),
+            };
+        }
+    }
+
+    fn apply_proposal(&mut self) {
+        let Some(proposal) = self.assistant.proposal() else {
+            return;
+        };
+        if proposal.source_before != self.editor.source() {
+            self.proposal_review = None;
+            self.status =
+                "Document changed since this suggestion. Ask Texo again using the current text."
+                    .into();
+            return;
+        }
+        if let Some(proposal) = self.assistant.take_proposal() {
+            self.editor.replace_source(&proposal.source_after);
+            self.status =
+                "Edit applied. Ctrl+Z twice to undo; Ctrl+S to save; Ctrl+B to build.".into();
+            self.focus = Focus::Editor;
+        }
+        self.proposal_review = None;
     }
 
     fn start_render(&mut self) {
@@ -167,11 +221,19 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event, area: Rect) -> bool {
-        if self.actions.is_some() || self.export.is_some() {
+        let confirms_quit = matches!(&event, Event::Key(key)
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q'));
+        if !confirms_quit {
+            self.confirm_quit = false;
+        }
+        if self.overlay_open() {
             return self.handle_overlay(event, area);
         }
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => return self.handle_key(key),
+            Event::Paste(text) if self.focus == Focus::Assistant => {
+                self.assistant.input.insert_str(text);
+            }
             Event::Paste(text) if self.focus == Focus::Editor => {
                 self.editor.text.insert_str(text);
                 self.confirm_quit = false;
@@ -196,11 +258,29 @@ impl App {
                         if self.explorer.select_at(layout.explorer, mouse.row) {
                             self.activate_explorer();
                         }
+                    } else if Assistant::send_button(layout.assistant).contains(position) {
+                        self.focus = Focus::Assistant;
+                        if self.assistant.is_running() {
+                            self.assistant.cancel();
+                        } else {
+                            self.send_message();
+                        }
+                    } else if layout.assistant.contains(position) {
+                        self.focus = Focus::Assistant;
+                        self.assistant
+                            .click(layout.assistant, mouse.column, mouse.row);
                     } else if layout.editor.contains(position) {
                         self.focus = Focus::Editor;
+                        self.editor.click(layout.editor, mouse.column, mouse.row);
                     }
                 } else if layout.editor.contains(position) {
                     self.editor.text.input(mouse);
+                } else if layout.assistant.contains(position) {
+                    match mouse.kind {
+                        MouseEventKind::ScrollDown => self.assistant.scroll(false),
+                        MouseEventKind::ScrollUp => self.assistant.scroll(true),
+                        _ => {}
+                    }
                 } else if layout.preview.contains(position) {
                     match mouse.kind {
                         MouseEventKind::ScrollDown => self.preview.scroll(false),
@@ -243,6 +323,13 @@ impl App {
 
     fn handle_control_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Char('j') => {
+                self.focus = if self.focus == Focus::Assistant {
+                    Focus::Editor
+                } else {
+                    Focus::Assistant
+                };
+            }
             KeyCode::Char('b') => self.start_render(),
             KeyCode::Char('p') => self.actions = Some(ActionMenu::open()),
             KeyCode::Char('e') => self.open_export(),
@@ -260,20 +347,27 @@ impl App {
                 }
                 Err(error) => self.report_error(error),
             },
-            KeyCode::Char('z') => {
+            KeyCode::Char('z') if self.focus == Focus::Editor => {
                 self.editor.text.undo();
             }
-            KeyCode::Char('y') => {
+            KeyCode::Char('y') if self.focus == Focus::Editor => {
                 self.editor.text.redo();
             }
             _ if self.focus == Focus::Editor => {
                 self.editor.text.input(key);
+            }
+            _ if self.focus == Focus::Assistant => {
+                self.assistant.input.input(key);
             }
             _ => {}
         }
     }
 
     fn handle_alt_key(&mut self, key: KeyEvent) {
+        if self.focus == Focus::Assistant && key.code == KeyCode::Enter {
+            self.assistant.input.insert_newline();
+            return;
+        }
         let result = match key.code {
             KeyCode::Left => self.preview.previous_page(),
             KeyCode::Right => self.preview.next_page(),
@@ -302,13 +396,20 @@ impl App {
             KeyCode::F(5) => self.refresh_explorer(),
             KeyCode::F(6) => {
                 self.focus = match self.focus {
-                    Focus::Editor => Focus::Render,
+                    Focus::Editor => Focus::Assistant,
+                    Focus::Assistant => Focus::Render,
                     Focus::Render => Focus::Export,
                     Focus::Export => Focus::Actions,
                     Focus::Actions if self.explorer_visible => Focus::Explorer,
                     Focus::Actions | Focus::Explorer => Focus::Editor,
                 };
             }
+            KeyCode::Esc if self.focus == Focus::Assistant && self.assistant.is_running() => {
+                self.assistant.cancel()
+            }
+            KeyCode::Enter if self.focus == Focus::Assistant => self.send_message(),
+            KeyCode::PageUp if self.focus == Focus::Assistant => self.assistant.scroll(true),
+            KeyCode::PageDown if self.focus == Focus::Assistant => self.assistant.scroll(false),
             KeyCode::Esc if self.diagnostics.is_some() => self.diagnostics = None,
             KeyCode::PageUp if self.diagnostics.is_some() => {
                 self.diagnostic_scroll = self
@@ -329,6 +430,9 @@ impl App {
             KeyCode::Enter | KeyCode::Char(' ') if self.focus == Focus::Actions => {
                 self.actions = Some(ActionMenu::open())
             }
+            _ if self.focus == Focus::Assistant => {
+                self.assistant.input.input(key);
+            }
             _ if self.focus == Focus::Explorer => self.handle_explorer_key(key),
             _ if self.focus == Focus::Editor => {
                 self.editor.text.input(key);
@@ -338,6 +442,10 @@ impl App {
     }
 
     fn open_export(&mut self) {
+        if self.job.is_some() {
+            self.status = "Wait for the build to finish before exporting.".into();
+            return;
+        }
         if self.rendered_source.as_deref() != Some(self.editor.source().as_str())
             || self.rendered_pdf.is_none()
         {
@@ -356,6 +464,28 @@ impl App {
                 if key.code == KeyCode::Esc {
                     self.actions = None;
                     self.export = None;
+                    self.proposal_review = None;
+                } else if self.proposal_review.is_some() {
+                    match key.code {
+                        KeyCode::Enter => self.apply_proposal(),
+                        KeyCode::PageUp | KeyCode::Up => {
+                            self.proposal_review.as_mut().unwrap().scroll(true)
+                        }
+                        KeyCode::PageDown | KeyCode::Down => {
+                            self.proposal_review.as_mut().unwrap().scroll(false)
+                        }
+                        KeyCode::Left => self
+                            .proposal_review
+                            .as_mut()
+                            .unwrap()
+                            .scroll_horizontal(true),
+                        KeyCode::Right => self
+                            .proposal_review
+                            .as_mut()
+                            .unwrap()
+                            .scroll_horizontal(false),
+                        _ => {}
+                    }
                 } else if let Some(menu) = &mut self.actions {
                     match key.code {
                         KeyCode::Up => menu.move_selection(false),
@@ -402,6 +532,21 @@ impl App {
             Action::Save => 's',
             Action::ToggleExplorer => 't',
             Action::Quit => 'q',
+            Action::FocusAssistant => 'j',
+            Action::ClearChat => {
+                self.assistant.reset();
+                self.status = "Conversation cleared.".into();
+                return false;
+            }
+            Action::ReviewEdit => {
+                if let Some(proposal) = self.assistant.proposal() {
+                    self.proposal_review = Some(ProposalReview::new(proposal));
+                } else {
+                    self.status =
+                        "No suggested edit to review. Ask Texo to revise your resume.".into();
+                }
+                return false;
+            }
             Action::ScrollUp | Action::ScrollDown => {
                 self.preview.scroll(matches!(action, Action::ScrollUp));
                 return false;
@@ -420,6 +565,12 @@ impl App {
     }
 
     fn finish_export(&mut self) {
+        if self.rendered_source.as_deref() != Some(self.editor.source().as_str()) {
+            self.export = None;
+            self.status =
+                "PDF changed while exporting. Build the current document and try again.".into();
+            return;
+        }
         let Some(dialog) = &mut self.export else {
             return;
         };
@@ -491,6 +642,8 @@ impl App {
         }
         match Editor::open(path) {
             Ok(editor) => {
+                self.assistant.reset();
+                self.proposal_review = None;
                 self.editor = editor;
                 self.preview.clear();
                 self.rendered_source = None;
@@ -546,16 +699,8 @@ impl App {
         );
         self.editor
             .draw(frame, layout.editor, self.focus == Focus::Editor);
-        frame.render_widget(
-            Paragraph::new(" ASSISTANT")
-                .style(Style::default().fg(theme::ACCENT))
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .border_style(Style::default().fg(theme::DIVIDER)),
-                ),
-            layout.assistant,
-        );
+        self.assistant
+            .draw(frame, layout.assistant, self.focus == Focus::Assistant);
         self.preview.draw(frame, layout.preview);
         self.draw_footer(frame, &layout);
         if let Some(menu) = &mut self.actions {
@@ -563,6 +708,9 @@ impl App {
         }
         if let Some(export) = &mut self.export {
             export.draw(frame);
+        }
+        if let Some(review) = &mut self.proposal_review {
+            review.draw(frame);
         }
     }
 
@@ -776,7 +924,7 @@ mod tests {
     fn pane_focus_prevents_button_keystrokes_from_editing_text() -> anyhow::Result<()> {
         let (_directory, mut app) = application()?;
         let original = app.editor.source();
-        app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+        app.focus = Focus::Render;
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         assert_eq!(app.editor.source(), original);
         app.focus = Focus::Editor;
@@ -829,6 +977,45 @@ mod tests {
         app.open_export();
         assert!(app.export.is_none());
         assert!(app.status.contains("Build the current"));
+        Ok(())
+    }
+
+    #[test]
+    fn assistant_focus_keeps_chat_input_out_of_the_document() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let original = app.editor.source();
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        app.handle_event(
+            Event::Paste("Shorten these bullets".into()),
+            Rect::new(0, 0, 160, 50),
+        );
+        assert_eq!(app.editor.source(), original);
+        assert_eq!(app.assistant.input.lines(), &["Shorten these bullets"]);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert_eq!(app.assistant.input.lines().len(), 2);
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        assert!(app.focus == Focus::Editor);
+        Ok(())
+    }
+
+    #[test]
+    fn export_rechecks_snapshot_and_modal_input_disarms_quit() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        app.rendered_source = Some(app.editor.source());
+        app.rendered_pdf = Some(app.editor.path.with_extension("pdf"));
+        app.open_export();
+        app.rendered_source = Some("A different completed build".into());
+        app.finish_export();
+        assert!(app.export.is_none());
+        assert!(app.status.contains("PDF changed"));
+
+        app.actions = Some(ActionMenu::open());
+        app.confirm_quit = true;
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            Rect::new(0, 0, 160, 50),
+        );
+        assert!(!app.confirm_quit);
         Ok(())
     }
 

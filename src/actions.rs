@@ -27,10 +27,13 @@ pub enum Action {
     NextPage,
     ScrollUp,
     ScrollDown,
+    FocusAssistant,
+    ReviewEdit,
+    ClearChat,
     Quit,
 }
 
-const ACTIONS: [(Action, &str); 9] = [
+const ACTIONS: [(Action, &str); 12] = [
     (Action::Build, "Build PDF                         Ctrl+B"),
     (Action::Export, "Export PDF                        Ctrl+E"),
     (Action::Save, "Save TeX                          Ctrl+S"),
@@ -51,6 +54,12 @@ const ACTIONS: [(Action, &str); 9] = [
         Action::ScrollDown,
         "Scroll PDF down                   Alt+Down",
     ),
+    (
+        Action::FocusAssistant,
+        "Focus assistant / editor          Ctrl+J",
+    ),
+    (Action::ReviewEdit, "Review suggested TeX edit"),
+    (Action::ClearChat, "Clear conversation"),
     (Action::Quit, "Quit                              Ctrl+Q"),
 ];
 
