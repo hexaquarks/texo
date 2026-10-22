@@ -1,5 +1,6 @@
 mod app;
 mod editor;
+mod render_job;
 mod terminal;
 
 use clap::Parser;

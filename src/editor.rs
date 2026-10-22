@@ -1,6 +1,6 @@
 use std::{fs, io::ErrorKind, path::PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -21,6 +21,10 @@ pub struct Editor {
 
 impl Editor {
     pub fn open(path: PathBuf) -> Result<Self> {
+        ensure!(
+            path.extension().is_some_and(|extension| extension == "tex"),
+            "Choose a document with a .tex extension"
+        );
         let path = std::env::current_dir()?.join(path);
         let saved_source = match fs::read_to_string(&path) {
             Ok(source) => Some(source),
@@ -73,7 +77,12 @@ impl Editor {
         } else {
             Color::DarkGray
         };
-        let title = format!(" {}{} ", self.path.display(), modified);
+        let filename = self
+            .path
+            .file_name()
+            .unwrap_or(self.path.as_os_str())
+            .to_string_lossy();
+        let title = format!(" {filename}{modified} ");
         self.text.set_block(
             Block::bordered()
                 .title(title)
