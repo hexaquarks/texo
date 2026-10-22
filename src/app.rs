@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 use texo::{preview::Preview, theme};
 
@@ -27,14 +27,14 @@ use crate::{
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MIN_TERMINAL_WIDTH: u16 = 100;
 const MIN_TERMINAL_HEIGHT: u16 = 16;
-const TOOLBAR_HEIGHT: u16 = 2;
-const FOOTER_HEIGHT: u16 = 2;
+const TOOLBAR_HEIGHT: u16 = 4;
+const FOOTER_HEIGHT: u16 = 4;
 const BUILD_BUTTON_WIDTH: u16 = 13;
 const EXPORT_BUTTON_WIDTH: u16 = 10;
 const ACTIONS_BUTTON_WIDTH: u16 = 16;
 const EXPLORER_PERCENT: u16 = 16;
 const PREVIEW_PERCENT: u16 = 38;
-const EDITOR_PERCENT: u16 = 67;
+const EDITOR_PERCENT: u16 = 55;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
 const PAGE_STATUS_WIDTH: u16 = 22;
@@ -663,14 +663,7 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        frame.render_widget(
-            Block::default()
-                .style(theme::text())
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::DIVIDER)),
-            area,
-        );
+        frame.render_widget(Block::default().style(theme::text()), area);
 
         if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
             frame.render_widget(
@@ -728,6 +721,7 @@ impl App {
         .block(
             Block::default()
                 .borders(Borders::BOTTOM)
+                .padding(Padding::vertical(1))
                 .border_style(Style::default().fg(theme::DIVIDER)),
         );
         frame.render_widget(heading, layout.heading);
@@ -766,6 +760,7 @@ impl App {
                     .block(
                         Block::default()
                             .borders(Borders::BOTTOM)
+                            .padding(Padding::vertical(1))
                             .border_style(Style::default().fg(theme::DIVIDER)),
                     ),
                 area,
@@ -804,6 +799,7 @@ impl App {
             Paragraph::new(footer).block(
                 Block::default()
                     .borders(Borders::TOP)
+                    .padding(Padding::vertical(1))
                     .border_style(Style::default().fg(theme::DIVIDER)),
             ),
             status,
@@ -820,6 +816,7 @@ impl App {
                 .block(
                     Block::default()
                         .borders(Borders::TOP)
+                        .padding(Padding::vertical(1))
                         .border_style(Style::default().fg(theme::DIVIDER)),
                 ),
             pages,
@@ -843,10 +840,6 @@ struct WorkspaceLayout {
 
 impl WorkspaceLayout {
     fn new(area: Rect, show_diagnostics: bool, show_explorer: bool) -> Self {
-        let border = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded);
-        let area = border.inner(area);
         let diagnostics_height = if show_diagnostics {
             DIAGNOSTICS_HEIGHT
         } else {

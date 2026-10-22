@@ -216,7 +216,7 @@ impl Preview {
             Block::default().style(Style::default().bg(theme::PREVIEW)),
             area,
         );
-        let content = area.inner(Margin::new(1, 0));
+        let content = area.inner(Margin::new(theme::PANEL_PADDING, 1));
         self.prepare_viewport(content);
 
         match &mut self.image {

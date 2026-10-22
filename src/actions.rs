@@ -94,7 +94,7 @@ impl ActionMenu {
         if column <= area.x || column >= area.right().saturating_sub(1) {
             return None;
         }
-        let index = usize::from(row.checked_sub(area.y + 1)?);
+        let index = usize::from(row.checked_sub(area.y + 2)?);
         if index >= ACTIONS.len() {
             return None;
         }
@@ -109,7 +109,10 @@ impl ActionMenu {
             .iter()
             .map(|(_, label)| ListItem::new(format!(" {label}")));
         let list = List::new(rows)
-            .block(dialog_block(" Actions · Enter to select · Esc to close "))
+            .block(
+                dialog_block(" Actions · Enter to select · Esc to close ")
+                    .padding(Padding::uniform(1)),
+            )
             .style(theme::text())
             .highlight_style(Style::default().fg(theme::ACCENT).bg(theme::SELECTION));
         frame.render_stateful_widget(list, area, &mut self.state);
@@ -213,7 +216,7 @@ fn dialog_block(title: &str) -> Block<'_> {
 }
 
 fn menu_area(screen: Rect) -> Rect {
-    centered(screen, DIALOG_WIDTH, ACTIONS.len() as u16 + 2)
+    centered(screen, DIALOG_WIDTH, ACTIONS.len() as u16 + 4)
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {

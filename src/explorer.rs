@@ -15,7 +15,7 @@ use ratatui::{
 use texo::theme;
 
 const TREE_INDENT_WIDTH: usize = 2;
-const TREE_ROW_HEIGHT: u16 = 2;
+const TREE_ROW_HEIGHT: u16 = 3;
 
 struct Entry {
     path: PathBuf,
@@ -247,8 +247,11 @@ impl Explorer {
             style = style.bg(theme::SELECTION);
         }
         ListItem::new(vec![
+            Line::raw(""),
             Line::from(vec![
-                Span::raw(" ".repeat(entry.depth * TREE_INDENT_WIDTH)),
+                Span::raw(
+                    " ".repeat(usize::from(theme::PANEL_PADDING) + entry.depth * TREE_INDENT_WIDTH),
+                ),
                 Span::styled(marker, Style::default().fg(theme::FILE_ICON)),
                 Span::raw(filename),
             ]),

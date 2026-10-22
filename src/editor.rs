@@ -71,6 +71,9 @@ impl Editor {
         }
 
         let content = self.text.block().map_or(area, |block| block.inner(area));
+        if !content.contains(Position::new(column, row)) {
+            return;
+        }
         let (scroll_row, scroll_column) = self.text.scroll_offset();
         let display_row = usize::from(row.saturating_sub(content.y)) + usize::from(scroll_row);
         let display_column =
@@ -118,8 +121,8 @@ impl Editor {
             .padding(Padding::new(
                 theme::PANEL_PADDING,
                 theme::PANEL_PADDING,
-                0,
-                0,
+                1,
+                1,
             ));
         let content = panel.inner(area);
         self.text.set_block(panel);
@@ -287,7 +290,7 @@ mod tests {
         assert!(scroll_row > 0);
 
         let text_start = theme::PANEL_PADDING + editor.text.line_number_width();
-        editor.click(Rect::new(0, 0, 40, 4), text_start + u16::from(TAB_WIDTH), 0);
+        editor.click(Rect::new(0, 0, 40, 4), text_start + u16::from(TAB_WIDTH), 1);
         assert_eq!(editor.text.cursor(), (usize::from(scroll_row), 2));
         editor.text.insert_str("CLICK");
         assert!(editor.text.lines()[usize::from(scroll_row)].starts_with("李\tCLICK\\section"));
