@@ -17,7 +17,7 @@ use texo::theme;
 const TREE_INDENT_WIDTH: usize = 2;
 const TREE_ROW_HEIGHT: u16 = 2;
 
-// Codicons from Kitty's bundled Nerd Font keep the outline icons consistent with the editor UI.
+// Outline Codicons require Nerd Font symbol support in the host terminal.
 const FOLDER_ICON: &str = "";
 const FILE_ICON: &str = "";
 const EXPANDED_ICON: &str = "";
