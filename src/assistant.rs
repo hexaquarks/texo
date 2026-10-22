@@ -222,7 +222,7 @@ impl Assistant {
         let [label, hint_area] =
             Layout::horizontal([Constraint::Length(13), Constraint::Min(0)]).areas(header);
         frame.render_widget(
-            Paragraph::new("texo / chat").style(Style::default().fg(theme::ACCENT)),
+            Paragraph::new("texo / chat").style(theme::pane_title(focused)),
             label,
         );
         frame.render_widget(
