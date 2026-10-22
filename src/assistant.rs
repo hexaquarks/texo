@@ -1,13 +1,12 @@
 use std::path::Path;
 
 use anyhow::{Result, ensure};
-use chrono::Local;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Margin, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph},
 };
 use ratatui_textarea::{CursorMove, TextArea};
 use texo::theme;
@@ -15,7 +14,9 @@ use texo::theme;
 use crate::assistant_job::{AssistantJob, ConversationMessage};
 
 const INPUT_HEIGHT: u16 = 3;
-const SEND_WIDTH: u16 = 10;
+const SEND_WIDTH: u16 = 8;
+const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT + 1;
+const PROMPT_WIDTH: u16 = 2;
 const SCROLL_LINES: u16 = 3;
 
 #[derive(Clone)]
@@ -27,7 +28,6 @@ pub struct ProposedEdit {
 struct Message {
     role: &'static str,
     content: String,
-    time: String,
     error: bool,
 }
 
@@ -36,7 +36,6 @@ impl Message {
         Self {
             role,
             content,
-            time: Local::now().format("%I:%M %p").to_string(),
             error,
         }
     }
@@ -173,10 +172,7 @@ impl Assistant {
     }
 
     pub fn click(&mut self, area: Rect, column: u16, row: u16) -> bool {
-        let content = Self::input_area(area).inner(Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
+        let content = input_block(false).inner(Self::input_area(area));
         if !content.contains(Position::new(column, row)) {
             return false;
         }
@@ -212,11 +208,10 @@ impl Assistant {
             horizontal: 1,
             vertical: 1,
         });
-        let [header, history, _, composer] = Layout::vertical([
+        let [header, history, composer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(1),
-            Constraint::Length(INPUT_HEIGHT),
+            Constraint::Length(COMPOSER_HEIGHT),
         ])
         .areas(inner);
         let hint = if self.is_running() {
@@ -229,9 +224,9 @@ impl Assistant {
             ""
         };
         let [label, hint_area] =
-            Layout::horizontal([Constraint::Length(11), Constraint::Min(0)]).areas(header);
+            Layout::horizontal([Constraint::Length(13), Constraint::Min(0)]).areas(header);
         frame.render_widget(
-            Paragraph::new("ASSISTANT").style(Style::default().fg(theme::ACCENT)),
+            Paragraph::new("texo / chat").style(Style::default().fg(theme::ACCENT)),
             label,
         );
         frame.render_widget(
@@ -242,31 +237,31 @@ impl Assistant {
         );
         self.draw_history(frame, history);
 
-        let [input, _, send] = composer_layout_from_row(composer);
-        self.input.set_block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(if focused {
-                    theme::ACCENT
-                } else {
-                    theme::DIVIDER
-                })),
-        );
+        let [input, shortcuts, send] = composer_layout_from_row(composer);
+        self.input.set_block(input_block(focused));
         self.input.set_cursor_style(if focused {
             Style::default().add_modifier(Modifier::REVERSED)
         } else {
             Style::default()
         });
         frame.render_widget(&self.input, input);
+        let prompt = Rect::new(input.x, input.y + 1, PROMPT_WIDTH, 1);
         frame.render_widget(
-            Paragraph::new(if self.is_running() { "Cancel" } else { "Send" })
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(theme::ACCENT).bg(theme::ELEVATED))
-                .block(
-                    Block::bordered()
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(theme::ACCENT)),
-                ),
+            Paragraph::new("> ").style(Style::default().fg(theme::ACCENT)),
+            prompt,
+        );
+        frame.render_widget(
+            Paragraph::new("Ctrl+J focus  /  PgUp/PgDn history").style(theme::muted()),
+            shortcuts,
+        );
+        frame.render_widget(
+            Paragraph::new(if self.is_running() {
+                "[cancel]"
+            } else {
+                "[send]"
+            })
+            .right_aligned()
+            .style(theme::muted()),
             send,
         );
     }
@@ -286,14 +281,19 @@ impl Assistant {
             .iter()
             .flat_map(|message| message_lines(message, area.width))
             .collect();
-        // Keep spacing between cards, without scrolling a visible header away for an empty final row.
+        // Keep a blank line between turns without wasting the last visible transcript row.
         lines.pop();
         let maximum_scroll = u16::try_from(lines.len())
             .unwrap_or(u16::MAX)
             .saturating_sub(area.height);
         self.scroll_from_bottom = self.scroll_from_bottom.min(maximum_scroll);
         let offset = maximum_scroll.saturating_sub(self.scroll_from_bottom);
-        frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), area);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(theme::text())
+                .scroll((offset, 0)),
+            area,
+        );
     }
 }
 
@@ -312,55 +312,57 @@ fn composer_layout(area: Rect) -> [Rect; 3] {
         vertical: 1,
     });
     let [_, composer] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(INPUT_HEIGHT)]).areas(inner);
+        Layout::vertical([Constraint::Min(0), Constraint::Length(COMPOSER_HEIGHT)]).areas(inner);
     composer_layout_from_row(composer)
 }
 
 fn composer_layout_from_row(area: Rect) -> [Rect; 3] {
-    Layout::horizontal([
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(SEND_WIDTH),
-    ])
-    .areas(area)
+    let [input, footer] =
+        Layout::vertical([Constraint::Length(INPUT_HEIGHT), Constraint::Length(1)]).areas(area);
+    let [shortcuts, send] =
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(SEND_WIDTH)]).areas(footer);
+    [input, shortcuts, send]
+}
+
+fn input_block(focused: bool) -> Block<'static> {
+    Block::default()
+        .borders(Borders::TOP)
+        .padding(Padding::new(PROMPT_WIDTH, 0, 0, 0))
+        .border_style(Style::default().fg(if focused {
+            theme::MUTED
+        } else {
+            theme::DIVIDER
+        }))
 }
 
 fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
-    let card_style = Style::default().bg(theme::ELEVATED);
-    let name = if message.role == "user" {
-        "You"
+    let is_user = message.role == "user";
+    let prefix = if is_user {
+        "> "
+    } else if message.error {
+        "! "
     } else {
-        "Texo"
+        "* "
     };
-    let avatar = if message.role == "user" {
-        "◉ U"
+    let style = if message.error {
+        theme::text().fg(theme::ERROR)
+    } else if is_user {
+        theme::text().fg(theme::ACCENT).bg(theme::ELEVATED)
     } else {
-        "◉ T"
+        theme::text()
     };
-    let title = format!(" {avatar}  {name}");
-    let spacing = usize::from(width).saturating_sub(title.chars().count() + message.time.len() + 1);
-    let header = Line::from(vec![
-        Span::styled(title, Style::default().fg(theme::ACCENT)),
-        Span::raw(" ".repeat(spacing)),
-        Span::styled(format!("{} ", message.time), theme::muted()),
-    ])
-    .style(card_style);
-    let mut lines = vec![header];
-    let content_width = usize::from(width.saturating_sub(7)).max(1);
-    let content_style = card_style.fg(if message.error {
-        theme::ERROR
-    } else {
-        theme::TEXT
-    });
+    let content_width = usize::from(width.saturating_sub(PROMPT_WIDTH)).max(1);
+    let mut lines = Vec::new();
     for paragraph in message.content.lines() {
-        for line in textwrap::wrap(paragraph, content_width) {
-            lines.push(Line::from(format!("      {line} ")).style(content_style));
+        for text in textwrap::wrap(paragraph, content_width) {
+            let marker = if lines.is_empty() { prefix } else { "  " };
+            let mut line = Line::from(format!("{marker}{text}")).style(style);
+            if is_user {
+                let padding = usize::from(width).saturating_sub(line.width());
+                line.spans.push(Span::raw(" ".repeat(padding)));
+            }
+            lines.push(line);
         }
-    }
-    lines.push(Line::from(" ").style(card_style));
-    for line in &mut lines {
-        let padding = usize::from(width).saturating_sub(line.width());
-        line.spans.push(Span::raw(" ".repeat(padding)));
     }
     lines.push(Line::default());
     lines
@@ -371,32 +373,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn short_conversation_keeps_headers_visible_and_fills_card_backgrounds() {
+    fn transcript_uses_prompt_markers_and_compact_plain_responses() {
         use ratatui::{Terminal, backend::TestBackend};
-
         let mut assistant = Assistant::new();
         assistant
             .messages
             .push(Message::new("user", "Shorten my bullets.".into(), false));
         assistant.messages.push(Message::new(
             "assistant",
-            "I can tighten the wording\nwhile preserving your facts.".into(),
+            "Tighter wording.\nFacts preserved.".into(),
             false,
         ));
-        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
         terminal
             .draw(|frame| assistant.draw_history(frame, frame.area()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let rendered: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-        assert!(rendered.contains("You"));
-        assert!(rendered.contains("Texo"));
-        for row in [0, 1, 2, 4, 5, 6, 7] {
-            for column in 0..60 {
-                assert_eq!(buffer[(column, row)].bg, theme::ELEVATED);
-            }
-        }
-        assert_ne!(buffer[(59, 3)].bg, theme::ELEVATED);
+        assert!(rendered.contains("> Shorten my bullets."));
+        assert!(rendered.contains("* Tighter wording."));
+        assert!(rendered.contains("Facts preserved."));
+        assert_eq!(buffer[(59, 0)].bg, theme::ELEVATED);
+        assert_eq!(buffer[(59, 2)].bg, theme::BACKGROUND);
+        assert!(!rendered.contains("◉"));
     }
 
     #[test]
@@ -423,9 +422,9 @@ mod tests {
         let area = Rect::new(20, 10, 70, 15);
         let input = Assistant::input_area(area);
         assert!(assistant.click(area, input.x + 4, input.y + 1));
-        assert_eq!(assistant.input.cursor(), (0, 3));
+        assert_eq!(assistant.input.cursor(), (0, 2));
         assert!(!assistant.click(area, area.x + 2, area.y + 2));
-        assert_eq!(assistant.input.cursor(), (0, 3));
+        assert_eq!(assistant.input.cursor(), (0, 2));
     }
 
     #[test]
