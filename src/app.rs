@@ -17,7 +17,7 @@ use texo::{preview::Preview, theme};
 
 use crate::{
     actions::{Action, ActionMenu, ExportDialog},
-    assistant::Assistant,
+    assistant::{Assistant, ProposedEdit},
     editor::Editor,
     explorer::Explorer,
     proposal::ProposalReview,
@@ -148,34 +148,45 @@ impl App {
 
     fn receive_assistant(&mut self) {
         if let Some(result) = self.assistant.poll() {
-            self.status = match result {
-                Ok(()) if self.assistant.proposal().is_some() => {
-                    "Suggested edit ready. Ctrl+P → Review suggested TeX edit.".into()
-                }
-                Ok(()) => String::new(),
-                Err(_) => "Assistant failed. See its message for details.".into(),
-            };
+            match result {
+                Ok(()) if self.assistant.proposal().is_some() => self.apply_proposal(),
+                Ok(()) => self.status = "Assistant replied without changing the document.".into(),
+                Err(_) => self.status = "Assistant failed. See its message for details.".into(),
+            }
         }
     }
 
     fn apply_proposal(&mut self) {
-        let Some(proposal) = self.assistant.proposal() else {
+        let Some(proposal) = self.assistant.proposal().cloned() else {
             return;
         };
-        if proposal.source_before != self.editor.source() {
-            self.proposal_review = None;
-            self.status =
-                "Document changed since this suggestion. Ask Texo again using the current text."
-                    .into();
-            return;
-        }
-        if let Some(proposal) = self.assistant.take_proposal() {
-            self.editor.replace_source(&proposal.source_after);
-            self.status =
-                "Edit applied. Ctrl+Z twice to undo; Ctrl+S to save; Ctrl+B to build.".into();
-            self.focus = Focus::Editor;
+        if self.apply_edit(&proposal) {
+            self.assistant.take_proposal();
         }
         self.proposal_review = None;
+    }
+
+    fn apply_edit(&mut self, proposal: &ProposedEdit) -> bool {
+        if proposal.source_before != self.editor.source() {
+            self.status =
+                "Edit not applied: the document changed during the request. Ask Texo again.".into();
+            self.assistant.report_edit_result(
+                "Not applied: you changed the editor while I was responding. Your newer text is preserved.",
+            );
+            return false;
+        }
+
+        if self.editor.replace_source(&proposal.source_after) {
+            self.status =
+                "Edit applied. Ctrl+Z twice to undo; Ctrl+S to save; Ctrl+B to build.".into();
+            self.assistant
+                .report_edit_result("Applied to the open editor. Not yet saved or rebuilt.");
+        } else {
+            self.status = "The returned resume is unchanged.".into();
+            self.assistant
+                .report_edit_result("No changes applied: the returned text matches the editor.");
+        }
+        true
     }
 
     fn start_render(&mut self) {
@@ -907,6 +918,64 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    fn assistant_edits_refresh_buffer_and_preserve_focus() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        app.editor.text.insert_str("Unsaved ");
+        let original = app.editor.source();
+        app.rendered_source = Some(original.clone());
+        app.focus = Focus::Assistant;
+        let edit = ProposedEdit {
+            source_before: original.clone(),
+            source_after: "Revised resume".into(),
+        };
+        assert!(app.apply_edit(&edit));
+        assert_eq!(app.editor.source(), "Revised resume");
+        assert!(app.editor.is_modified());
+        assert!(app.focus == Focus::Assistant);
+        assert_eq!(
+            std::fs::read_to_string(&app.editor.path)?,
+            "Original document"
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 50))?;
+        terminal.draw(|frame| app.draw(frame))?;
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Revised resume"));
+        assert!(text.contains("PDF out of date"));
+        app.editor.text.undo();
+        app.editor.text.undo();
+        assert_eq!(app.editor.source(), original);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_and_unchanged_assistant_edits_preserve_buffer() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let original = app.editor.source();
+        let mut edit = ProposedEdit {
+            source_before: original.clone(),
+            source_after: original.clone(),
+        };
+        assert!(app.apply_edit(&edit));
+        assert!(!app.editor.is_modified());
+        assert!(app.status.contains("unchanged"));
+
+        app.editor.text.insert_str("Newer typing ");
+        let newer = app.editor.source();
+        edit.source_after = "AI revision".into();
+        assert!(!app.apply_edit(&edit));
+        assert_eq!(app.editor.source(), newer);
+        assert!(app.status.contains("not applied"));
+        Ok(())
     }
 
     #[test]
