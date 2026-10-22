@@ -48,6 +48,8 @@ fn workspace_command(document: &Path, display: &DisplayInfo) -> Result<Command> 
         .arg(format!("{x}x{y}"))
         .arg("--directory")
         .arg(directory)
+        // Kitty uses zero to disable its native window-close confirmation.
+        .args(["--override", "confirm_os_window_close=0"])
         .args(["--override", "remember_window_size=no"])
         .args(["--override", "remember_window_position=no"])
         .args(["--override", &format!("initial_window_width={width}")])

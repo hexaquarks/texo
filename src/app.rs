@@ -66,7 +66,6 @@ struct App {
     diagnostics: Option<String>,
     diagnostic_scroll: u16,
     focus: Focus,
-    confirm_quit: bool,
 }
 
 pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> anyhow::Result<()> {
@@ -82,6 +81,7 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
 
         if event::poll(EVENT_POLL_INTERVAL)? {
             let area = terminal.get_frame().area();
+            let preview_was_loading = app.job.is_some();
             let previous_document = app.editor.path.clone();
             let explorer_was_visible = app.explorer_visible;
             let overlay_was_open = app.overlay_open();
@@ -91,6 +91,7 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
             if explorer_was_visible != app.explorer_visible
                 || overlay_was_open != app.overlay_open()
                 || previous_document != app.editor.path
+                || preview_was_loading != app.job.is_some()
             {
                 // Repaint cells formerly occupied by the terminal's PDF image placement.
                 terminal.clear()?;
@@ -130,7 +131,6 @@ impl App {
             diagnostics: None,
             diagnostic_scroll: 0,
             focus: Focus::Editor,
-            confirm_quit: false,
         })
     }
 
@@ -234,11 +234,6 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event, area: Rect) -> bool {
-        let confirms_quit = matches!(&event, Event::Key(key)
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q'));
-        if !confirms_quit {
-            self.confirm_quit = false;
-        }
         if self.overlay_open() {
             return self.handle_overlay(event, area);
         }
@@ -249,14 +244,12 @@ impl App {
             }
             Event::Paste(text) if self.focus == Focus::Editor => {
                 self.editor.text.insert_str(text);
-                self.confirm_quit = false;
             }
             Event::Mouse(mouse) => {
                 let layout =
                     WorkspaceLayout::new(area, self.diagnostics.is_some(), self.explorer_visible);
                 let position = Position::new(mouse.column, mouse.row);
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                    self.confirm_quit = false;
                     if layout.render_button.contains(position) {
                         self.focus = Focus::Render;
                         self.start_render();
@@ -315,14 +308,8 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
-            if !self.editor.is_modified() || self.confirm_quit {
-                return true;
-            }
-            self.confirm_quit = true;
-            self.status = "Unsaved changes. Ctrl+Q again to discard, or Ctrl+S to save.".into();
-            return false;
+            return true;
         }
-        self.confirm_quit = false;
 
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             self.handle_control_key(key);
@@ -716,7 +703,11 @@ impl App {
             .draw(frame, layout.editor, self.focus == Focus::Editor);
         self.assistant
             .draw(frame, layout.assistant, self.focus == Focus::Assistant);
-        self.preview.draw(frame, layout.preview);
+        if let Some(job) = &self.job {
+            Preview::draw_loading(frame, layout.preview, job.elapsed());
+        } else {
+            self.preview.draw(frame, layout.preview);
+        }
         self.draw_footer(frame, &layout);
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
@@ -983,13 +974,14 @@ mod tests {
     }
 
     #[test]
-    fn typing_q_edits_and_modified_documents_require_quit_confirmation() -> anyhow::Result<()> {
+    fn typing_q_edits_and_ctrl_q_quits_immediately() -> anyhow::Result<()> {
         let (_directory, mut app) = application()?;
         assert!(!app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
         assert!(app.editor.source().starts_with('q'));
         let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
-        assert!(!app.handle_key(quit));
         assert!(app.handle_key(quit));
+        app.actions = Some(ActionMenu::open());
+        assert!(app.handle_event(Event::Key(quit), Rect::new(0, 0, 160, 50)));
         Ok(())
     }
 
@@ -1156,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn export_rechecks_snapshot_and_modal_input_disarms_quit() -> anyhow::Result<()> {
+    fn export_rechecks_snapshot_before_writing() -> anyhow::Result<()> {
         let (_directory, mut app) = application()?;
         app.rendered_source = Some(app.editor.source());
         app.rendered_pdf = Some(app.editor.path.with_extension("pdf"));
@@ -1166,13 +1158,6 @@ mod tests {
         assert!(app.export.is_none());
         assert!(app.status.contains("PDF changed"));
 
-        app.actions = Some(ActionMenu::open());
-        app.confirm_quit = true;
-        app.handle_event(
-            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-            Rect::new(0, 0, 160, 50),
-        );
-        assert!(!app.confirm_quit);
         Ok(())
     }
 
