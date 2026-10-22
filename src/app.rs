@@ -1,5 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
+#[cfg(test)]
 use anyhow::Context;
 
 use ratatui::{
@@ -10,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 use texo::{preview::Preview, theme};
 
@@ -22,7 +23,9 @@ const MIN_TERMINAL_HEIGHT: u16 = 16;
 const TOOLBAR_HEIGHT: u16 = 2;
 const FOOTER_HEIGHT: u16 = 2;
 const RENDER_BUTTON_WIDTH: u16 = 20;
-const EXPLORER_WIDTH: u16 = 30;
+const EXPLORER_PERCENT: u16 = 16;
+const PREVIEW_PERCENT: u16 = 38;
+const EDITOR_PERCENT: u16 = 67;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
 
@@ -37,6 +40,7 @@ struct App {
     editor: Editor,
     explorer: Explorer,
     explorer_visible: bool,
+    workspace_path: String,
     preview: Preview,
     job: Option<RenderJob>,
     rendered_source: Option<String>,
@@ -47,8 +51,8 @@ struct App {
     confirm_quit: bool,
 }
 
-pub fn run(terminal: &mut DefaultTerminal, editor: Editor) -> anyhow::Result<()> {
-    let mut app = App::new(editor, Preview::detect())?;
+pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> anyhow::Result<()> {
+    let mut app = App::with_workspace(editor, Preview::detect(), root)?;
 
     loop {
         app.receive_render();
@@ -69,17 +73,24 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor) -> anyhow::Result<()>
 }
 
 impl App {
+    #[cfg(test)]
     fn new(editor: Editor, preview: Preview) -> anyhow::Result<Self> {
         let root = editor
             .path
             .parent()
             .context("The document needs a workspace directory")?
             .to_path_buf();
+        Self::with_workspace(editor, preview, root)
+    }
+
+    fn with_workspace(editor: Editor, preview: Preview, root: PathBuf) -> anyhow::Result<Self> {
+        let workspace_path = crate::workspace::display_path(&root);
         let explorer = Explorer::new(root, &editor.path)?;
         Ok(Self {
             editor,
             explorer,
             explorer_visible: true,
+            workspace_path,
             preview,
             job: None,
             rendered_source: None,
@@ -337,7 +348,14 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        frame.render_widget(Block::default().style(theme::text()), area);
+        frame.render_widget(
+            Block::default()
+                .style(theme::text())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme::DIVIDER)),
+            area,
+        );
 
         if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
             frame.render_widget(
@@ -360,27 +378,33 @@ impl App {
                 self.focus == Focus::Explorer,
             );
         }
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::RIGHT)
+                .border_style(theme::muted().fg(theme::DIVIDER)),
+            layout.center,
+        );
         self.editor
             .draw(frame, layout.editor, self.focus == Focus::Editor);
+        frame.render_widget(
+            Paragraph::new(" ASSISTANT")
+                .style(Style::default().fg(theme::ACCENT))
+                .block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(theme::DIVIDER)),
+                ),
+            layout.assistant,
+        );
         self.preview.draw(frame, layout.preview);
         self.draw_footer(frame, &layout);
     }
 
     fn draw_toolbar(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
-        let stale = self
-            .rendered_source
-            .as_ref()
-            .is_some_and(|source| *source != self.editor.source());
-        let preview_status = if stale {
-            "  ·  Preview out of date"
-        } else {
-            ""
-        };
-        let heading = Paragraph::new(format!(
-            "  {}  —  texo{preview_status}",
-            self.explorer.name()
-        ))
-        .style(theme::muted())
+        let heading = Paragraph::new(Line::from(vec![
+            Span::styled(" texo  ", Style::default().fg(theme::ACCENT).bold()),
+            Span::styled(self.workspace_path.as_str(), theme::muted()),
+        ]))
         .block(
             Block::default()
                 .borders(Borders::BOTTOM)
@@ -421,20 +445,28 @@ impl App {
             frame.render_widget(log, layout.diagnostics);
         }
 
-        let footer = vec![
-            Line::styled(self.status.as_str(), theme::muted()),
-            Line::from(vec![
-                Span::styled("Ctrl+B", Style::default().fg(theme::ACCENT)),
-                Span::styled(" explorer     ", theme::muted()),
-                Span::styled("Ctrl+R", Style::default().fg(theme::ACCENT)),
-                Span::styled(" render     ", theme::muted()),
-                Span::styled("F6", Style::default().fg(theme::ACCENT)),
-                Span::styled(" focus     ", theme::muted()),
-                Span::styled("Ctrl+Q", Style::default().fg(theme::ACCENT)),
-                Span::styled(" quit", theme::muted()),
-            ]),
-        ];
-        frame.render_widget(Paragraph::new(footer), layout.footer);
+        let saved = if self.editor.is_modified() {
+            "Unsaved"
+        } else {
+            "Saved"
+        };
+        let pdf = match &self.rendered_source {
+            Some(source) if *source == self.editor.source() => "PDF up to date",
+            Some(_) => "PDF out of date",
+            None => "PDF not built",
+        };
+        let footer = Line::from(vec![
+            Span::styled(format!(" {saved}  "), Style::default().fg(theme::ACCENT)),
+            Span::styled(format!("│  {pdf}    {}", self.status), theme::muted()),
+        ]);
+        frame.render_widget(
+            Paragraph::new(footer).block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(theme::DIVIDER)),
+            ),
+            layout.footer,
+        );
     }
 }
 
@@ -442,7 +474,9 @@ struct WorkspaceLayout {
     explorer: Rect,
     heading: Rect,
     render_button: Rect,
+    center: Rect,
     editor: Rect,
+    assistant: Rect,
     preview: Rect,
     diagnostics: Rect,
     footer: Rect,
@@ -450,6 +484,10 @@ struct WorkspaceLayout {
 
 impl WorkspaceLayout {
     fn new(area: Rect, show_diagnostics: bool, show_explorer: bool) -> Self {
+        let border = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+        let area = border.inner(area);
         let diagnostics_height = if show_diagnostics {
             DIAGNOSTICS_HEIGHT
         } else {
@@ -465,19 +503,33 @@ impl WorkspaceLayout {
         let [heading, render_button] =
             Layout::horizontal([Constraint::Min(1), Constraint::Length(RENDER_BUTTON_WIDTH)])
                 .areas(toolbar);
-        let sidebar_width = if show_explorer { EXPLORER_WIDTH } else { 0 };
-        let [explorer, editor, preview] = Layout::horizontal([
+        let sidebar_width = if show_explorer {
+            area.width * EXPLORER_PERCENT / 100
+        } else {
+            0
+        };
+        let [explorer, center, preview] = Layout::horizontal([
             Constraint::Length(sidebar_width),
-            Constraint::Fill(1),
-            Constraint::Fill(1),
+            Constraint::Min(1),
+            Constraint::Percentage(PREVIEW_PERCENT),
         ])
         .areas(body);
+
+        let center_content = Rect {
+            width: center.width.saturating_sub(1),
+            ..center
+        };
+        let [editor, assistant] =
+            Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
+                .areas(center_content);
 
         Self {
             explorer,
             heading,
             render_button,
+            center,
             editor,
+            assistant,
             preview,
             diagnostics,
             footer,
@@ -554,7 +606,7 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
         assert!(text.contains("Render  Ctrl+R"));
-        assert!(text.contains("PDF preview"));
+        assert!(text.contains("ASSISTANT"));
         assert!(text.contains("Original document"));
 
         let mut small_terminal = Terminal::new(TestBackend::new(30, 8))?;

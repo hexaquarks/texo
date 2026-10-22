@@ -3,7 +3,6 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::Style,
-    text::Line,
     widgets::{Block, Paragraph, Wrap},
 };
 use ratatui_image::{
@@ -16,7 +15,8 @@ use crate::pdf::PdfPages;
 use crate::theme;
 
 const EMPTY_STATE_HEIGHT: u16 = 7;
-const EMPTY_NOTICE: &str = "Your PDF will appear here.\n\nRender your document to update the preview.\n\nCtrl+R  to render";
+const EMPTY_NOTICE: &str =
+    "Your PDF will appear here.\n\nBuild your document to update the preview.\n\nCtrl+R  to build";
 const UNSUPPORTED_NOTICE: &str = "Preview needs a graphics-capable terminal.\n\nLaunch texo in its dedicated window to see your PDF here.";
 
 pub struct Preview {
@@ -103,30 +103,18 @@ impl Preview {
         Ok(())
     }
 
+    pub fn page_status(&self) -> Option<String> {
+        self.pages
+            .as_ref()
+            .map(|pages| format!("{} / {}", self.page_index + 1, pages.page_count()))
+    }
+
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::PREVIEW)),
             area,
         );
-        let [header, body] = Layout::vertical([
-            Constraint::Length(theme::PANEL_HEADER_HEIGHT),
-            Constraint::Min(0),
-        ])
-        .areas(area);
-        let details = match &self.pages {
-            Some(pages) => format!(
-                "  Page {} of {}  ·  Alt+←/→",
-                self.page_index + 1,
-                pages.page_count()
-            ),
-            None => String::from("  Render to preview"),
-        };
-        let heading = vec![
-            Line::styled("  PDF preview", Style::default().fg(theme::TEXT)),
-            Line::styled(details, theme::muted()),
-        ];
-        frame.render_widget(Paragraph::new(heading), header);
-        let content = body.inner(Margin::new(theme::PANEL_PADDING, 1));
+        let content = area.inner(Margin::new(1, 0));
 
         match &mut self.image {
             Some(image) => {
