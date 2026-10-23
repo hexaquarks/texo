@@ -24,6 +24,8 @@ const MODEL_LABEL_HEIGHT: u16 = 1;
 const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT + MODEL_LABEL_HEIGHT;
 const PROMPT_WIDTH: u16 = 2;
 const SCROLL_LINES: u16 = 3;
+const THINKING_FRAME_MS: u128 = 100;
+const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const CHAT_COMMANDS: [(&str, &str); 3] = [
     ("/login", "Connect or switch an assistant provider"),
     ("/model", "Choose a model for the current provider"),
@@ -360,7 +362,7 @@ impl Assistant {
             horizontal: theme::PANEL_PADDING,
             vertical: 1,
         });
-        let [header, _, history, _, composer] = Layout::vertical([
+        let [header, _, history, activity, composer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
@@ -369,7 +371,7 @@ impl Assistant {
         ])
         .areas(inner);
         let hint = if self.is_running() {
-            "Thinking…  Esc cancel"
+            "Esc cancel"
         } else if self.proposal().is_some() {
             "Not applied · Actions to review"
         } else if focused {
@@ -390,6 +392,18 @@ impl Assistant {
             hint_area,
         );
         self.draw_history(frame, history);
+
+        if let Some(job) = &self.job {
+            let phase =
+                (job.elapsed().as_millis() / THINKING_FRAME_MS) % THINKING_FRAMES.len() as u128;
+            let label = format!("{} Texo is thinking…", THINKING_FRAMES[phase as usize]);
+
+            frame.render_widget(
+                Paragraph::new(label).style(theme::text().fg(theme::ACCENT)),
+                activity,
+            );
+        }
+
         if focused {
             let choices = self.command_matches();
             if !choices.is_empty() {

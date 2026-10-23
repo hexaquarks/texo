@@ -57,6 +57,7 @@ pub struct AssistantJob {
     result: Receiver<Result<AssistantReply>>,
     cancelled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    started: Instant,
 }
 
 impl AssistantJob {
@@ -88,7 +89,12 @@ impl AssistantJob {
             result,
             cancelled,
             worker: Some(worker),
+            started: Instant::now(),
         })
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
     }
 
     pub fn poll(&self) -> Option<Result<AssistantReply>> {
