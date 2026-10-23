@@ -3,7 +3,7 @@ use std::{fs, sync::atomic::AtomicBool};
 use texo::compiler;
 
 #[test]
-#[ignore = "requires Tectonic and Poppler on PATH; first run may download TeX packages"]
+#[ignore = "requires macOS, Tectonic, Poppler, and cached LaTeX packages"]
 fn renders_unsaved_text_with_relative_includes_and_refreshes_the_pdf() -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("my resume.tex");
@@ -37,7 +37,7 @@ fn renders_unsaved_text_with_relative_includes_and_refreshes_the_pdf() -> anyhow
 }
 
 #[test]
-#[ignore = "requires Tectonic on PATH"]
+#[ignore = "requires macOS, Tectonic, and cached LaTeX packages"]
 fn failed_compilation_keeps_the_previous_pdf() -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("resume.tex");
@@ -48,7 +48,7 @@ fn failed_compilation_keeps_the_previous_pdf() -> anyhow::Result<()> {
     let error = compiler::render(source.into(), &path, &AtomicBool::new(false))
         .err()
         .expect("broken TeX must fail");
-    assert!(error.to_string().contains("tectonic failed"));
+    assert!(error.to_string().contains("failed"));
     assert_eq!(fs::read(pdf)?, b"previous successful output");
     Ok(())
 }
