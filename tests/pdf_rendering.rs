@@ -2,6 +2,9 @@ use std::{path::Path, sync::atomic::AtomicBool};
 
 use texo::pdf::PdfPages;
 
+const PREVIEW_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PREVIEW_TEST_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+
 #[test]
 #[ignore = "requires Poppler (pdfinfo and pdftoppm) on PATH"]
 fn renders_all_pdf_pages_in_order() -> anyhow::Result<()> {
@@ -47,7 +50,7 @@ fn previews_real_pdf_pages_without_terminal_graphics() -> anyhow::Result<()> {
     preview.set_pages(pages)?;
 
     let mut terminal = Terminal::new(TestBackend::new(100, 50))?;
-    terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+    draw_ready_preview(&mut terminal, &mut preview)?;
     let first = terminal.backend().buffer().clone();
     assert!(
         first
@@ -59,12 +62,12 @@ fn previews_real_pdf_pages_without_terminal_graphics() -> anyhow::Result<()> {
     assert_eq!(preview.page_status().as_deref(), Some("1 / 2"));
 
     preview.next_page()?;
-    terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+    draw_ready_preview(&mut terminal, &mut preview)?;
     assert_ne!(&first, terminal.backend().buffer());
     assert_eq!(preview.page_status().as_deref(), Some("2 / 2"));
 
     preview.previous_page()?;
-    terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+    draw_ready_preview(&mut terminal, &mut preview)?;
     assert_eq!(&first, terminal.backend().buffer());
     preview.clear();
     terminal.draw(|frame| preview.draw(frame, frame.area()))?;
@@ -77,4 +80,28 @@ fn previews_real_pdf_pages_without_terminal_graphics() -> anyhow::Result<()> {
         .collect();
     assert!(text.contains("Your PDF will appear here."));
     Ok(())
+}
+
+fn draw_ready_preview(
+    terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    preview: &mut texo::preview::Preview,
+) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + PREVIEW_TEST_TIMEOUT;
+    loop {
+        terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+        if terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .any(|cell| cell.symbol() == "▀")
+        {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Preview worker timed out"
+        );
+        std::thread::sleep(PREVIEW_TEST_POLL_INTERVAL);
+    }
 }

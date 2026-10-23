@@ -1,6 +1,13 @@
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, TryRecvError},
+    },
+    thread,
+    time::Duration,
+};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use image::{DynamicImage, imageops::FilterType};
 use ratatui::{
     Frame,
@@ -9,7 +16,7 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Wrap},
 };
 use ratatui_image::{
-    Resize, StatefulImage,
+    Resize, ResizeEncodeRender, StatefulImage,
     picker::{Picker, ProtocolType},
     protocol::StatefulProtocol,
 };
@@ -31,11 +38,25 @@ pub struct Preview {
     pages: Option<PdfPages>,
     page_index: usize,
     image: Option<StatefulProtocol>,
-    source_page: Option<DynamicImage>,
-    fitted_page: Option<DynamicImage>,
+    source_page: Option<Arc<DynamicImage>>,
+    fitted_page: Option<Arc<DynamicImage>>,
+    pending: Option<ViewportJob>,
     viewport_pixels: Option<(u32, u32)>,
     scroll_pixels: u32,
     displayed_scroll: Option<u32>,
+}
+
+struct PreparedViewport {
+    image: StatefulProtocol,
+    fitted: Arc<DynamicImage>,
+    scroll: u32,
+}
+
+struct ViewportJob {
+    source: Arc<DynamicImage>,
+    pixels: (u32, u32),
+    scroll: u32,
+    result: Receiver<Result<PreparedViewport>>,
 }
 
 impl Default for Preview {
@@ -48,6 +69,7 @@ impl Default for Preview {
             image: None,
             source_page: None,
             fitted_page: None,
+            pending: None,
             viewport_pixels: None,
             scroll_pixels: 0,
             displayed_scroll: None,
@@ -119,7 +141,7 @@ impl Preview {
     }
 
     fn set_source(&mut self, source: Option<DynamicImage>) {
-        self.source_page = source;
+        self.source_page = source.map(Arc::new);
         self.fitted_page = None;
         self.viewport_pixels = None;
         self.displayed_scroll = None;
@@ -143,42 +165,83 @@ impl Preview {
         };
     }
 
-    // Cache the resized page separately from its visible crop so scrolling does
-    // not repeatedly resample document text or reload the PDF from disk.
+    // Only one worker per preview may run at a time. Resizes and scrolls coalesce
+    // while it runs; results for an old page or viewport are never displayed.
     fn prepare_viewport(&mut self, area: Rect) {
-        let Some(source) = &self.source_page else {
+        let Some(source) = self.source_page.clone() else {
             return;
         };
         let font = self.picker.font_size();
-        let width = u32::from(area.width) * u32::from(font.width);
-        let height = u32::from(area.height) * u32::from(font.height);
-        if width == 0 || height == 0 {
+        let pixels = (
+            u32::from(area.width) * u32::from(font.width),
+            u32::from(area.height) * u32::from(font.height),
+        );
+        if pixels.0 == 0 || pixels.1 == 0 {
             return;
         }
 
-        if self
-            .fitted_page
-            .as_ref()
-            .is_none_or(|page| page.width() != width)
+        if let Some(job) = &self.pending {
+            let result = match job.result.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => Err(anyhow!("Preview worker stopped")),
+            };
+            let current = Arc::ptr_eq(&job.source, &source)
+                && job.pixels == pixels
+                && job.scroll == self.scroll_pixels;
+            self.pending = None;
+
+            if current {
+                match result {
+                    Ok(prepared) => {
+                        self.image = Some(prepared.image);
+                        self.fitted_page = Some(prepared.fitted);
+                        self.scroll_pixels = prepared.scroll;
+                        self.displayed_scroll = Some(prepared.scroll);
+                        self.viewport_pixels = Some(pixels);
+                    }
+                    Err(error) => {
+                        self.notice = format!("Could not display the preview: {error}");
+                        self.image = None;
+                        if !self.uses_basic_rendering() {
+                            self.picker = Picker::halfblocks();
+                            self.fitted_page = None;
+                        } else {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        if self.viewport_pixels == Some(pixels) && self.displayed_scroll == Some(self.scroll_pixels)
         {
-            let fitted_height = fit_width_height(source.width(), source.height(), width);
-            self.fitted_page =
-                Some(source.resize_exact(width, fitted_height, FilterType::Lanczos3));
-            self.displayed_scroll = None;
-        }
-        let Some(page) = self.fitted_page.as_ref() else {
             return;
-        };
-        let (offset, visible_height) = viewport_crop(page.height(), height, self.scroll_pixels);
-        self.scroll_pixels = offset;
+        }
 
-        if self.viewport_pixels == Some((width, height)) && self.displayed_scroll == Some(offset) {
-            return;
+        let picker = self.picker.clone();
+        let worker_source = Arc::clone(&source);
+        let fitted = self.fitted_page.clone();
+        let scroll = self.scroll_pixels;
+        let (sender, result) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("texo-preview".into())
+            .spawn(move || {
+                let prepared = prepare_image(picker, worker_source, fitted, area, scroll);
+                let _ = sender.send(prepared);
+            });
+
+        match worker {
+            Ok(_) => {
+                self.pending = Some(ViewportJob {
+                    source,
+                    pixels,
+                    scroll,
+                    result,
+                });
+            }
+            Err(error) => self.notice = format!("Could not prepare the preview: {error}"),
         }
-        let visible = page.crop_imm(0, offset, width, visible_height);
-        self.image = Some(self.picker.new_resize_protocol(visible));
-        self.viewport_pixels = Some((width, height));
-        self.displayed_scroll = Some(offset);
     }
 
     pub fn page_status(&self) -> Option<String> {
@@ -219,25 +282,18 @@ impl Preview {
         self.prepare_viewport(content);
 
         match &mut self.image {
-            Some(image) => {
+            Some(image)
+                if image
+                    .needs_resize(&Resize::Crop(None), content.as_size())
+                    .is_none() =>
+            {
                 frame.render_stateful_widget(
                     StatefulImage::default().resize(Resize::Crop(None)),
                     content,
                     image,
                 );
-                if let Some(Err(error)) = image.last_encoding_result() {
-                    self.notice = format!("Could not display the preview: {error}");
-                    self.image = None;
-                    if !self.uses_basic_rendering() {
-                        // Keep the page visible even if a detected graphics protocol cannot encode it.
-                        self.picker = Picker::halfblocks();
-                        self.fitted_page = None;
-                        self.viewport_pixels = None;
-                        self.displayed_scroll = None;
-                    }
-                }
             }
-            None => {
+            _ => {
                 let [_, message, _] = Layout::vertical([
                     Constraint::Fill(1),
                     Constraint::Length(EMPTY_STATE_HEIGHT),
@@ -245,15 +301,53 @@ impl Preview {
                 ])
                 .areas(content);
                 frame.render_widget(
-                    Paragraph::new(self.notice.as_str())
-                        .centered()
-                        .style(theme::muted())
-                        .wrap(Wrap { trim: false }),
+                    Paragraph::new(if self.source_page.is_some() && self.pending.is_some() {
+                        "Preparing PDF preview…"
+                    } else {
+                        self.notice.as_str()
+                    })
+                    .centered()
+                    .style(theme::muted())
+                    .wrap(Wrap { trim: false }),
                     message,
                 );
             }
         }
     }
+}
+
+// Resampling and protocol encoding can be expensive, especially for large PNGs
+// under tmux. Finish both before giving the image to the terminal's draw loop.
+fn prepare_image(
+    picker: Picker,
+    source: Arc<DynamicImage>,
+    fitted: Option<Arc<DynamicImage>>,
+    area: Rect,
+    scroll: u32,
+) -> Result<PreparedViewport> {
+    let font = picker.font_size();
+    let width = u32::from(area.width) * u32::from(font.width);
+    let height = u32::from(area.height) * u32::from(font.height);
+    let fitted = fitted
+        .filter(|page| page.width() == width)
+        .unwrap_or_else(|| {
+            let fitted_height = fit_width_height(source.width(), source.height(), width);
+            Arc::new(source.resize_exact(width, fitted_height, FilterType::Lanczos3))
+        });
+
+    let (scroll, visible_height) = viewport_crop(fitted.height(), height, scroll);
+    let visible = fitted.crop_imm(0, scroll, width, visible_height);
+    let mut image = picker.new_resize_protocol(visible);
+    image.resize_encode(&Resize::Crop(None), area.as_size());
+    if let Some(result) = image.last_encoding_result() {
+        result?;
+    }
+
+    Ok(PreparedViewport {
+        image,
+        fitted,
+        scroll,
+    })
 }
 
 // Compute the proportional paper height without losing precision for narrow panes.
@@ -272,6 +366,79 @@ fn viewport_crop(page_height: u32, viewport_height: u32, scroll: u32) -> (u32, u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const WORKER_TEST_TIMEOUT: Duration = Duration::from_secs(5);
+    const WORKER_TEST_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+    fn finish_viewport(preview: &mut Preview, area: Rect) {
+        let deadline = std::time::Instant::now() + WORKER_TEST_TIMEOUT;
+        loop {
+            preview.prepare_viewport(area);
+            if preview.pending.is_none() {
+                assert!(preview.image.is_some());
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Preview worker timed out"
+            );
+            thread::sleep(WORKER_TEST_POLL_INTERVAL);
+        }
+    }
+
+    #[test]
+    fn pending_image_work_does_not_block_or_replace_a_new_page() {
+        let mut preview = Preview::default();
+        preview.set_source(Some(DynamicImage::new_rgb8(120, 200)));
+        let area = Rect::new(0, 0, 10, 5);
+        let source = preview.source_page.clone().unwrap();
+        let (sender, result) = mpsc::channel();
+        preview.pending = Some(ViewportJob {
+            source: source.clone(),
+            pixels: (100, 100),
+            scroll: 0,
+            result,
+        });
+
+        // The worker has not sent anything: drawing must still return immediately.
+        preview.prepare_viewport(area);
+        assert!(preview.pending.is_some());
+        assert!(preview.image.is_none());
+
+        preview.clear();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
+        terminal
+            .draw(|frame| preview.draw(frame, frame.area()))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Your PDF will appear here."));
+        assert!(!text.contains("Preparing PDF"));
+
+        preview.set_source(Some(DynamicImage::new_rgb8(60, 60)));
+        sender
+            .send(prepare_image(Picker::halfblocks(), source, None, area, 0))
+            .unwrap();
+        preview.prepare_viewport(area);
+        assert!(
+            preview.image.is_none(),
+            "The previous page must not reappear"
+        );
+
+        finish_viewport(&mut preview, area);
+        assert_eq!(preview.fitted_page.as_ref().unwrap().height(), 100);
+        preview.prepare_viewport(area);
+        assert!(
+            preview.pending.is_none(),
+            "An unchanged viewport must use its cache"
+        );
+    }
 
     #[test]
     fn loading_state_replaces_previous_content_and_animates() -> anyhow::Result<()> {
@@ -309,17 +476,17 @@ mod tests {
     fn preview_scrolls_in_lines_and_clamps_after_viewport_resize() {
         let mut preview = Preview::default();
         preview.set_source(Some(DynamicImage::new_rgb8(120, 200)));
-        preview.prepare_viewport(Rect::new(0, 0, 10, 5));
+        finish_viewport(&mut preview, Rect::new(0, 0, 10, 5));
         assert_eq!(preview.fitted_page.as_ref().unwrap().width(), 100);
 
         preview.scroll(false);
         assert_eq!(preview.scroll_pixels, 60);
         preview.scroll(false);
         assert_eq!(preview.scroll_pixels, 66);
-        preview.prepare_viewport(Rect::new(0, 0, 10, 5));
+        finish_viewport(&mut preview, Rect::new(0, 0, 10, 5));
         assert_eq!(preview.displayed_scroll, Some(66));
 
-        preview.prepare_viewport(Rect::new(0, 0, 10, 20));
+        finish_viewport(&mut preview, Rect::new(0, 0, 10, 20));
         assert_eq!(preview.scroll_pixels, 0);
         preview.scroll(true);
         assert_eq!(preview.scroll_pixels, 0);
