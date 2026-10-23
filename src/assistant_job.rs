@@ -42,9 +42,9 @@ const ASSISTANT_INSTRUCTIONS: &str = "You are Texo, a concise resume editing ass
     use propose_edit with the COMPLETE revised TeX document, not just a description or a patch. \
     Return proposed_tex=null in your final response; Texo takes the proposal from the staged draft. \
     Call compile_resume after editing, and fix compilation errors before completing. \
-    Texo will apply this staged text to the open editor automatically if the buffer has not changed \
-    while you were responding. In reply, briefly describe the changes in the staged text; never \
-    claim they have already been applied, saved to disk, or rendered. Texo reports the actual result. \
+    Texo presents the staged text and PDF for user review; only the user can accept or discard it. \
+    In reply, summarize the specific changes in a few concise bullets, including any limitations. Never \
+    claim changes have already been accepted or saved to disk. Texo reports the actual result. \
     If you did not stage a changed draft, do not claim to have modified the resume.";
 
 #[derive(Clone, Serialize)]

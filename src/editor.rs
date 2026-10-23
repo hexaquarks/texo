@@ -168,6 +168,17 @@ impl Editor {
     }
 }
 
+/// Reuse the editor's LaTeX palette when rendering read-only proposal lines.
+pub fn source_colors(source: &str) -> Vec<Vec<Color>> {
+    let Ok(mut highlighting) = Highlighting::new() else {
+        return Vec::new();
+    };
+    let lines: Vec<String> = source.lines().map(str::to_owned).collect();
+    highlighting.update(&lines);
+
+    highlighting.colors
+}
+
 struct Highlighting {
     theme: Theme,
     source: Vec<String>,

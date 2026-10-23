@@ -468,7 +468,7 @@ impl Assistant {
             return;
         }
         if self.messages.is_empty() {
-            let introduction = "Ask Texo to refine the open resume.\nRequested edits update the editor; Ctrl+S saves them.";
+            let introduction = "Ask Texo to refine the open resume.\nReview proposed edits before accepting; Ctrl+S saves accepted text.";
             frame.render_widget(Paragraph::new(introduction).style(theme::muted()), area);
             return;
         }

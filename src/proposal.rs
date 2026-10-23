@@ -1,158 +1,163 @@
+use std::time::Duration;
+
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Margin, Rect},
-    style::Style,
-    text::{Line, Text},
-    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
+    layout::{Margin, Rect},
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
 };
+use similar::{ChangeTag, TextDiff};
 use texo::theme;
 
-use crate::assistant::ProposedEdit;
+use crate::{assistant::ProposedEdit, editor::source_colors};
 
-const REVIEW_MARGIN: u16 = 2;
-const INSTRUCTIONS_HEIGHT: u16 = 2;
-const SCROLL_LINES: u16 = 6;
-const SCROLL_COLUMNS: u16 = 12;
+const DIFF_TIMEOUT: Duration = Duration::from_millis(100);
+const SCROLL_LINES: u16 = 3;
+const MIN_LINE_NUMBER_WIDTH: usize = 4;
+const SCROLL_COLUMNS: u16 = 8;
+const ADDED_BACKGROUND: Color = Color::Rgb(28, 53, 38);
+const REMOVED_BACKGROUND: Color = Color::Rgb(62, 30, 34);
+const ADDED_TEXT: Color = Color::Rgb(166, 227, 161);
 
 pub struct ProposalReview {
-    before: String,
-    after: String,
+    pub edit: ProposedEdit,
+    lines: Vec<Line<'static>>,
     vertical_offset: u16,
     horizontal_offset: u16,
-    maximum_vertical_offset: u16,
-    maximum_horizontal_offset: u16,
 }
 
 impl ProposalReview {
     pub fn new(proposal: &ProposedEdit) -> Self {
+        let diff = TextDiff::configure()
+            .timeout(DIFF_TIMEOUT)
+            .diff_lines(&proposal.source_before, &proposal.source_after);
+
+        let number_width = proposal
+            .source_before
+            .lines()
+            .count()
+            .max(proposal.source_after.lines().count())
+            .to_string()
+            .len()
+            .max(MIN_LINE_NUMBER_WIDTH);
+
+        let before_colors = source_colors(&proposal.source_before);
+        let after_colors = source_colors(&proposal.source_after);
+
+        let lines = diff
+            .iter_all_changes()
+            .map(|change| {
+                let (marker, style) = match change.tag() {
+                    ChangeTag::Delete => (
+                        "−",
+                        Style::default().fg(theme::ERROR).bg(REMOVED_BACKGROUND),
+                    ),
+                    ChangeTag::Insert => {
+                        ("+", Style::default().fg(ADDED_TEXT).bg(ADDED_BACKGROUND))
+                    }
+                    ChangeTag::Equal => (" ", theme::text()),
+                };
+                let old = change
+                    .old_index()
+                    .map(|index| (index + 1).to_string())
+                    .unwrap_or_default();
+                let new = change
+                    .new_index()
+                    .map(|index| (index + 1).to_string())
+                    .unwrap_or_default();
+                let text = change
+                    .value()
+                    .trim_end_matches('\n')
+                    .trim_end_matches('\r')
+                    .to_owned();
+
+                let colors = if change.tag() == ChangeTag::Delete {
+                    change
+                        .old_index()
+                        .and_then(|index| before_colors.get(index))
+                } else {
+                    change.new_index().and_then(|index| after_colors.get(index))
+                };
+                let mut spans = vec![Span::styled(
+                    format!("{old:>number_width$} {new:>number_width$} {marker} "),
+                    theme::muted(),
+                )];
+
+                for (index, character) in text.chars().enumerate() {
+                    let color = colors
+                        .and_then(|line| line.get(index))
+                        .copied()
+                        .unwrap_or(theme::TEXT);
+                    let style = Style::default().fg(color);
+
+                    if let Some(last) = spans.last_mut()
+                        && last.style == style
+                    {
+                        last.content.to_mut().push(character);
+                    } else {
+                        spans.push(Span::styled(character.to_string(), style));
+                    }
+                }
+
+                Line::from(spans).style(style)
+            })
+            .collect();
+
         Self {
-            before: proposal.source_before.clone(),
-            after: proposal.source_after.clone(),
+            edit: proposal.clone(),
+            lines,
             vertical_offset: 0,
             horizontal_offset: 0,
-            maximum_vertical_offset: 0,
-            maximum_horizontal_offset: 0,
         }
     }
 
     pub fn scroll(&mut self, up: bool) {
+        let maximum = u16::try_from(self.lines.len().saturating_sub(1)).unwrap_or(u16::MAX);
         self.vertical_offset = if up {
             self.vertical_offset.saturating_sub(SCROLL_LINES)
         } else {
             self.vertical_offset
                 .saturating_add(SCROLL_LINES)
-                .min(self.maximum_vertical_offset)
+                .min(maximum)
         };
     }
 
     pub fn scroll_horizontal(&mut self, left: bool) {
+        let maximum = self.lines.iter().map(Line::width).max().unwrap_or(0);
+        let maximum = u16::try_from(maximum).unwrap_or(u16::MAX);
+
         self.horizontal_offset = if left {
             self.horizontal_offset.saturating_sub(SCROLL_COLUMNS)
         } else {
             self.horizontal_offset
                 .saturating_add(SCROLL_COLUMNS)
-                .min(self.maximum_horizontal_offset)
+                .min(maximum)
         };
     }
 
-    pub fn draw(&mut self, frame: &mut Frame) {
-        let area = frame
-            .area()
-            .inner(Margin::new(REVIEW_MARGIN, REVIEW_MARGIN));
-        frame.render_widget(Clear, area);
-        let panel = Block::default()
-            .title(" Review suggested edit ")
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme::ACCENT))
-            .style(theme::text());
-        let content = panel.inner(area);
-        frame.render_widget(panel, area);
+    pub fn draw(&self, frame: &mut Frame, area: Rect) {
+        let content = area.inner(Margin::new(theme::PANEL_PADDING, 1));
 
-        let [documents, instructions] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(INSTRUCTIONS_HEIGHT)])
-                .areas(content);
-        let [before, after] =
-            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .areas(documents);
-        let before_content = source_area(before, &self.before);
-        let after_content = source_area(after, &self.after);
-        self.update_scroll_limits(before_content, after_content);
-
-        self.draw_source(frame, before, " Before ", &self.before);
-        self.draw_source(frame, after, " Suggested ", &self.after);
-        frame.render_widget(
-            Paragraph::new(" Enter apply · Esc back · Ctrl+Z twice to undo replacement\n PgUp/PgDn scroll · ←/→ long lines")
-                .style(Style::default().fg(theme::ACCENT)),
-            instructions,
-        );
-    }
-
-    fn update_scroll_limits(&mut self, before_area: Rect, after_area: Rect) {
-        let before = Text::from(self.before.as_str());
-        let after = Text::from(self.after.as_str());
-        let line_count = before.height().max(after.height());
-        let visible_lines = usize::from(before_area.height.min(after_area.height));
-        let before_overflow = before
-            .width()
-            .saturating_sub(usize::from(before_area.width));
-        let after_overflow = after.width().saturating_sub(usize::from(after_area.width));
-
-        self.maximum_vertical_offset =
-            u16::try_from(line_count.saturating_sub(visible_lines)).unwrap_or(u16::MAX);
-        self.maximum_horizontal_offset =
-            u16::try_from(before_overflow.max(after_overflow)).unwrap_or(u16::MAX);
-        self.vertical_offset = self.vertical_offset.min(self.maximum_vertical_offset);
-        self.horizontal_offset = self.horizontal_offset.min(self.maximum_horizontal_offset);
-    }
-
-    fn draw_source(&self, frame: &mut Frame, area: Rect, title: &str, source: &str) {
-        let block = source_block(title);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let gutter_width = line_number_width(source).min(inner.width);
-        let [gutter, text] =
-            Layout::horizontal([Constraint::Length(gutter_width), Constraint::Min(0)]).areas(inner);
-        let numbers: Vec<Line> = source
-            .split('\n')
+        for (row, line) in self
+            .lines
+            .iter()
+            .skip(usize::from(self.vertical_offset))
+            .take(usize::from(content.height))
             .enumerate()
-            .map(|(index, _)| Line::from(format!("{} ", index + 1)).right_aligned())
-            .collect();
-        frame.render_widget(
-            Paragraph::new(numbers)
-                .style(theme::muted())
-                .scroll((self.vertical_offset, 0)),
-            gutter,
-        );
-        frame.render_widget(
-            Paragraph::new(source)
-                .style(Style::default().fg(theme::TEXT).bg(theme::EDITOR))
-                .scroll((self.vertical_offset, self.horizontal_offset)),
-            text,
-        );
-    }
-}
-
-fn source_block(title: &str) -> Block<'_> {
-    Block::default()
-        .title(title)
-        .padding(Padding::uniform(1))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::DIVIDER))
-}
-
-fn line_number_width(source: &str) -> u16 {
-    let digits = source.split('\n').count().to_string().len();
-    u16::try_from(digits + 1).unwrap_or(u16::MAX)
-}
-
-fn source_area(area: Rect, source: &str) -> Rect {
-    let inner = source_block("").inner(area);
-    let gutter_width = line_number_width(source).min(inner.width);
-    Rect {
-        x: inner.x + gutter_width,
-        width: inner.width - gutter_width,
-        ..inner
+        {
+            let row_area = Rect {
+                y: content.y + row as u16,
+                height: 1,
+                ..content
+            };
+            frame.render_widget(
+                Paragraph::new(line.clone())
+                    .style(line.style)
+                    .scroll((0, self.horizontal_offset)),
+                row_area,
+            );
+        }
     }
 }
 
@@ -161,57 +166,50 @@ mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
 
-    fn proposal() -> ProposedEdit {
-        ProposedEdit {
-            source_before: "Before content\n".repeat(80),
-            source_after: format!("{} END", "Long suggested content ".repeat(20)),
-        }
-    }
-
     #[test]
-    fn renders_both_versions_and_keeps_review_controls_visible() -> anyhow::Result<()> {
-        let mut review = ProposalReview::new(&proposal());
-        let mut terminal = Terminal::new(TestBackend::new(120, 30))?;
-        terminal.draw(|frame| review.draw(frame))?;
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains("Before content"));
-        assert!(text.contains("Long suggested content"));
-        assert!(text.contains("Enter apply"));
-        assert!(text.contains("Esc back"));
+    fn inline_diff_marks_insertions_and_deletions_without_changing_source() -> anyhow::Result<()> {
+        let edit = ProposedEdit {
+            source_before: "Same\nOld bullet\n".into(),
+            source_after: "Same\nNew bullet\n".into(),
+        };
+        let review = ProposalReview::new(&edit);
+        let mut terminal = Terminal::new(TestBackend::new(80, 12))?;
+
+        terminal.draw(|frame| review.draw(frame, frame.area()))?;
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+
+        assert!(text.contains("Old bullet"));
+        assert!(text.contains("New bullet"));
+        assert!(
+            buffer
+                .content
+                .iter()
+                .any(|cell| cell.bg == ADDED_BACKGROUND)
+        );
+        assert!(
+            buffer
+                .content
+                .iter()
+                .any(|cell| cell.bg == REMOVED_BACKGROUND)
+        );
+        assert_eq!(review.edit.source_before, edit.source_before);
         Ok(())
     }
 
     #[test]
-    fn long_lines_scroll_and_small_areas_do_not_panic() -> anyhow::Result<()> {
-        let mut review = ProposalReview::new(&proposal());
-        let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
-        terminal.draw(|frame| review.draw(frame))?;
-        for _ in 0..100 {
+    fn empty_unicode_and_tiny_reviews_do_not_panic() -> anyhow::Result<()> {
+        for (before, after) in [("", "é界"), ("Removed", ""), ("Same", "Same")] {
+            let mut review = ProposalReview::new(&ProposedEdit {
+                source_before: before.into(),
+                source_after: after.into(),
+            });
             review.scroll(false);
             review.scroll_horizontal(false);
-        }
-        assert_eq!(review.vertical_offset, review.maximum_vertical_offset);
-        assert_eq!(review.horizontal_offset, review.maximum_horizontal_offset);
-        assert!(review.horizontal_offset > 0);
-        review.vertical_offset = 0;
-        terminal.draw(|frame| review.draw(frame))?;
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains(" END"));
 
-        let mut small = Terminal::new(TestBackend::new(5, 3))?;
-        small.draw(|frame| review.draw(frame))?;
+            let mut terminal = Terminal::new(TestBackend::new(2, 2))?;
+            terminal.draw(|frame| review.draw(frame, frame.area()))?;
+        }
         Ok(())
     }
 }

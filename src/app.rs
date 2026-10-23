@@ -31,6 +31,9 @@ const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 55;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
+const REVIEW_CONTROLS_HEIGHT: u16 = 2;
+const REVIEW_BUTTON_WIDTH: u16 = 13;
+const PREVIEW_TAB_WIDTH: u16 = 13;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Focus {
@@ -52,6 +55,10 @@ struct App {
     export: Option<ExportDialog>,
     assistant: Assistant,
     proposal_review: Option<ProposalReview>,
+    proposed_preview: Preview,
+    proposed_job: Option<RenderJob>,
+    proposed_build: Option<texo::sandbox::CompiledDraft>,
+    show_proposed: bool,
     status: String,
     diagnostics: Option<String>,
     diagnostic_scroll: u16,
@@ -65,21 +72,32 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
     }
 
     loop {
+        let was_proposed_loading = app.proposed_job.is_some();
         app.receive_render();
         app.receive_assistant();
+        app.receive_proposed_render();
+        if was_proposed_loading != app.proposed_job.is_some() {
+            terminal.clear()?;
+        }
         terminal.draw(|frame| app.draw(frame))?;
 
         if event::poll(EVENT_POLL_INTERVAL)? {
             let area = terminal.get_frame().area();
             let preview_was_loading = app.job.is_some();
             let previous_focus = app.focus;
+            let previous_version = app.show_proposed;
+            let review_was_open = app.proposal_review.is_some();
+            let proposed_was_loading = app.proposed_job.is_some();
             let previous_document = app.editor.path.clone();
             let projects_was_visible = app.projects_visible;
             let overlay_was_open = app.overlay_open();
             if app.handle_event(event::read()?, area) {
                 return Ok(());
             }
-            if previous_focus != app.focus
+            if previous_version != app.show_proposed
+                || review_was_open != app.proposal_review.is_some()
+                || proposed_was_loading != app.proposed_job.is_some()
+                || previous_focus != app.focus
                 || projects_was_visible != app.projects_visible
                 || overlay_was_open != app.overlay_open()
                 || previous_document != app.editor.path
@@ -105,6 +123,7 @@ impl App {
 
     fn with_workspace(editor: Editor, preview: Preview, root: PathBuf) -> anyhow::Result<Self> {
         let projects = Projects::new(root, &editor.path)?;
+        let proposed_preview = preview.empty_like();
         Ok(Self {
             editor,
             projects,
@@ -117,6 +136,10 @@ impl App {
             export: None,
             assistant: Assistant::new(),
             proposal_review: None,
+            proposed_preview,
+            proposed_job: None,
+            proposed_build: None,
+            show_proposed: false,
             status: String::new(),
             diagnostics: None,
             diagnostic_scroll: 0,
@@ -125,37 +148,181 @@ impl App {
     }
 
     fn overlay_open(&self) -> bool {
-        self.actions.is_some() || self.export.is_some() || self.proposal_review.is_some()
+        self.actions.is_some() || self.export.is_some()
     }
 
     fn send_message(&mut self) {
-        match self
-            .assistant
-            .submit(self.editor.source(), &self.editor.path)
-        {
+        let source = self.assistant_source();
+
+        match self.assistant.submit(source, &self.editor.path) {
             Ok(()) => self.status.clear(),
             Err(error) => self.status = error.to_string(),
         }
     }
 
+    fn assistant_source(&self) -> String {
+        self.proposal_review
+            .as_ref()
+            .map(|review| review.edit.source_after.clone())
+            .unwrap_or_else(|| self.editor.source())
+    }
+
     fn receive_assistant(&mut self) {
         if let Some(result) = self.assistant.poll() {
             match result {
-                Ok(()) if self.assistant.proposal().is_some() => self.apply_proposal(),
+                Ok(()) if self.assistant.proposal().is_some() => {
+                    let mut edit = self.assistant.proposal().cloned().unwrap();
+
+                    // Refinements use the pending draft as context, but review against the original.
+                    if let Some(review) = &self.proposal_review {
+                        edit.source_before = review.edit.source_before.clone();
+                    }
+
+                    self.stage_proposal(edit);
+                }
                 Ok(()) => self.status = "Assistant replied without changing the document.".into(),
                 Err(_) => self.status = "Assistant failed. See its message for details.".into(),
             }
         }
     }
 
-    fn apply_proposal(&mut self) {
-        let Some(proposal) = self.assistant.proposal().cloned() else {
+    fn stage_proposal(&mut self, edit: ProposedEdit) {
+        if edit.source_before != self.editor.source() {
+            self.status = "Proposal is stale: your newer text is preserved.".into();
+            self.assistant.take_proposal();
+            return;
+        }
+
+        if edit.source_before == edit.source_after {
+            self.discard_proposal();
+            self.status = "No changes proposed.".into();
+            return;
+        }
+
+        if self.proposal_review.is_none()
+            && self.rendered_source.as_deref() != Some(edit.source_before.as_str())
+        {
+            self.job = None;
+            self.start_render();
+        }
+
+        self.proposal_review = Some(ProposalReview::new(&edit));
+        self.assistant.take_proposal();
+        self.start_proposed_render();
+        self.status = "Review changes · F7 accept · F8 modify · F9 discard".into();
+    }
+
+    fn start_proposed_render(&mut self) {
+        self.proposed_job = None;
+        self.proposed_build = None;
+        self.proposed_preview.clear();
+        self.diagnostics = None;
+        self.show_proposed = true;
+
+        let Some(review) = &self.proposal_review else {
             return;
         };
-        if self.apply_edit(&proposal) {
-            self.assistant.take_proposal();
+
+        match RenderJob::draft(review.edit.source_after.clone(), self.editor.path.clone()) {
+            Ok(job) => self.proposed_job = Some(job),
+            Err(error) => self.report_error(error),
         }
+    }
+
+    fn receive_proposed_render(&mut self) {
+        let Some(result) = self.proposed_job.as_ref().and_then(RenderJob::poll) else {
+            return;
+        };
+
+        self.proposed_job = None;
+
+        match result {
+            Ok(document) => {
+                if let Err(error) = self.proposed_preview.set_pages(document.pages) {
+                    self.report_error(error);
+                    return;
+                }
+
+                self.proposed_build = document.build;
+                self.show_proposed = true;
+            }
+            Err(error) => self.report_error(error),
+        }
+    }
+
+    fn apply_proposal(&mut self) {
+        let Some(review) = &self.proposal_review else {
+            return;
+        };
+
+        if self.assistant.is_running() || self.proposed_job.is_some() {
+            self.status = "Wait for the proposed version to finish.".into();
+            return;
+        }
+
+        if review.edit.source_before != self.editor.source() {
+            self.status = "Proposal is stale: discard it to preserve your newer text.".into();
+            return;
+        }
+
+        let Some(build) = &self.proposed_build else {
+            self.status =
+                "The proposal must build successfully before accepting. Ctrl+B retries.".into();
+            return;
+        };
+        let edit = review.edit.clone();
+
+        // Stop an older current build before publishing the accepted PDF.
+        self.job = None;
+        let pdf_path = match texo::compiler::publish_pdf(&build.pdf_path, &self.editor.path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.report_error(error);
+                return;
+            }
+        };
+
+        self.apply_edit(&edit);
+        std::mem::swap(&mut self.preview, &mut self.proposed_preview);
+        self.rendered_source = Some(edit.source_after);
+        self.rendered_pdf = Some(pdf_path);
+        self.clear_proposal();
+        self.status = "Accepted · PDF updated · Ctrl+S to save TeX".into();
+        self.assistant
+            .report_edit_result("Accepted in the editor. PDF updated; TeX is not yet saved.");
+    }
+
+    fn modify_proposal(&mut self) {
+        if self.proposal_review.is_some() {
+            self.focus = Focus::Assistant;
+            self.status = "Describe your revisions in chat; the pending draft will be used.".into();
+        }
+    }
+
+    fn discard_proposal(&mut self) {
+        self.assistant.cancel();
+        self.assistant.take_proposal();
+        self.clear_proposal();
+        self.status = "Proposal discarded. Original text and preview preserved.".into();
+        self.assistant
+            .report_edit_result("Proposal discarded; no changes accepted.");
+    }
+
+    fn clear_proposal(&mut self) {
+        self.proposed_job = None;
+        self.proposed_build = None;
+        self.proposed_preview.clear();
         self.proposal_review = None;
+        self.diagnostics = None;
+        self.show_proposed = false;
+    }
+
+    fn active_preview(&mut self) -> &mut Preview {
+        if self.show_proposed && self.proposal_review.is_some() {
+            &mut self.proposed_preview
+        } else {
+            &mut self.preview
+        }
     }
 
     fn apply_edit(&mut self, proposal: &ProposedEdit) -> bool {
@@ -171,8 +338,6 @@ impl App {
         if self.editor.replace_source(&proposal.source_after) {
             self.status =
                 "Edit applied. Ctrl+Z twice to undo; Ctrl+S to save; Ctrl+B to build.".into();
-            self.assistant
-                .report_edit_result("Applied to the open editor. Not yet saved or rebuilt.");
         } else {
             self.status = "The returned resume is unchanged.".into();
             self.assistant
@@ -182,6 +347,11 @@ impl App {
     }
 
     fn start_render(&mut self) {
+        if self.proposal_review.is_some() {
+            self.start_proposed_render();
+            return;
+        }
+
         if self.job.is_some() {
             return;
         }
@@ -207,8 +377,11 @@ impl App {
                 Ok(()) => {
                     self.rendered_source = Some(document.source);
                     self.rendered_pdf = Some(document.pdf_path);
-                    self.status.clear();
-                    self.diagnostics = None;
+                    if self.proposal_review.is_none() {
+                        self.status.clear();
+                        self.diagnostics = None;
+                    }
+
                     self.refresh_projects();
                 }
                 Err(error) => self.report_error(error),
@@ -251,7 +424,7 @@ impl App {
             Event::Paste(text) if self.focus == Focus::Assistant => {
                 self.assistant.input.insert_str(text);
             }
-            Event::Paste(text) if self.focus == Focus::Editor => {
+            Event::Paste(text) if self.focus == Focus::Editor && self.proposal_review.is_none() => {
                 self.editor.text.insert_str(text);
             }
             Event::Mouse(mouse) => {
@@ -263,13 +436,19 @@ impl App {
                 );
                 let position = Position::new(mouse.column, mouse.row);
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    if self.handle_review_click(position, &layout) {
+                        return false;
+                    }
+
                     if layout.projects.contains(position) {
                         self.focus = Focus::Projects;
                         if self.projects.select_at(layout.projects, mouse.row) {
                             self.activate_projects();
                         }
-                    } else if Assistant::send_button(pane_content(layout.assistant))
-                        .contains(position)
+                    } else if Assistant::send_button(
+                        self.assistant_body(pane_content(layout.assistant)),
+                    )
+                    .contains(position)
                     {
                         self.focus = Focus::Assistant;
                         if self.assistant.is_running() {
@@ -280,7 +459,7 @@ impl App {
                     } else if layout.assistant.contains(position) {
                         self.focus = Focus::Assistant;
                         self.assistant.click(
-                            pane_content(layout.assistant),
+                            self.assistant_body(pane_content(layout.assistant)),
                             mouse.column,
                             mouse.row,
                         );
@@ -288,11 +467,21 @@ impl App {
                         self.focus = Focus::Preview;
                     } else if layout.editor.contains(position) {
                         self.focus = Focus::Editor;
-                        self.editor
-                            .click(pane_content(layout.editor), mouse.column, mouse.row);
+                        if self.proposal_review.is_none() {
+                            self.editor
+                                .click(pane_content(layout.editor), mouse.column, mouse.row);
+                        }
                     }
                 } else if layout.editor.contains(position) {
-                    self.editor.text.input(mouse);
+                    if let Some(review) = &mut self.proposal_review {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => review.scroll(true),
+                            MouseEventKind::ScrollDown => review.scroll(false),
+                            _ => {}
+                        }
+                    } else {
+                        self.editor.text.input(mouse);
+                    }
                 } else if layout.assistant.contains(position) {
                     match mouse.kind {
                         MouseEventKind::ScrollDown => self.assistant.scroll(false),
@@ -301,8 +490,8 @@ impl App {
                     }
                 } else if layout.preview.contains(position) {
                     match mouse.kind {
-                        MouseEventKind::ScrollDown => self.preview.scroll(false),
-                        MouseEventKind::ScrollUp => self.preview.scroll(true),
+                        MouseEventKind::ScrollDown => self.active_preview().scroll(false),
+                        MouseEventKind::ScrollUp => self.active_preview().scroll(true),
                         _ => {}
                     }
                 } else if layout.projects.contains(position) {
@@ -318,9 +507,83 @@ impl App {
         false
     }
 
+    fn handle_review_click(&mut self, position: Position, layout: &WorkspaceLayout) -> bool {
+        if self.proposal_review.is_none() {
+            return false;
+        }
+
+        let buttons = review_buttons(pane_content(layout.assistant));
+        if let Some(index) = buttons.iter().position(|button| button.contains(position)) {
+            match index {
+                0 => self.apply_proposal(),
+                1 => self.modify_proposal(),
+                _ => self.discard_proposal(),
+            }
+            return true;
+        }
+
+        let [_, current, proposed] = preview_header(pane_content(layout.preview));
+        if current.contains(position) || proposed.contains(position) {
+            self.show_proposed = proposed.contains(position);
+            self.focus = Focus::Preview;
+            return true;
+        }
+
+        false
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> bool {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
             return true;
+        }
+
+        if self.proposal_review.is_some() {
+            match key.code {
+                KeyCode::F(7) => {
+                    self.apply_proposal();
+                    return false;
+                }
+                KeyCode::F(8) => {
+                    self.modify_proposal();
+                    return false;
+                }
+                KeyCode::F(9) => {
+                    self.discard_proposal();
+                    return false;
+                }
+                KeyCode::Char('[') if self.focus == Focus::Preview => {
+                    self.show_proposed = false;
+                    return false;
+                }
+                KeyCode::Char(']') if self.focus == Focus::Preview => {
+                    self.show_proposed = true;
+                    return false;
+                }
+                _ => {}
+            }
+
+            if self.focus == Focus::Editor && key.modifiers.is_empty() {
+                let review = self.proposal_review.as_mut().unwrap();
+                match key.code {
+                    KeyCode::Up | KeyCode::PageUp => review.scroll(true),
+                    KeyCode::Down | KeyCode::PageDown => review.scroll(false),
+                    KeyCode::Left => review.scroll_horizontal(true),
+                    KeyCode::Right => review.scroll_horizontal(false),
+                    _ => {}
+                }
+
+                if matches!(
+                    key.code,
+                    KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::PageUp
+                        | KeyCode::PageDown
+                ) {
+                    return false;
+                }
+            }
         }
 
         if self.focus == Focus::Assistant && self.assistant.complete_command(key) {
@@ -364,13 +627,13 @@ impl App {
                 }
                 Err(error) => self.report_error(error),
             },
-            KeyCode::Char('z') if self.focus == Focus::Editor => {
+            KeyCode::Char('z') if self.focus == Focus::Editor && self.proposal_review.is_none() => {
                 self.editor.text.undo();
             }
-            KeyCode::Char('y') if self.focus == Focus::Editor => {
+            KeyCode::Char('y') if self.focus == Focus::Editor && self.proposal_review.is_none() => {
                 self.editor.text.redo();
             }
-            _ if self.focus == Focus::Editor => {
+            _ if self.focus == Focus::Editor && self.proposal_review.is_none() => {
                 self.editor.text.input(key);
             }
             _ if self.focus == Focus::Assistant => {
@@ -386,18 +649,18 @@ impl App {
             return;
         }
         let result = match key.code {
-            KeyCode::Left => self.preview.previous_page(),
-            KeyCode::Right => self.preview.next_page(),
+            KeyCode::Left => self.active_preview().previous_page(),
+            KeyCode::Right => self.active_preview().next_page(),
             KeyCode::Up => {
-                self.preview.scroll(true);
+                self.active_preview().scroll(true);
                 Ok(())
             }
             KeyCode::Down => {
-                self.preview.scroll(false);
+                self.active_preview().scroll(false);
                 Ok(())
             }
             _ => {
-                if self.focus == Focus::Editor {
+                if self.focus == Focus::Editor && self.proposal_review.is_none() {
                     self.editor.text.input(key);
                 }
                 Ok(())
@@ -440,7 +703,7 @@ impl App {
                 self.assistant.input.input(key);
             }
             _ if self.focus == Focus::Projects => self.handle_projects_key(key),
-            _ if self.focus == Focus::Editor => {
+            _ if self.focus == Focus::Editor && self.proposal_review.is_none() => {
                 self.editor.text.input(key);
             }
             _ => {}
@@ -448,6 +711,11 @@ impl App {
     }
 
     fn open_export(&mut self) {
+        if self.proposal_review.is_some() {
+            self.status = "Accept or discard the proposal before exporting.".into();
+            return;
+        }
+
         if self.job.is_some() {
             self.status = "Wait for the build to finish before exporting.".into();
             return;
@@ -470,28 +738,6 @@ impl App {
                 if key.code == KeyCode::Esc {
                     self.actions = None;
                     self.export = None;
-                    self.proposal_review = None;
-                } else if self.proposal_review.is_some() {
-                    match key.code {
-                        KeyCode::Enter => self.apply_proposal(),
-                        KeyCode::PageUp | KeyCode::Up => {
-                            self.proposal_review.as_mut().unwrap().scroll(true)
-                        }
-                        KeyCode::PageDown | KeyCode::Down => {
-                            self.proposal_review.as_mut().unwrap().scroll(false)
-                        }
-                        KeyCode::Left => self
-                            .proposal_review
-                            .as_mut()
-                            .unwrap()
-                            .scroll_horizontal(true),
-                        KeyCode::Right => self
-                            .proposal_review
-                            .as_mut()
-                            .unwrap()
-                            .scroll_horizontal(false),
-                        _ => {}
-                    }
                 } else if let Some(menu) = &mut self.actions {
                     match key.code {
                         KeyCode::Up => menu.move_selection(false),
@@ -540,21 +786,22 @@ impl App {
             Action::Quit => 'q',
             Action::FocusAssistant => 'j',
             Action::ClearChat => {
+                self.discard_proposal();
                 self.assistant.reset();
                 self.status = "Conversation cleared.".into();
                 return false;
             }
             Action::ReviewEdit => {
-                if let Some(proposal) = self.assistant.proposal() {
-                    self.proposal_review = Some(ProposalReview::new(proposal));
+                if self.proposal_review.is_some() {
+                    self.focus = Focus::Editor;
                 } else {
-                    self.status =
-                        "No suggested edit to review. Ask Texo to revise your resume.".into();
+                    self.status = "No proposed edit to review.".into();
                 }
                 return false;
             }
             Action::ScrollUp | Action::ScrollDown => {
-                self.preview.scroll(matches!(action, Action::ScrollUp));
+                self.active_preview()
+                    .scroll(matches!(action, Action::ScrollUp));
                 return false;
             }
             Action::PreviousPage | Action::NextPage => {
@@ -643,7 +890,7 @@ impl App {
                 // Drop joins the cancelled worker before a new document can receive a result.
                 self.job = None;
                 self.assistant.reset();
-                self.proposal_review = None;
+                self.clear_proposal();
                 self.editor = editor;
                 self.preview.clear();
                 self.rendered_source = None;
@@ -682,8 +929,7 @@ impl App {
         let preview = draw_pane_border(frame, layout.preview, self.focus == Focus::Preview);
 
         self.draw_editor(frame, editor);
-        self.assistant
-            .draw(frame, assistant, self.focus == Focus::Assistant);
+        self.draw_assistant(frame, assistant);
         self.draw_preview(frame, preview);
         self.draw_diagnostics(frame, &layout);
         if let Some(menu) = &mut self.actions {
@@ -692,13 +938,14 @@ impl App {
         if let Some(export) = &mut self.export {
             export.draw(frame);
         }
-        if let Some(review) = &mut self.proposal_review {
-            review.draw(frame);
-        }
     }
 
     fn draw_editor(&mut self, frame: &mut Frame, area: Rect) {
-        self.editor.draw(frame, area, self.focus == Focus::Editor);
+        if let Some(review) = &self.proposal_review {
+            review.draw(frame, area);
+        } else {
+            self.editor.draw(frame, area, self.focus == Focus::Editor);
+        }
         if !area.is_empty() {
             let modified = if self.editor.is_modified() {
                 " · unsaved"
@@ -727,35 +974,84 @@ impl App {
         }
     }
 
-    fn draw_preview(&mut self, frame: &mut Frame, area: Rect) {
-        if let Some(job) = &self.job {
-            Preview::draw_loading(frame, area, job.elapsed());
+    fn assistant_body(&self, area: Rect) -> Rect {
+        if self.proposal_review.is_some() && !self.assistant.login_open() {
+            below_header(area, REVIEW_CONTROLS_HEIGHT)
         } else {
-            self.preview.draw(frame, area);
+            area
         }
-        if !area.is_empty() && self.job.is_none() {
-            let state = match &self.rendered_source {
-                Some(source) if *source != self.editor.source() => "PDF out of date",
-                Some(_) => "PDF",
-                None => "Preview",
-            };
-            let page = self.preview.page_status().unwrap_or_default();
-            let quality = if self.preview.uses_basic_rendering() {
-                " · basic preview"
-            } else {
-                ""
-            };
-            let title = Rect::new(
-                area.x + theme::PANEL_PADDING,
-                area.y,
-                area.width.saturating_sub(theme::PANEL_PADDING * 2),
-                1,
-            );
-            frame.render_widget(
-                Paragraph::new(format!("{state}  {page}{quality}"))
-                    .style(theme::pane_title(self.focus == Focus::Preview)),
-                title,
-            );
+    }
+
+    fn draw_assistant(&mut self, frame: &mut Frame, area: Rect) {
+        let body = self.assistant_body(area);
+        self.assistant
+            .draw(frame, body, self.focus == Focus::Assistant);
+
+        if self.proposal_review.is_some() && !self.assistant.login_open() {
+            for (button, label) in
+                review_buttons(area)
+                    .into_iter()
+                    .zip(["[F7 Accept]", "[F8 Modify]", "[F9 Discard]"])
+            {
+                frame.render_widget(Paragraph::new(label).style(theme::pane_title(true)), button);
+            }
+        }
+    }
+
+    fn draw_preview(&mut self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
+
+        let body = below_header(area, 1);
+        let proposed = self.show_proposed && self.proposal_review.is_some();
+        let loading = if proposed {
+            self.proposed_job.as_ref()
+        } else {
+            self.job.as_ref()
+        };
+
+        if let Some(job) = loading {
+            Preview::draw_loading(frame, body, job.elapsed());
+        } else {
+            self.active_preview().draw(frame, body);
+        }
+
+        let state = if !proposed
+            && self
+                .rendered_source
+                .as_ref()
+                .is_some_and(|source| *source != self.editor.source())
+        {
+            "PDF out of date"
+        } else {
+            "PDF"
+        };
+        let page = self.active_preview().page_status().unwrap_or_default();
+        let [label, current_tab, proposed_tab] = preview_header(area);
+        let title_area = if self.proposal_review.is_some() {
+            label
+        } else {
+            Rect { height: 1, ..area }
+        };
+        frame.render_widget(
+            Paragraph::new(format!(" {state}  {page}"))
+                .style(theme::pane_title(self.focus == Focus::Preview)),
+            title_area,
+        );
+
+        if self.proposal_review.is_some() {
+            for (tab, text, selected) in [
+                (current_tab, "[ Current ]", !proposed),
+                (proposed_tab, "[ Proposed ]", proposed),
+            ] {
+                let style = if selected {
+                    Style::default().fg(theme::BACKGROUND).bg(theme::LAVENDER)
+                } else {
+                    theme::muted()
+                };
+                frame.render_widget(Paragraph::new(text).style(style), tab);
+            }
         }
     }
 
@@ -769,6 +1065,43 @@ impl App {
             frame.render_widget(log, layout.diagnostics);
         }
     }
+}
+
+fn below_header(area: Rect, height: u16) -> Rect {
+    let height = height.min(area.height);
+    Rect {
+        y: area.y + height,
+        height: area.height - height,
+        ..area
+    }
+}
+
+fn review_buttons(area: Rect) -> [Rect; 3] {
+    let row = Rect {
+        x: area.x + theme::PANEL_PADDING.min(area.width),
+        y: area.y + area.height.min(1),
+        width: area.width.saturating_sub(theme::PANEL_PADDING * 2),
+        height: area.height.saturating_sub(1).min(1),
+    };
+
+    Layout::horizontal([
+        Constraint::Length(REVIEW_BUTTON_WIDTH),
+        Constraint::Length(REVIEW_BUTTON_WIDTH),
+        Constraint::Length(REVIEW_BUTTON_WIDTH),
+    ])
+    .areas(row)
+}
+
+fn preview_header(area: Rect) -> [Rect; 3] {
+    Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(PREVIEW_TAB_WIDTH),
+        Constraint::Length(PREVIEW_TAB_WIDTH),
+    ])
+    .areas(Rect {
+        height: area.height.min(1),
+        ..area
+    })
 }
 
 fn pane_content(area: Rect) -> Rect {
@@ -871,6 +1204,189 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    fn pending_review_protects_the_editor_and_exposes_controls() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let original = app.editor.source();
+        app.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+            source_before: original.clone(),
+            source_after: "Changed bullet".into(),
+        }));
+        app.show_proposed = true;
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+        terminal.draw(|frame| app.draw(frame))?;
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("F7 Accept"));
+        assert!(text.contains("F8 Modify"));
+        assert!(text.contains("F9 Discard"));
+        assert!(text.contains("[ Current ]"));
+        assert!(text.contains("[ Proposed ]"));
+        assert!(text.contains("Changed bullet"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_event(Event::Paste("hidden edit".into()), Rect::new(0, 0, 160, 45));
+        assert_eq!(app.editor.source(), original);
+
+        app.apply_proposal();
+        assert_eq!(app.editor.source(), original);
+        assert!(app.status.contains("build successfully"));
+
+        app.modify_proposal();
+        assert!(app.focus == Focus::Assistant);
+        assert!(app.proposal_review.is_some());
+        assert_eq!(app.assistant_source(), "Changed bullet");
+
+        app.discard_proposal();
+        assert!(app.proposal_review.is_none());
+        assert!(!app.show_proposed);
+        assert_eq!(app.editor.source(), original);
+        Ok(())
+    }
+
+    #[test]
+    fn review_tabs_and_buttons_use_their_visible_hit_areas() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        app.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+            source_before: app.editor.source(),
+            source_after: "Pending".into(),
+        }));
+        let area = Rect::new(0, 0, 160, 45);
+        let layout = WorkspaceLayout::new(area, false, true, Focus::Editor);
+        let [_, current, proposed] = preview_header(pane_content(layout.preview));
+
+        for (tab, expected) in [(proposed, true), (current, false)] {
+            app.handle_event(
+                Event::Mouse(event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: tab.x,
+                    row: tab.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                area,
+            );
+            assert_eq!(app.show_proposed, expected);
+        }
+
+        let discard = review_buttons(pane_content(layout.assistant))[2];
+        app.handle_event(
+            Event::Mouse(event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: discard.x,
+                row: discard.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            area,
+        );
+        assert!(app.proposal_review.is_none());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires macOS, Tectonic cache, and Poppler"]
+    fn review_keeps_original_files_and_promotes_the_cached_pdf_only_on_accept() -> anyhow::Result<()>
+    {
+        let (directory, mut app) = application()?;
+        let original = r"\documentclass{article}\begin{document}Original\end{document}";
+        let proposed = r"\documentclass{article}\begin{document}Revised\end{document}";
+        app.editor.replace_source(original);
+        app.editor.save()?;
+        app.start_render();
+        wait_for_reviews(&mut app)?;
+        let original_pdf = std::fs::read(app.editor.path.with_extension("pdf"))?;
+
+        app.stage_proposal(ProposedEdit {
+            source_before: original.into(),
+            source_after: proposed.into(),
+        });
+        wait_for_reviews(&mut app)?;
+        assert!(app.show_proposed);
+        assert_eq!(app.editor.source(), original);
+        assert_eq!(std::fs::read_to_string(&app.editor.path)?, original);
+        assert_eq!(
+            std::fs::read(app.editor.path.with_extension("pdf"))?,
+            original_pdf
+        );
+        let proposed_pdf = std::fs::read(&app.proposed_build.as_ref().unwrap().pdf_path)?;
+
+        app.show_proposed = false;
+        assert!(app.active_preview().page_status().is_some());
+        app.show_proposed = true;
+        assert!(app.active_preview().page_status().is_some());
+        assert!(app.job.is_none() && app.proposed_job.is_none());
+
+        app.apply_proposal();
+        assert_eq!(app.editor.source(), proposed);
+        assert_eq!(std::fs::read_to_string(&app.editor.path)?, original);
+        assert_eq!(
+            std::fs::read(app.editor.path.with_extension("pdf"))?,
+            proposed_pdf
+        );
+        assert_eq!(app.rendered_source.as_deref(), Some(proposed));
+        assert!(app.proposal_review.is_none());
+        assert!(app.job.is_none() && app.proposed_job.is_none());
+
+        // A discarded follow-up leaves the accepted preview and unsaved buffer intact.
+        app.stage_proposal(ProposedEdit {
+            source_before: proposed.into(),
+            source_after: original.into(),
+        });
+        app.discard_proposal();
+        assert_eq!(app.editor.source(), proposed);
+        assert_eq!(
+            std::fs::read(app.editor.path.with_extension("pdf"))?,
+            proposed_pdf
+        );
+        drop(directory);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires macOS, Tectonic cache, and Poppler"]
+    fn failed_or_stale_proposals_cannot_replace_current_content() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let original = r"\documentclass{article}\begin{document}Original\end{document}";
+        app.editor.replace_source(original);
+        app.editor.save()?;
+        app.stage_proposal(ProposedEdit {
+            source_before: original.into(),
+            source_after: r"\undefinedcommand".into(),
+        });
+        wait_for_reviews(&mut app)?;
+        assert!(app.proposed_build.is_none());
+        app.apply_proposal();
+        assert_eq!(app.editor.source(), original);
+
+        app.editor.text.insert_str("newer ");
+        let newer = app.editor.source();
+        app.apply_proposal();
+        assert_eq!(app.editor.source(), newer);
+        assert!(app.status.contains("stale"));
+        app.discard_proposal();
+        assert_eq!(app.editor.source(), newer);
+        Ok(())
+    }
+
+    fn wait_for_reviews(app: &mut App) -> anyhow::Result<()> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while app.job.is_some() || app.proposed_job.is_some() {
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "Review build did not finish"
+            );
+            app.receive_render();
+            app.receive_proposed_render();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
     }
 
     #[test]
