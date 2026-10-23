@@ -273,14 +273,9 @@ impl Assistant {
         }
     }
 
-    /// Attach the editor's actual result so both the user and future requests see what happened.
+    /// Append the review outcome without rewriting the assistant's earlier summary.
     pub fn report_edit_result(&mut self, outcome: &str) {
-        if let Some(message) = self.messages.last_mut()
-            && message.role == "assistant"
-            && !message.error
-        {
-            message.content = format!("{outcome}\n\n{}", message.content);
-        }
+        self.notice(outcome.to_owned(), false);
     }
 
     pub fn cancel(&mut self) {
@@ -597,6 +592,26 @@ fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_confirmation_is_appended_and_scrolls_into_view() {
+        let mut assistant = Assistant::new();
+        assistant.notice("Earlier summary".into(), false);
+        assistant.notice("Build failed".into(), true);
+        assistant.scroll_from_bottom = SCROLL_LINES;
+
+        assistant.report_edit_result("Proposal discarded; no changes accepted.");
+
+        assert_eq!(assistant.messages.len(), 3);
+        assert_eq!(assistant.messages[0].content, "Earlier summary");
+        assert_eq!(assistant.messages[1].content, "Build failed");
+        assert_eq!(
+            assistant.messages[2].content,
+            "Proposal discarded; no changes accepted."
+        );
+        assert!(!assistant.messages[2].error);
+        assert_eq!(assistant.scroll_from_bottom, 0);
+    }
 
     #[test]
     fn slash_commands_complete_dynamically_and_never_enter_model_history() {

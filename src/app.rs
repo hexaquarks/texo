@@ -289,13 +289,16 @@ impl App {
         self.clear_proposal();
         self.status = "Accepted · PDF updated · Ctrl+S to save TeX".into();
         self.assistant
-            .report_edit_result("Accepted in the editor. PDF updated; TeX is not yet saved.");
+            .report_edit_result("Changes accepted. PDF updated; Ctrl+S to save TeX.");
     }
 
     fn modify_proposal(&mut self) {
         if self.proposal_review.is_some() {
             self.focus = Focus::Assistant;
             self.status = "Describe your revisions in chat; the pending draft will be used.".into();
+            self.assistant.report_edit_result(
+                "Ready to revise. Tell me what to change in the proposed draft.",
+            );
         }
     }
 
