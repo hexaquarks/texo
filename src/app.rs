@@ -5,8 +5,11 @@ use anyhow::Context;
 
 use ratatui::{
     DefaultTerminal, Frame,
-    crossterm::event::{
-        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    crossterm::{
+        SynchronizedUpdate,
+        event::{
+            self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+        },
     },
     layout::{Constraint, Layout, Position, Rect},
     style::Style,
@@ -71,20 +74,29 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
         app.start_render();
     }
 
+    let mut repaint = false;
+
     loop {
         let was_proposed_loading = app.proposed_job.is_some();
         app.receive_render();
         app.receive_assistant();
         app.receive_proposed_render();
-        if was_proposed_loading != app.proposed_job.is_some() {
-            terminal.clear()?;
-        }
-        terminal.draw(|frame| app.draw(frame))?;
+        repaint |= was_proposed_loading != app.proposed_job.is_some();
+
+        // Keep graphics cleanup and the replacement frame invisible until both are complete.
+        std::io::stdout().sync_update(|_| -> std::io::Result<()> {
+            if repaint {
+                terminal.clear()?;
+            }
+            terminal.draw(|frame| app.draw(frame))?;
+            Ok(())
+        })??;
+        repaint = false;
 
         if event::poll(EVENT_POLL_INTERVAL)? {
             let area = terminal.get_frame().area();
             let preview_was_loading = app.job.is_some();
-            let previous_focus = app.focus;
+            let previous_preview_area = app.preview_area(area);
             let previous_version = app.show_proposed;
             let review_was_open = app.proposal_review.is_some();
             let proposed_was_loading = app.proposed_job.is_some();
@@ -97,14 +109,14 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
             if previous_version != app.show_proposed
                 || review_was_open != app.proposal_review.is_some()
                 || proposed_was_loading != app.proposed_job.is_some()
-                || previous_focus != app.focus
+                || previous_preview_area != app.preview_area(area)
                 || projects_was_visible != app.projects_visible
                 || overlay_was_open != app.overlay_open()
                 || previous_document != app.editor.path
                 || preview_was_loading != app.job.is_some()
             {
                 // Repaint cells formerly occupied by the terminal's PDF image placement.
-                terminal.clear()?;
+                repaint = true;
             }
         }
     }
@@ -909,6 +921,16 @@ impl App {
         }
     }
 
+    fn preview_area(&self, area: Rect) -> Rect {
+        WorkspaceLayout::new(
+            area,
+            self.diagnostics.is_some(),
+            self.projects_visible,
+            self.focus,
+        )
+        .preview
+    }
+
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         frame.render_widget(Block::default().style(theme::text()), area);
@@ -1212,6 +1234,29 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    fn focus_changes_only_invalidate_preview_placement_when_layout_changes() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let wide = Rect::new(0, 0, 160, 45);
+        let preview_area = app.preview_area(wide);
+        for focus in [
+            Focus::Editor,
+            Focus::Assistant,
+            Focus::Preview,
+            Focus::Projects,
+        ] {
+            app.focus = focus;
+            assert_eq!(app.preview_area(wide), preview_area);
+        }
+
+        let narrow = Rect::new(0, 0, 80, 45);
+        app.focus = Focus::Editor;
+        assert!(app.preview_area(narrow).is_empty());
+        app.focus = Focus::Preview;
+        assert!(!app.preview_area(narrow).is_empty());
+        Ok(())
     }
 
     #[test]
