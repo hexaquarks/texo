@@ -35,6 +35,7 @@ pub const MODEL_LOGIN_REQUIRED: &str = "Log in first with /login.";
 
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const MENU_HEADER_ROWS: u16 = 2;
+const MASKED_KEY_CHARACTERS: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -167,6 +168,9 @@ impl LoginDialog {
                     || (key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c'))
                 {
+                    self.key.zeroize();
+                    self.model_job = None;
+                    self.process = None;
                     return LoginResult::Cancelled;
                 }
                 self.handle_key(key)
@@ -182,8 +186,8 @@ impl LoginDialog {
                     } else {
                         self.error = "Paste a single API key without spaces or line breaks".into();
                     }
-                    text.zeroize();
                 }
+                text.zeroize();
                 Ok(None)
             }
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
@@ -522,7 +526,7 @@ impl LoginDialog {
                     if self.key.is_empty() {
                         "Paste your key here (hidden)".into()
                     } else {
-                        "•".repeat(self.key.len().min(32))
+                        "•".repeat(self.key.len().min(MASKED_KEY_CHARACTERS))
                     }
                 }
                 Step::LoadingModels => String::new(),
@@ -1002,6 +1006,7 @@ mod tests {
             ),
             LoginResult::Cancelled
         ));
+        assert!(dialog.key.is_empty());
         for (width, height) in [(1, 1), (20, 5)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal

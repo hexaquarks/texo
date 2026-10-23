@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -8,6 +8,7 @@ use anyhow::{Result, anyhow, ensure};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
+const MAX_PROFILE_BYTES: u64 = 16 * 1024;
 const KEYCHAIN_SERVICE: &str = "texo.llm";
 pub const MAX_MODEL_BYTES: usize = 100;
 pub const MAX_API_KEY_BYTES: usize = 4096;
@@ -77,7 +78,7 @@ impl Profile {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.provider.key_variable().is_some() {
+        if self.provider.key_variable().is_some() || !self.model.is_empty() {
             ensure!(
                 !self.model.is_empty()
                     && self.model.len() <= MAX_MODEL_BYTES
@@ -100,13 +101,22 @@ impl Profile {
     }
 
     pub fn load_from(path: &Path) -> Result<Self> {
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self::default());
             }
             Err(_) => return Err(anyhow!("Could not read Texo's provider preferences")),
         };
+        let mut bytes = Vec::new();
+        file.take(MAX_PROFILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| anyhow!("Could not read Texo's provider preferences"))?;
+        ensure!(
+            bytes.len() as u64 <= MAX_PROFILE_BYTES,
+            "Provider preferences are too large. Use /login to reconnect"
+        );
+
         let profile: Self = serde_json::from_slice(&bytes).map_err(|_| {
             anyhow!("Invalid provider preferences. Use /login to choose a provider again")
         })?;
@@ -445,6 +455,28 @@ mod tests {
         let check_environment = r#"test -z "${TEXO_TEST_SECRET+x}" && test -z "${OPENAI_API_KEY+x}" && test -n "$PATH""#;
         let status = command.args(["-c", check_environment]).status().unwrap();
         assert!(status.success());
+    }
+
+    #[test]
+    fn codex_models_are_validated_and_oversized_preferences_are_rejected() {
+        let mut profile = Profile::new(Provider::Codex);
+        assert!(profile.validate().is_ok());
+        for model in [
+            "gpt-model\nprivate-value".to_owned(),
+            "x".repeat(MAX_MODEL_BYTES + 1),
+        ] {
+            profile.model = model;
+            assert!(profile.validate().is_err());
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("provider.json");
+        fs::write(&path, vec![b' '; MAX_PROFILE_BYTES as usize + 1]).unwrap();
+        assert!(
+            Profile::load_from(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("too large")
+        );
     }
 
     #[test]

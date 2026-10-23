@@ -11,11 +11,15 @@ use reqwest::{
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use zeroize::Zeroizing;
 
 use crate::auth::{Profile, Provider};
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CATALOG_PAGES: usize = 100;
+const ANTHROPIC_PAGE_SIZE: &str = "1000";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_OUTPUT_TOKENS: u32 = 16_384;
@@ -85,13 +89,7 @@ fn request_at(
 ) -> Result<AssistantReply> {
     profile.validate()?;
     ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
-    let client = Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(timeout)
-        // A redirect must never forward credentials or a resume to a different endpoint.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| anyhow!("Could not initialize the provider connection"))?;
+    let client = provider_client(timeout)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -127,60 +125,13 @@ fn list_models_at(
     cancelled: &AtomicBool,
     endpoint: &str,
 ) -> Result<Vec<String>> {
-    const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
-    const MAX_CATALOG_PAGES: usize = 100;
-    const ANTHROPIC_PAGE_SIZE: &str = "1000";
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let client = Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| anyhow!("Could not initialize model discovery"))?;
+    let client = provider_client(CATALOG_TIMEOUT)?;
     runtime.block_on(async {
-        let fetch = async {
-            let mut models = Vec::new();
-            let mut cursor = String::new();
-            for _ in 0..MAX_CATALOG_PAGES {
-                let mut request = client.get(endpoint).headers(headers(provider, &key)?);
-                if provider == Provider::Anthropic {
-                    request = request.query(&[("limit", ANTHROPIC_PAGE_SIZE)]);
-                    if !cursor.is_empty() {
-                        request = request.query(&[("after_id", &cursor)]);
-                    }
-                }
-                let mut response = request.send().await.map_err(connection_error)?;
-                check_status(provider, response.status())?;
-                let mut bytes = Vec::new();
-                while let Some(chunk) = response.chunk().await.map_err(connection_error)? {
-                    ensure!(
-                        bytes.len().saturating_add(chunk.len()) <= MAX_RESPONSE_BYTES,
-                        "Model catalog is too large"
-                    );
-                    bytes.extend_from_slice(&chunk);
-                }
-                let page: Value = serde_json::from_slice(&bytes)
-                    .map_err(|_| anyhow!("The provider returned an invalid model catalog"))?;
-                models.extend(catalog_entries(&page)?);
-                if provider != Provider::Anthropic || page["has_more"] != true {
-                    let ids = curated_models(provider, &models);
-                    ensure!(
-                        !ids.is_empty(),
-                        "None of Texo’s supported models are available for this account"
-                    );
-                    return Ok(ids);
-                }
-                let next = page["last_id"]
-                    .as_str()
-                    .filter(|id| !id.is_empty() && *id != cursor)
-                    .ok_or_else(|| anyhow!("The provider returned invalid model pagination"))?;
-                cursor = next.into();
-            }
-            bail!("The model catalog has too many pages")
-        };
         tokio::select! {
-            result = tokio::time::timeout(CATALOG_TIMEOUT, fetch) => {
+            result = tokio::time::timeout(CATALOG_TIMEOUT, fetch_models(&client, provider, &key, endpoint)) => {
                 result.map_err(|_| anyhow!("Model discovery timed out. Press Enter to retry"))?
             },
             _ = async {
@@ -190,6 +141,45 @@ fn list_models_at(
             } => Err(anyhow!("Model discovery cancelled")),
         }
     })
+}
+
+async fn fetch_models(
+    client: &Client,
+    provider: Provider,
+    key: &SecretString,
+    endpoint: &str,
+) -> Result<Vec<String>> {
+    let mut models = Vec::new();
+    let mut cursor = String::new();
+    let mut remaining_bytes = MAX_RESPONSE_BYTES;
+    for _ in 0..MAX_CATALOG_PAGES {
+        let mut request = client.get(endpoint).headers(headers(provider, key)?);
+        if provider == Provider::Anthropic {
+            request = request.query(&[("limit", ANTHROPIC_PAGE_SIZE)]);
+            if !cursor.is_empty() {
+                request = request.query(&[("after_id", &cursor)]);
+            }
+        }
+
+        let response = request.send().await.map_err(connection_error)?;
+        let page = read_provider_json(response, provider, &mut remaining_bytes).await?;
+        models.extend(catalog_entries(&page)?);
+        if provider != Provider::Anthropic || page["has_more"] != true {
+            let ids = curated_models(provider, &models);
+            ensure!(
+                !ids.is_empty(),
+                "None of Texo’s supported models are available for this account"
+            );
+            return Ok(ids);
+        }
+
+        let next = page["last_id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && *id != cursor)
+            .ok_or_else(|| anyhow!("The provider returned invalid model pagination"))?;
+        cursor = next.into();
+    }
+    bail!("The model catalog has too many pages")
 }
 
 // Keep the picker focused on established general-purpose releases, not snapshots or aliases.
@@ -246,6 +236,7 @@ fn headers(provider: Provider, key: &SecretString) -> Result<HeaderMap> {
         ),
         _ => bail!("Choose an API provider with /login"),
     };
+    let value = Zeroizing::new(value);
     let mut value = HeaderValue::from_str(&value)
         .map_err(|_| anyhow!("Invalid API key. Use /login to replace it"))?;
     value.set_sensitive(true);
@@ -262,14 +253,26 @@ fn headers(provider: Provider, key: &SecretString) -> Result<HeaderMap> {
 fn payload(profile: &Profile, prompt: &str) -> Value {
     match profile.provider {
         Provider::OpenAi => json!({
-            "model": profile.model, "input": prompt, "store": false,
+            "model": profile.model,
+            "input": prompt,
+            "store": false,
             "max_output_tokens": MAX_OUTPUT_TOKENS,
-            "text": {"format": {"type": "json_schema", "name": "resume_edit", "strict": true, "schema": reply_schema()}},
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "resume_edit",
+                    "strict": true,
+                    "schema": reply_schema(),
+                },
+            },
         }),
         Provider::Anthropic => json!({
-            "model": profile.model, "max_tokens": MAX_OUTPUT_TOKENS,
+            "model": profile.model,
+            "max_tokens": MAX_OUTPUT_TOKENS,
             "messages": [{"role": "user", "content": prompt}],
-            "output_config": {"format": {"type": "json_schema", "schema": reply_schema()}},
+            "output_config": {
+                "format": {"type": "json_schema", "schema": reply_schema()},
+            },
         }),
         _ => Value::Null,
     }
@@ -282,25 +285,46 @@ async fn send_request(
     prompt: &str,
     endpoint: &str,
 ) -> Result<AssistantReply> {
-    let mut response = client
+    let response = client
         .post(endpoint)
         .headers(headers(profile.provider, key)?)
         .json(&payload(profile, prompt))
         .send()
         .await
         .map_err(connection_error)?;
-    check_status(profile.provider, response.status())?;
+    let mut remaining_bytes = MAX_RESPONSE_BYTES;
+    let response = read_provider_json(response, profile.provider, &mut remaining_bytes).await?;
+    parse_response(profile.provider, &response)
+}
+
+fn provider_client(timeout: Duration) -> Result<Client> {
+    Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(timeout)
+        // Never forward credentials or resume content to a redirected endpoint.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| anyhow!("Could not initialize the provider connection"))
+}
+
+/// A shared budget bounds the entire catalog, including paginated responses.
+async fn read_provider_json(
+    mut response: reqwest::Response,
+    provider: Provider,
+    remaining_bytes: &mut usize,
+) -> Result<Value> {
+    check_status(provider, response.status())?;
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(connection_error)? {
         ensure!(
-            bytes.len().saturating_add(chunk.len()) <= MAX_RESPONSE_BYTES,
+            chunk.len() <= *remaining_bytes,
             "The provider response is too large"
         );
+        *remaining_bytes -= chunk.len();
         bytes.extend_from_slice(&chunk);
     }
-    let response: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| anyhow!("The provider returned an invalid response. Please retry"))?;
-    parse_response(profile.provider, &response)
+    serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow!("The provider returned an invalid response. Please retry"))
 }
 
 fn connection_error(error: reqwest::Error) -> anyhow::Error {
@@ -566,6 +590,26 @@ mod tests {
             ["gpt-6-luna"]
         );
         assert!(curated_models(Provider::Anthropic, &available).is_empty());
+    }
+
+    #[test]
+    fn authorization_headers_are_redacted_in_debug_output() {
+        for provider in [Provider::OpenAi, Provider::Anthropic] {
+            let headers = headers(provider, &SecretString::from("synthetic-private-key")).unwrap();
+            assert!(!format!("{headers:?}").contains("synthetic-private-key"));
+        }
+    }
+
+    #[test]
+    fn catalog_size_limit_applies_across_pages() {
+        let padding = "x".repeat(MAX_RESPONSE_BYTES / 2);
+        let first = json!({"data":[], "padding":padding, "has_more":true, "last_id":"page-one"});
+        let second = json!({"data":[], "padding":padding, "has_more":false});
+        let (result, _) = mock_catalog(
+            Provider::Anthropic,
+            vec![("200 OK", first), ("200 OK", second)],
+        );
+        assert!(result.unwrap_err().to_string().contains("too large"));
     }
 
     #[test]

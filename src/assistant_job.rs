@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{Seek, Write},
+    io::{Read, Seek, Write},
     path::Path,
     process::{Child, Command, Stdio},
     sync::{
@@ -236,14 +236,12 @@ fn request(
         thread::sleep(POLL_INTERVAL);
     }
 
-    ensure!(
-        fs::metadata(&response_path)
-            .context("Codex returned no response")?
-            .len()
-            <= MAX_RESPONSE_BYTES,
-        "Codex returned a response too large to display"
-    );
-    llm::parse_reply(&fs::read(response_path)?)
+    let response = fs::File::open(&response_path).context("Codex returned no response")?;
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    llm::parse_reply(&bytes)
 }
 
 struct RunningProcess(Child);

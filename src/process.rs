@@ -21,6 +21,11 @@ pub(crate) fn run(
     let program = command.get_program().to_string_lossy().into_owned();
     let mut output = tempfile::tempfile()?;
 
+    // Rendering documents must not expose provider credentials to external tools.
+    command
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY");
+
     // File-backed output avoids blocking the child on a full pipe during verbose TeX errors.
     command.stdin(Stdio::null());
     command.stdout(output.try_clone()?);
@@ -77,6 +82,23 @@ impl Drop for RunningProcess {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renderer_subprocesses_do_not_receive_provider_credentials() {
+        let mut command = Command::new("sh");
+        command.env("OPENAI_API_KEY", "synthetic-openai-secret");
+        command.env("ANTHROPIC_API_KEY", "synthetic-anthropic-secret");
+        command.args([
+            "-c",
+            "test -z \"${OPENAI_API_KEY+x}\" && test -z \"${ANTHROPIC_API_KEY+x}\"",
+        ]);
+        run(
+            &mut command,
+            Duration::from_secs(1),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn failed_commands_report_their_diagnostics() {
