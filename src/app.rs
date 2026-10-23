@@ -809,7 +809,25 @@ impl WorkspaceLayout {
         let [body, diagnostics] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(diagnostics_height)])
                 .areas(area);
-        if area.width < MULTIPANE_WIDTH || area.height < MULTIPANE_HEIGHT {
+        // A narrow terminal can still fit a vertical workspace. Keep chat visible and
+        // use the upper pane for the editor, preview, or projects as focus changes.
+        if area.width < MULTIPANE_WIDTH && body.height >= MULTIPANE_HEIGHT {
+            let [upper, assistant] =
+                Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
+                    .areas(body);
+            let mut layout = Self {
+                assistant,
+                diagnostics,
+                ..Self::default()
+            };
+            match focus {
+                Focus::Preview => layout.preview = upper,
+                Focus::Projects => layout.projects = upper,
+                Focus::Editor | Focus::Assistant => layout.editor = upper,
+            }
+            return layout;
+        }
+        if area.width < MULTIPANE_WIDTH || body.height < MULTIPANE_HEIGHT {
             let mut layout = Self {
                 diagnostics,
                 ..Self::default()
@@ -1197,7 +1215,7 @@ mod tests {
     #[test]
     fn narrow_layout_shows_each_focused_pane_and_tolerates_tiny_sizes() -> anyhow::Result<()> {
         let (_directory, mut app) = application()?;
-        for (width, height) in [(1, 1), (20, 5), (40, 12), (80, 24)] {
+        for (width, height) in [(1, 1), (20, 5), (40, 12)] {
             for focus in [
                 Focus::Editor,
                 Focus::Assistant,
@@ -1227,6 +1245,46 @@ mod tests {
         ] {
             app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
             assert!(app.focus == expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn narrow_workspace_keeps_chat_below_the_upper_pane() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        for (width, height) in [(80, 24), (90, 42)] {
+            let area = Rect::new(0, 0, width, height);
+            for focus in [
+                Focus::Editor,
+                Focus::Assistant,
+                Focus::Preview,
+                Focus::Projects,
+            ] {
+                app.focus = focus;
+                let layout = WorkspaceLayout::new(area, false, true, focus);
+                let upper = match focus {
+                    Focus::Preview => layout.preview,
+                    Focus::Projects => layout.projects,
+                    _ => layout.editor,
+                };
+                assert_eq!(upper.bottom(), layout.assistant.y);
+                assert_eq!(layout.assistant.bottom(), area.bottom());
+                assert_eq!(layout.assistant.width, area.width);
+                let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+                terminal.draw(|frame| app.draw(frame))?;
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(text.contains("texo / chat"));
+                assert!(text.contains("Ask Texo"));
+                if matches!(focus, Focus::Editor | Focus::Assistant) {
+                    assert!(text.contains("Original document"));
+                }
+            }
         }
         Ok(())
     }
