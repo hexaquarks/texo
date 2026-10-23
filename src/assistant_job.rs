@@ -101,13 +101,26 @@ fn request_selected_provider(prompt: &str, cancelled: &AtomicBool) -> Result<Ass
         }
         Provider::Codex => {
             check_codex_login(cancelled)?;
-            request(&mut codex_command(), prompt, cancelled, REQUEST_TIMEOUT)
+            request(
+                &mut codex_request_command(&profile),
+                prompt,
+                cancelled,
+                REQUEST_TIMEOUT,
+            )
         }
         Provider::OpenAi | Provider::Anthropic => {
             let key = resolve_key(&profile, &Keychain)?;
             llm::request(&profile, key, prompt, cancelled)
         }
     }
+}
+
+fn codex_request_command(profile: &Profile) -> Command {
+    let mut command = codex_command();
+    if !profile.model.is_empty() {
+        command.args(["--model", &profile.model]);
+    }
+    command
 }
 
 fn check_codex_login(cancelled: &AtomicBool) -> Result<()> {
@@ -245,6 +258,16 @@ impl Drop for RunningProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_requests_use_the_selected_model_and_preserve_automatic_selection() {
+        let mut profile = Profile::new(Provider::Codex);
+        assert_eq!(codex_request_command(&profile).get_args().count(), 0);
+        profile.model = "gpt-6.1-sol".into();
+        let command = codex_request_command(&profile);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["--model", "gpt-6.1-sol"]);
+    }
 
     #[test]
     fn context_contains_the_current_buffer_even_when_history_describes_another_resume() {
