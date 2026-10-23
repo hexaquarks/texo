@@ -62,6 +62,7 @@ pub struct AssistantJob {
 impl AssistantJob {
     pub fn start(source: &str, path: &Path, messages: &[ConversationMessage]) -> Result<Self> {
         let prompt = build_prompt(source, path, messages)?;
+
         let document = path
             .file_name()
             .unwrap_or_default()
@@ -72,6 +73,7 @@ impl AssistantJob {
                 .context("Resume needs a parent folder")?
                 .to_owned(),
         );
+
         let (sender, result) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
@@ -126,6 +128,7 @@ fn request_selected_provider(
     } else {
         Some(resolve_key(&profile, &Keychain)?)
     };
+
     agent::run(
         prompt,
         tools,

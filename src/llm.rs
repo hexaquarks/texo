@@ -306,13 +306,16 @@ fn payload(profile: &Profile, context: &TurnContext<'_>) -> Value {
         }),
         _ => Value::Null,
     };
+
     match profile.provider {
         Provider::OpenAi => {
             let mut input = vec![json!({"role":"user", "content":prompt})];
+
             for exchange in context.history {
                 if let Some(items) = exchange.continuation.as_array() {
                     input.extend(items.clone());
                 }
+
                 for result in &exchange.results {
                     input.push(json!({
                         "type":"function_call_output",
@@ -321,17 +324,23 @@ fn payload(profile: &Profile, context: &TurnContext<'_>) -> Value {
                     }));
                 }
             }
+
             body["input"] = json!(input);
+
             // Reasoning items must be replayable without server-side response storage.
             body["include"] = json!(["reasoning.encrypted_content"]);
+
             if !context.tools.is_empty() {
                 body["tools"] = json!(
                     context
                         .tools
                         .iter()
                         .map(|tool| json!({
-                            "type":"function", "name":tool.name, "description":tool.description,
-                            "parameters":tool.parameters, "strict":true,
+                            "type": "function",
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.parameters,
+                            "strict": true,
                         }))
                         .collect::<Vec<_>>()
                 );
@@ -339,29 +348,47 @@ fn payload(profile: &Profile, context: &TurnContext<'_>) -> Value {
         }
         Provider::Anthropic => {
             let mut messages = vec![json!({"role":"user", "content":prompt})];
+
             for exchange in context.history {
                 messages.push(json!({"role":"assistant", "content":exchange.continuation}));
+
                 let results: Vec<_> = exchange
                     .results
                     .iter()
                     .map(|result| {
                         json!({
-                            "type":"tool_result", "tool_use_id":result.id,
-                            "content":result.output.to_string(), "is_error":result.is_error,
+                            "type": "tool_result",
+                            "tool_use_id": result.id,
+                            "content": result.output.to_string(),
+                            "is_error": result.is_error,
                         })
                     })
                     .collect();
+
                 messages.push(json!({"role":"user", "content":results}));
             }
+
             body["messages"] = json!(messages);
+
             if !context.tools.is_empty() {
-                body["tools"] = json!(context.tools.iter().map(|tool| json!({
-                    "name":tool.name, "description":tool.description, "input_schema":tool.parameters,
-                })).collect::<Vec<_>>());
+                let tools: Vec<_> = context
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "input_schema": tool.parameters,
+                        })
+                    })
+                    .collect();
+
+                body["tools"] = json!(tools);
             }
         }
         _ => {}
     }
+
     body
 }
 
@@ -470,6 +497,7 @@ fn parse_turn(provider: Provider, response: &Value) -> Result<AgentTurn> {
         _ => bail!("Unsupported provider"),
     }
     .ok_or_else(|| anyhow!("Invalid provider response"))?;
+
     let mut calls = Vec::new();
     for item in items {
         let call = match item["type"].as_str() {
@@ -486,10 +514,12 @@ fn parse_turn(provider: Provider, response: &Value) -> Result<AgentTurn> {
             }),
             _ => None,
         };
+
         if let Some(call) = call {
             calls.push(call);
         }
     }
+
     if calls.is_empty() {
         Ok(AgentTurn::Complete(parse_response(provider, response)?))
     } else {
@@ -504,13 +534,20 @@ fn parse_turn(provider: Provider, response: &Value) -> Result<AgentTurn> {
 pub fn codex_turn_schema() -> Value {
     let mut schema = reply_schema();
     schema["properties"]["tool_calls"] = json!({
-        "type":"array", "items": {
-            "type":"object", "properties": {
-                "id":{"type":"string"}, "name":{"type":"string"}, "arguments_json":{"type":"string"}
-            }, "required":["id", "name", "arguments_json"], "additionalProperties":false
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "name": {"type": "string"},
+                "arguments_json": {"type": "string"}
+            },
+            "required": ["id", "name", "arguments_json"],
+            "additionalProperties": false
         }
     });
     schema["required"] = json!(["reply", "proposed_tex", "tool_calls"]);
+
     schema
 }
 
@@ -522,6 +559,7 @@ pub fn parse_codex_turn(bytes: &[u8]) -> Result<AgentTurn> {
         name: String,
         arguments_json: String,
     }
+
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Response {
@@ -529,12 +567,15 @@ pub fn parse_codex_turn(bytes: &[u8]) -> Result<AgentTurn> {
         proposed_tex: Option<String>,
         tool_calls: Vec<Call>,
     }
+
     ensure!(
         bytes.len() <= MAX_RESPONSE_BYTES,
         "The assistant response is too large"
     );
+
     let response: Response =
         serde_json::from_slice(bytes).map_err(|_| anyhow!("Invalid Codex tool response"))?;
+
     if response.tool_calls.is_empty() {
         let reply = parse_reply(&serde_json::to_vec(&AssistantReply {
             reply: response.reply,
@@ -542,10 +583,12 @@ pub fn parse_codex_turn(bytes: &[u8]) -> Result<AgentTurn> {
         })?)?;
         return Ok(AgentTurn::Complete(reply));
     }
+
     ensure!(
         response.proposed_tex.is_none(),
         "Codex returned tools and a final edit in the same turn"
     );
+
     let calls = response
         .tool_calls
         .into_iter()
@@ -558,6 +601,7 @@ pub fn parse_codex_turn(bytes: &[u8]) -> Result<AgentTurn> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
+
     Ok(AgentTurn::Tools {
         calls,
         continuation: Value::Null,
@@ -854,26 +898,59 @@ mod tests {
         let tools = vec![ToolDefinition {
             name: "read_resume".into(),
             description: "Read current buffer".into(),
-            parameters: json!({"type":"object", "properties":{}, "required":[], "additionalProperties":false}),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+            }),
         }];
+
         for provider in [Provider::OpenAi, Provider::Anthropic] {
             let tool_response = if provider == Provider::OpenAi {
-                json!({"status":"completed", "output":[{"type":"reasoning", "id":"r1", "encrypted_content":"opaque", "summary":[]}, {"type":"function_call", "call_id":"call1", "name":"read_resume", "arguments":"{}"}]})
+                json!({
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "id": "r1",
+                            "encrypted_content": "opaque",
+                            "summary": []
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "call1",
+                            "name": "read_resume",
+                            "arguments": "{}"
+                        }
+                    ]
+                })
             } else {
-                json!({"stop_reason":"tool_use", "content":[{"type":"tool_use", "id":"call1", "name":"read_resume", "input":{}}]})
+                json!({
+                    "stop_reason": "tool_use",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call1",
+                        "name": "read_resume",
+                        "input": {}
+                    }]
+                })
             };
+
             let context = TurnContext {
                 prompt: "Edit current resume",
                 tools: &tools,
                 history: &[],
             };
             let (turn, wire) = mock_turn(provider, "200 OK", tool_response, &context);
+
             assert!(wire.contains("read_resume"));
             assert!(wire.contains(if provider == Provider::OpenAi {
                 "parameters"
             } else {
                 "input_schema"
             }));
+
             let AgentTurn::Tools {
                 calls,
                 continuation,
@@ -882,6 +959,7 @@ mod tests {
                 panic!("expected tool call")
             };
             assert_eq!(calls[0].id, "call1");
+
             let history = vec![ToolExchange {
                 calls,
                 continuation,
@@ -891,18 +969,27 @@ mod tests {
                     output: json!({"tex":"unsaved source"}),
                 }],
             }];
+
             let final_text = json!({"reply":"Done", "proposed_tex":null}).to_string();
             let final_response = if provider == Provider::OpenAi {
-                json!({"status":"completed", "output":[{"type":"message", "content":[{"type":"output_text", "text":final_text}]}]})
+                json!({
+                    "status": "completed",
+                    "output": [{
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": final_text}]
+                    }]
+                })
             } else {
                 json!({"stop_reason":"end_turn", "content":[{"type":"text", "text":final_text}]})
             };
+
             let context = TurnContext {
                 prompt: "Edit current resume",
                 tools: &tools,
                 history: &history,
             };
             let (turn, wire) = mock_turn(provider, "200 OK", final_response, &context);
+
             assert!(matches!(turn.unwrap(), AgentTurn::Complete(_)));
             assert!(wire.contains("unsaved source"));
             assert!(wire.contains("call1"));
@@ -919,13 +1006,24 @@ mod tests {
 
     #[test]
     fn codex_adapter_rejects_mixed_edits_and_tools_and_parses_calls() {
-        let mut response = json!({"reply":"", "proposed_tex":null, "tool_calls":[{"id":"one", "name":"read_resume", "arguments_json":"{}"}]});
+        let mut response = json!({
+            "reply": "",
+            "proposed_tex": null,
+            "tool_calls": [{
+                "id": "one",
+                "name": "read_resume",
+                "arguments_json": "{}"
+            }]
+        });
+
         assert!(matches!(
             parse_codex_turn(&serde_json::to_vec(&response).unwrap()).unwrap(),
             AgentTurn::Tools { .. }
         ));
+
         response["proposed_tex"] = json!("partial edit");
         assert!(parse_codex_turn(&serde_json::to_vec(&response).unwrap()).is_err());
+
         response["proposed_tex"] = Value::Null;
         response["tool_calls"][0]["arguments_json"] = json!("invalid json");
         assert!(parse_codex_turn(&serde_json::to_vec(&response).unwrap()).is_err());

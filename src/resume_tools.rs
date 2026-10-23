@@ -57,23 +57,35 @@ impl ToolSet for ResumeTools {
                 name: "compile_resume".into(),
                 description: "Compile the current draft offline in an OS sandbox. Errors are returned so you can revise \
                     and retry. Must succeed after the last propose_edit before finishing. Does not publish the PDF.".into(),
-                parameters: json!({"type":"object", "properties":{}, "required":[], "additionalProperties":false}),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": false
+                }),
             },
             ToolDefinition {
                 name: "read_resume".into(),
                 description: "Read the task's current resume draft, including unsaved text and any staged edits. \
                     This tool does not read other files.".into(),
-                parameters: json!({"type":"object", "properties":{}, "required":[], "additionalProperties":false}),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": false
+                }),
             },
             ToolDefinition {
                 name: "propose_edit".into(),
                 description: "Stage a COMPLETE revised TeX document in memory. Does not change the editor or save files. \
                     Preserve the user's facts.".into(),
                 parameters: json!({
-                    "type":"object",
-                    "properties":{"tex":{"type":"string", "maxLength":MAX_DRAFT_BYTES}},
-                    "required":["tex"],
-                    "additionalProperties":false
+                    "type": "object",
+                    "properties": {
+                        "tex": {"type": "string", "maxLength": MAX_DRAFT_BYTES}
+                    },
+                    "required": ["tex"],
+                    "additionalProperties": false
                 }),
             },
         ]
@@ -81,29 +93,38 @@ impl ToolSet for ResumeTools {
 
     fn execute(&mut self, name: &str, arguments: &Value, cancelled: &AtomicBool) -> Result<Value> {
         ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
+
         match name {
             "compile_resume" => {
                 serde_json::from_value::<NoArguments>(arguments.clone())
                     .map_err(|_| anyhow!("compile_resume accepts no arguments"))?;
+
                 self.compiled = false;
                 let directory = self
                     .directory
                     .as_ref()
                     .ok_or_else(|| anyhow!("No resume folder selected"))?;
+
                 let diagnostics = crate::sandbox::compile(&self.draft, directory, cancelled)?;
+
                 self.compiled = true;
+
                 Ok(json!({"compiled":true, "diagnostics":diagnostics}))
             }
             "read_resume" => {
                 serde_json::from_value::<NoArguments>(arguments.clone())
                     .map_err(|_| anyhow!("read_resume accepts no arguments"))?;
-                Ok(
-                    json!({"document":self.document, "tex":self.draft, "has_proposal":self.proposed}),
-                )
+
+                Ok(json!({
+                    "document": self.document,
+                    "tex": self.draft,
+                    "has_proposal": self.proposed
+                }))
             }
             "propose_edit" => {
                 let edit: ProposedEdit = serde_json::from_value(arguments.clone())
                     .map_err(|_| anyhow!("propose_edit requires only a tex string"))?;
+
                 ensure!(
                     !edit.tex.trim().is_empty(),
                     "The proposed resume cannot be empty"
@@ -112,9 +133,12 @@ impl ToolSet for ResumeTools {
                     edit.tex.len() <= MAX_DRAFT_BYTES,
                     "The proposed resume is too large"
                 );
+
                 self.draft = edit.tex;
                 self.proposed = true;
+
                 self.compiled = false;
+
                 Ok(json!({"staged":true, "saved":false, "bytes":self.draft.len()}))
             }
             _ => bail!("Unknown resume tool"),
@@ -134,6 +158,7 @@ impl ToolSet for ResumeTools {
                     .is_none_or(|tex| tex == &self.draft),
                 "Final edit differs from the staged draft"
             );
+
             reply.proposed_tex = Some(self.draft.clone());
         } else {
             ensure!(
@@ -141,6 +166,7 @@ impl ToolSet for ResumeTools {
                 "Use propose_edit before completing an edit"
             );
         }
+
         Ok(reply)
     }
 }
@@ -172,11 +198,13 @@ mod tests {
         std::fs::write(&path, "saved source").unwrap();
         let mut tools = ResumeTools::new("resume.tex".into(), "unsaved source".into())
             .in_directory(directory.path().to_owned());
+
         let valid = r"\documentclass{article}\begin{document}Revised\end{document}";
         let broken = concat!(
             r"\documentclass{article}\begin{document}",
             r"\undefinedcommand\end{document}",
         );
+
         let result = agent::run(
             "Edit resume",
             &mut tools,
@@ -205,8 +233,10 @@ mod tests {
             },
         )
         .unwrap();
+
         assert_eq!(result.proposed_tex.as_deref(), Some(valid));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "saved source");
+
         tools
             .execute(
                 "propose_edit",
@@ -228,6 +258,7 @@ mod tests {
     fn tools_reject_file_selectors_unknown_fields_empty_and_oversized_edits() {
         let mut tools = ResumeTools::new("resume.tex".into(), "original".into());
         let cancelled = AtomicBool::new(false);
+
         for arguments in [json!({"path":"../../private"}), json!(null)] {
             assert!(
                 tools
@@ -235,6 +266,7 @@ mod tests {
                     .is_err()
             );
         }
+
         for arguments in [
             json!({"tex":""}),
             json!({"tex":"new", "path":"/tmp/other"}),
@@ -246,6 +278,7 @@ mod tests {
                     .is_err()
             );
         }
+
         assert_eq!(tools.draft, "original");
         assert!(tools.execute("shell", &json!({}), &cancelled).is_err());
         assert!(
@@ -257,6 +290,7 @@ mod tests {
                 )
                 .is_err()
         );
+
         assert_eq!(tools.draft, "original");
     }
 
@@ -271,6 +305,7 @@ mod tests {
                 })
                 .is_err()
         );
+
         tools
             .execute(
                 "propose_edit",
@@ -278,6 +313,7 @@ mod tests {
                 &AtomicBool::new(false),
             )
             .unwrap();
+
         tools.compiled = true;
         assert!(
             tools
