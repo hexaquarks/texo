@@ -8,3 +8,4 @@ mod process;
 pub mod resume_tools;
 pub mod sandbox;
 pub mod theme;
+pub mod tools;

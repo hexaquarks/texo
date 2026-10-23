@@ -14,8 +14,9 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 use crate::{
-    agent::{AgentTurn, ToolCall, ToolDefinition, ToolExchange},
+    agent::AgentTurn,
     auth::{Profile, Provider},
+    tools::{ToolCall, ToolDefinition, ToolExchange},
 };
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
@@ -963,7 +964,7 @@ mod tests {
             let history = vec![ToolExchange {
                 calls,
                 continuation,
-                results: vec![crate::agent::ToolResult {
+                results: vec![crate::tools::ToolResult {
                     id: "call1".into(),
                     is_error: false,
                     output: json!({"tex":"unsaved source"}),

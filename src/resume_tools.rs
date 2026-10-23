@@ -8,8 +8,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    agent::{ToolDefinition, ToolSet},
     llm::AssistantReply,
+    tools::{ToolDefinition, ToolSet},
 };
 
 pub const MAX_DRAFT_BYTES: usize = 128 * 1024;
@@ -175,7 +175,10 @@ impl ToolSet for ResumeTools {
 mod tests {
     use super::*;
     #[cfg(target_os = "macos")]
-    use crate::agent::{self, AgentTurn, ToolCall};
+    use crate::{
+        agent::{self, AgentTurn},
+        tools::ToolCall,
+    };
 
     #[cfg(target_os = "macos")]
     fn call(id: &str, name: &str, arguments: Value) -> AgentTurn {

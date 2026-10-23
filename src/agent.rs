@@ -4,31 +4,17 @@ use std::{
 };
 
 use anyhow::{Result, bail, ensure};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::llm::AssistantReply;
+use crate::{
+    llm::AssistantReply,
+    tools::{self, ToolCall, ToolDefinition, ToolExchange, ToolSet},
+};
 
 pub const MAX_AGENT_TURNS: usize = 10;
 pub const MAX_TOOL_CALLS: usize = 20;
 pub const MAX_AGENT_CONTEXT_BYTES: usize = 1024 * 1024;
-pub const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
 const MAX_CALL_ID_BYTES: usize = 128;
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: Value,
-}
 
 #[derive(Debug)]
 pub enum AgentTurn {
@@ -37,43 +23,6 @@ pub enum AgentTurn {
         calls: Vec<ToolCall>,
         continuation: Value,
     },
-}
-
-#[derive(Debug, Serialize)]
-pub struct ToolResult {
-    pub id: String,
-    pub is_error: bool,
-    pub output: Value,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ToolExchange {
-    pub calls: Vec<ToolCall>,
-    pub continuation: Value,
-    pub results: Vec<ToolResult>,
-}
-
-/// Implementations expose only explicitly supported operations, never arbitrary shell commands.
-pub trait ToolSet {
-    fn definitions(&self) -> Vec<ToolDefinition>;
-
-    fn execute(&mut self, name: &str, arguments: &Value, cancelled: &AtomicBool) -> Result<Value>;
-
-    fn finish(&mut self, reply: AssistantReply) -> Result<AssistantReply> {
-        Ok(reply)
-    }
-}
-
-pub struct NoTools;
-
-impl ToolSet for NoTools {
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        Vec::new()
-    }
-
-    fn execute(&mut self, _: &str, _: &Value, _: &AtomicBool) -> Result<Value> {
-        bail!("No tools are registered")
-    }
 }
 
 /// Run one task against a fixed provider and document snapshot. Intermediate tool turns
@@ -128,32 +77,7 @@ pub fn run(
                     ensure!(call_ids.insert(call.id.clone()), "Repeated tool call ID");
                 }
 
-                let mut results = Vec::new();
-                for call in &calls {
-                    ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
-
-                    let result = if definitions.iter().any(|tool| tool.name == call.name) {
-                        tools.execute(&call.name, &call.arguments, cancelled)
-                    } else {
-                        Err(anyhow::anyhow!("Unknown tool. Choose a registered tool"))
-                    };
-                    ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
-
-                    let (is_error, output) = match result {
-                        Ok(value) => (false, value),
-                        Err(error) => (true, Value::String(error.to_string())),
-                    };
-                    ensure!(
-                        serde_json::to_vec(&output)?.len() <= MAX_TOOL_RESULT_BYTES,
-                        "Tool output limit reached. No edit was applied"
-                    );
-
-                    results.push(ToolResult {
-                        id: call.id.clone(),
-                        is_error,
-                        output,
-                    });
-                }
+                let results = tools::execute_calls(tools, &definitions, &calls, cancelled)?;
 
                 history.push(ToolExchange {
                     calls,
