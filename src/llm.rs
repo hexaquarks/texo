@@ -107,6 +107,156 @@ fn request_at(
     })
 }
 
+/// Fetch the account's current catalog; no generation request or resume content is sent.
+pub fn list_models(
+    provider: Provider,
+    key: SecretString,
+    cancelled: &AtomicBool,
+) -> Result<Vec<String>> {
+    let endpoint = match provider {
+        Provider::OpenAi => "https://api.openai.com/v1/models",
+        Provider::Anthropic => "https://api.anthropic.com/v1/models",
+        _ => bail!("Model discovery requires an API provider"),
+    };
+    list_models_at(provider, key, cancelled, endpoint)
+}
+
+fn list_models_at(
+    provider: Provider,
+    key: SecretString,
+    cancelled: &AtomicBool,
+    endpoint: &str,
+) -> Result<Vec<String>> {
+    const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
+    const MAX_CATALOG_PAGES: usize = 100;
+    const ANTHROPIC_PAGE_SIZE: &str = "1000";
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| anyhow!("Could not initialize model discovery"))?;
+    runtime.block_on(async {
+        let fetch = async {
+            let mut models = Vec::new();
+            let mut cursor = String::new();
+            for _ in 0..MAX_CATALOG_PAGES {
+                let mut request = client.get(endpoint).headers(headers(provider, &key)?);
+                if provider == Provider::Anthropic {
+                    request = request.query(&[("limit", ANTHROPIC_PAGE_SIZE)]);
+                    if !cursor.is_empty() {
+                        request = request.query(&[("after_id", &cursor)]);
+                    }
+                }
+                let mut response = request.send().await.map_err(connection_error)?;
+                check_status(provider, response.status())?;
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response.chunk().await.map_err(connection_error)? {
+                    ensure!(
+                        bytes.len().saturating_add(chunk.len()) <= MAX_RESPONSE_BYTES,
+                        "Model catalog is too large"
+                    );
+                    bytes.extend_from_slice(&chunk);
+                }
+                let page: Value = serde_json::from_slice(&bytes)
+                    .map_err(|_| anyhow!("The provider returned an invalid model catalog"))?;
+                models.extend(catalog_entries(provider, &page)?);
+                if provider != Provider::Anthropic || page["has_more"] != true {
+                    models.sort_by(|a, b| {
+                        b.created_seconds.cmp(&a.created_seconds)
+                            .then_with(|| b.created_at.cmp(&a.created_at))
+                            .then_with(|| a.id.cmp(&b.id))
+                    });
+                    let mut seen = std::collections::HashSet::new();
+                    let ids: Vec<_> = models.into_iter()
+                        .map(|entry| entry.id)
+                        .filter(|id| seen.insert(id.clone()))
+                        .collect();
+                    ensure!(
+                        !ids.is_empty(),
+                        "No text models are available for this account. Check provider access and retry"
+                    );
+                    return Ok(ids);
+                }
+                let next = page["last_id"].as_str()
+                    .filter(|id| !id.is_empty() && *id != cursor)
+                    .ok_or_else(|| anyhow!("The provider returned invalid model pagination"))?;
+                cursor = next.into();
+            }
+            bail!("The model catalog has too many pages")
+        };
+        tokio::select! {
+            result = tokio::time::timeout(CATALOG_TIMEOUT, fetch) => {
+                result.map_err(|_| anyhow!("Model discovery timed out. Press Enter to retry"))?
+            },
+            _ = async {
+                while !cancelled.load(Ordering::Relaxed) {
+                    tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+                }
+            } => Err(anyhow!("Model discovery cancelled")),
+        }
+    })
+}
+
+struct CatalogModel {
+    id: String,
+    created_seconds: u64,
+    created_at: String,
+}
+
+fn catalog_entries(provider: Provider, page: &Value) -> Result<Vec<CatalogModel>> {
+    let data = page["data"]
+        .as_array()
+        .ok_or_else(|| anyhow!("Invalid model catalog"))?;
+    let mut models = Vec::new();
+    for item in data {
+        let Some(id) = item["id"].as_str() else {
+            continue;
+        };
+        // OpenAI's catalog includes image, audio, embedding, and other non-chat models.
+        // It has no capability field, so restrict this picker to text model families.
+        let text_model = match provider {
+            Provider::OpenAi => {
+                (id.starts_with("gpt-")
+                    || id.starts_with("chatgpt-")
+                    || id.starts_with("o1")
+                    || id.starts_with("o3")
+                    || id.starts_with("o4"))
+                    && ![
+                        "audio",
+                        "realtime",
+                        "transcribe",
+                        "tts",
+                        "image",
+                        "search",
+                        "deep-research",
+                        "codex",
+                        "-pro",
+                    ]
+                    .iter()
+                    .any(|kind| id.contains(kind))
+            }
+            Provider::Anthropic => id.starts_with("claude-"),
+            _ => false,
+        };
+        let profile = Profile {
+            provider,
+            model: id.into(),
+            ..Profile::default()
+        };
+        if text_model && profile.validate().is_ok() {
+            models.push(CatalogModel {
+                id: id.into(),
+                created_seconds: item["created"].as_u64().unwrap_or_default(),
+                created_at: item["created_at"].as_str().unwrap_or_default().into(),
+            });
+        }
+    }
+    Ok(models)
+}
+
 fn headers(provider: Provider, key: &SecretString) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     let (name, value) = match provider {
@@ -304,6 +454,125 @@ mod tests {
             Duration::from_secs(3),
         );
         (result, server.join().unwrap())
+    }
+
+    fn mock_catalog(
+        provider: Provider,
+        pages: Vec<(&str, Value)>,
+    ) -> (Result<Vec<String>>, Vec<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1/models", listener.local_addr().unwrap());
+        let pages: Vec<_> = pages
+            .into_iter()
+            .map(|(status, body)| (status.to_owned(), body))
+            .collect();
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in pages {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                while !bytes.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                }
+                requests.push(String::from_utf8(bytes).unwrap());
+                let body = body.to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let result = list_models_at(
+            provider,
+            "catalog-secret".into(),
+            &AtomicBool::new(false),
+            &endpoint,
+        );
+        (result, server.join().unwrap())
+    }
+
+    #[test]
+    fn catalog_fetches_current_ids_sorts_and_filters_non_text_models() {
+        let (models, requests) = mock_catalog(
+            Provider::OpenAi,
+            vec![(
+                "200 OK",
+                json!({"data":[
+                    {"id":"gpt-future", "created":30}, {"id":"gpt-old", "created":10},
+                    {"id":"gpt-new", "created":20}, {"id":"gpt-image-new", "created":40},
+                    {"id":"text-embedding-new", "created":50}, {"id":"gpt-future", "created":30}
+                ]}),
+            )],
+        );
+        assert_eq!(models.unwrap(), ["gpt-future", "gpt-new", "gpt-old"]);
+        assert!(requests[0].starts_with("GET /v1/models "));
+        assert!(requests[0].contains("authorization: Bearer catalog-secret"));
+        assert!(!requests[0].contains("x-api-key"));
+    }
+
+    #[test]
+    fn anthropic_catalog_follows_pagination_and_keeps_credentials_provider_specific() {
+        let (models, requests) = mock_catalog(
+            Provider::Anthropic,
+            vec![
+                (
+                    "200 OK",
+                    json!({"data":[{"id":"claude-old", "created_at":"2025-01-01T00:00:00Z"}], "has_more":true,"last_id":"claude-old"}),
+                ),
+                (
+                    "200 OK",
+                    json!({"data":[{"id":"claude-new", "created_at":"2026-01-01T00:00:00Z"}], "has_more":false}),
+                ),
+            ],
+        );
+        assert_eq!(models.unwrap(), ["claude-new", "claude-old"]);
+        assert!(requests[1].contains("after_id=claude-old"));
+        assert!(requests[0].contains("x-api-key: catalog-secret"));
+        assert!(!requests[0].contains("authorization:"));
+    }
+
+    #[test]
+    fn catalog_request_can_be_cancelled_while_waiting_for_the_provider() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker = thread::spawn(move || {
+            list_models_at(
+                Provider::OpenAi,
+                "test-secret".into(),
+                &worker_cancelled,
+                &endpoint,
+            )
+        });
+        let (_connection, _) = listener.accept().unwrap();
+        cancelled.store(true, Ordering::Relaxed);
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().to_string(),
+            "Model discovery cancelled"
+        );
+    }
+
+    #[test]
+    fn catalog_errors_are_safe_and_empty_catalogs_fail_explicitly() {
+        for (status, body) in [
+            ("401 Unauthorized", json!({"error":"catalog-secret"})),
+            ("200 OK", json!({"data":[]})),
+            ("200 OK", json!({"invalid":"catalog-secret"})),
+            ("302 Found", json!({})),
+        ] {
+            let (result, _) = mock_catalog(Provider::OpenAi, vec![(status, body)]);
+            assert!(!result.unwrap_err().to_string().contains("catalog-secret"));
+        }
     }
 
     #[test]
