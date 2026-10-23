@@ -9,8 +9,9 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 const KEYCHAIN_SERVICE: &str = "texo.llm";
-const MAX_MODEL_LENGTH: usize = 100;
-const MAX_KEY_LENGTH: usize = 4096;
+pub const MAX_MODEL_BYTES: usize = 100;
+pub const MAX_API_KEY_BYTES: usize = 4096;
+pub const CODEX_STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -49,12 +50,21 @@ impl Provider {
     }
 }
 
-/// Preferences contain only the provider and model. Credentials never belong in this file.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KeySource {
+    #[default]
+    Saved,
+    Environment,
+}
+
+/// Preferences contain only the provider, model, and credential source. Credentials never belong in this file.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub provider: Provider,
     pub model: String,
+    pub key_source: KeySource,
 }
 
 impl Profile {
@@ -62,6 +72,7 @@ impl Profile {
         Self {
             provider,
             model: provider.default_model().into(),
+            key_source: KeySource::Saved,
         }
     }
 
@@ -69,7 +80,7 @@ impl Profile {
         if self.provider.key_variable().is_some() {
             ensure!(
                 !self.model.is_empty()
-                    && self.model.len() <= MAX_MODEL_LENGTH
+                    && self.model.len() <= MAX_MODEL_BYTES
                     && self
                         .model
                         .chars()
@@ -125,10 +136,46 @@ fn profile_path() -> Result<PathBuf> {
     Ok(project.config_dir().join("provider.json"))
 }
 
+/// Codex receives only the environment needed to find its executable, login, and OS services.
+/// API keys and unrelated project secrets must not reach its subprocess or shell snapshots.
+pub fn codex_command() -> std::process::Command {
+    let mut command = std::process::Command::new("codex");
+    configure_codex_environment(&mut command);
+    command
+}
+
+fn configure_codex_environment(command: &mut std::process::Command) {
+    command.env_clear();
+    for name in [
+        "PATH",
+        "HOME",
+        "CODEX_HOME",
+        "USER",
+        "USERNAME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "SystemRoot",
+        "WINDIR",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+    ] {
+        if let Some(value) = env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+}
+
 pub fn validate_key(key: &str) -> Result<()> {
     ensure!(
         !key.is_empty()
-            && key.len() <= MAX_KEY_LENGTH
+            && key.len() <= MAX_API_KEY_BYTES
             && key.bytes().all(|byte| byte.is_ascii_graphic()),
         "Enter a nonempty API key without spaces or line breaks"
     );
@@ -181,24 +228,25 @@ impl SecretStore for Keychain {
     }
 }
 
-pub fn resolve_key(provider: Provider, store: &dyn SecretStore) -> Result<SecretString> {
-    resolve_key_with(provider, store, |name| env::var(name).ok())
+pub fn resolve_key(profile: &Profile, store: &dyn SecretStore) -> Result<SecretString> {
+    resolve_key_with(profile, store, |name| env::var(name).ok())
 }
 
 fn resolve_key_with(
-    provider: Provider,
+    profile: &Profile,
     store: &dyn SecretStore,
     environment: impl FnOnce(&str) -> Option<String>,
 ) -> Result<SecretString> {
+    let provider = profile.provider;
     let variable = provider
         .key_variable()
         .ok_or_else(|| anyhow!("This provider does not use an API key"))?;
-    // An explicitly supplied process environment key takes precedence over saved credentials.
-    if let Some(value) = environment(variable) {
-        validate_key(&value)?;
-        return Ok(value.into());
+    // Never silently switch credential sources or providers after a failed login.
+    let key = match profile.key_source {
+        KeySource::Environment => environment(variable).map(SecretString::from),
+        KeySource::Saved => store.get(provider)?,
     }
-    let key = store.get(provider)?.ok_or_else(|| {
+    .ok_or_else(|| {
         anyhow!(
             "{} is not connected. Type /login to add an API key or choose another sign-in method",
             provider.label()
@@ -206,6 +254,22 @@ fn resolve_key_with(
     })?;
     validate_key(key.expose_secret())?;
     Ok(key)
+}
+
+pub fn disconnect(
+    profile: &Profile,
+    store: &dyn SecretStore,
+    preferences: Option<&Path>,
+) -> Result<()> {
+    let disconnected = Profile::new(Provider::Disconnected);
+    match preferences {
+        Some(path) => disconnected.save_to(path)?,
+        None => disconnected.save()?,
+    }
+    if profile.provider.key_variable().is_some() && profile.key_source == KeySource::Saved {
+        store.delete(profile.provider)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -251,18 +315,84 @@ mod tests {
         store
             .set(Provider::OpenAi, &SecretString::from("saved-secret"))
             .unwrap();
-        let key = resolve_key_with(Provider::Anthropic, &store, |name| {
+        let mut profile = Profile::new(Provider::Anthropic);
+        profile.key_source = KeySource::Environment;
+        let key = resolve_key_with(&profile, &store, |name| {
             assert_eq!(name, "ANTHROPIC_API_KEY");
             Some("environment-secret".into())
         })
         .unwrap();
         assert_eq!(key.expose_secret(), "environment-secret");
         assert!(!format!("{key:?}").contains("environment-secret"));
-        let key = resolve_key_with(Provider::OpenAi, &store, |_| None).unwrap();
+        let key = resolve_key_with(&Profile::new(Provider::OpenAi), &store, |_| {
+            panic!("Saved keys must not read environment variables")
+        })
+        .unwrap();
         assert_eq!(key.expose_secret(), "saved-secret");
         store.delete(Provider::OpenAi).unwrap();
-        let error = resolve_key_with(Provider::OpenAi, &store, |_| None).unwrap_err();
+        let error = resolve_key_with(&Profile::new(Provider::OpenAi), &store, |_| {
+            panic!("Saved keys must not read environment variables")
+        })
+        .unwrap_err();
         assert!(error.to_string().contains("/login"));
+    }
+
+    #[test]
+    fn explicit_key_sources_never_fall_back_to_each_other() {
+        let store = MemoryStore::default();
+        store
+            .set(Provider::OpenAi, &SecretString::from("saved-secret"))
+            .unwrap();
+        let mut profile = Profile::new(Provider::OpenAi);
+        let key = resolve_key_with(&profile, &store, |_| Some("other-secret".into())).unwrap();
+        assert_eq!(key.expose_secret(), "saved-secret");
+        profile.key_source = KeySource::Environment;
+        assert!(resolve_key_with(&profile, &store, |_| None).is_err());
+        assert!(resolve_key_with(&profile, &store, |_| Some("invalid value".into())).is_err());
+    }
+
+    #[test]
+    fn logout_disconnects_even_when_credential_deletion_fails() {
+        struct LockedStore;
+        impl SecretStore for LockedStore {
+            fn get(&self, _: Provider) -> Result<Option<SecretString>> {
+                unreachable!()
+            }
+            fn set(&self, _: Provider, _: &SecretString) -> Result<()> {
+                unreachable!()
+            }
+            fn delete(&self, _: Provider) -> Result<()> {
+                Err(anyhow!("Locked credential store"))
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("provider.json");
+        let profile = Profile::new(Provider::OpenAi);
+        profile.save_to(&path).unwrap();
+        assert!(disconnect(&profile, &LockedStore, Some(&path)).is_err());
+        assert_eq!(
+            Profile::load_from(&path).unwrap().provider,
+            Provider::Disconnected
+        );
+
+        let store = MemoryStore::default();
+        store
+            .set(Provider::OpenAi, &SecretString::from("saved-secret"))
+            .unwrap();
+        disconnect(&profile, &store, Some(&path)).unwrap();
+        assert!(store.get(Provider::OpenAi).unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subprocess_environment_does_not_inherit_project_secrets() {
+        let mut command = std::process::Command::new("sh");
+        command.env("TEXO_TEST_SECRET", "synthetic-secret");
+        command.env("OPENAI_API_KEY", "synthetic-api-secret");
+        configure_codex_environment(&mut command);
+        let check_environment = r#"test -z "${TEXO_TEST_SECRET+x}" && test -z "${OPENAI_API_KEY+x}" && test -n "$PATH""#;
+        let status = command.args(["-c", check_environment]).status().unwrap();
+        assert!(status.success());
     }
 
     #[test]

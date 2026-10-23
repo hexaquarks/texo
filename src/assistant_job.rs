@@ -16,13 +16,13 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::Serialize;
 pub use texo::llm::AssistantReply;
 use texo::{
-    auth::{Keychain, Profile, Provider, resolve_key},
+    auth::{CODEX_STATUS_TIMEOUT, Keychain, Profile, Provider, codex_command, resolve_key},
     llm,
 };
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+const REQUEST_TIMEOUT: Duration = llm::REQUEST_TIMEOUT;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
-const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+const MAX_RESPONSE_BYTES: u64 = llm::MAX_RESPONSE_BYTES as u64;
 const MAX_CONTEXT_BYTES: usize = 200_000;
 
 const ASSISTANT_INSTRUCTIONS: &str = "You are Texo, a concise resume editing assistant. \
@@ -101,22 +101,17 @@ fn request_selected_provider(prompt: &str, cancelled: &AtomicBool) -> Result<Ass
         }
         Provider::Codex => {
             check_codex_login(cancelled)?;
-            request(
-                &mut Command::new("codex"),
-                prompt,
-                cancelled,
-                REQUEST_TIMEOUT,
-            )
+            request(&mut codex_command(), prompt, cancelled, REQUEST_TIMEOUT)
         }
         Provider::OpenAi | Provider::Anthropic => {
-            let key = resolve_key(profile.provider, &Keychain)?;
+            let key = resolve_key(&profile, &Keychain)?;
             llm::request(&profile, key, prompt, cancelled)
         }
     }
 }
 
 fn check_codex_login(cancelled: &AtomicBool) -> Result<()> {
-    let child = Command::new("codex")
+    let child = codex_command()
         .args(["login", "status"])
         .env_remove("OPENAI_API_KEY")
         .env_remove("ANTHROPIC_API_KEY")
@@ -137,7 +132,7 @@ fn check_codex_login(cancelled: &AtomicBool) -> Result<()> {
             return Ok(());
         }
         ensure!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < CODEX_STATUS_TIMEOUT,
             "Could not check Codex login. Try /login again"
         );
         thread::sleep(POLL_INTERVAL);
@@ -171,12 +166,11 @@ fn request(
     let response_path = directory.path().join("response.json");
     fs::write(&schema_path, serde_json::to_vec(&llm::reply_schema())?)?;
 
-    // Temporary files keep large prompts and diagnostic output from blocking pipe buffers.
+    // A temporary input file keeps large prompts from blocking a pipe buffer.
     // The isolated working directory also avoids loading the resume project's agent instructions.
     let mut input = tempfile::tempfile()?;
     input.write_all(prompt.as_bytes())?;
     input.rewind()?;
-    let diagnostics = tempfile::tempfile()?;
     command
         .env_remove("OPENAI_API_KEY")
         .env_remove("ANTHROPIC_API_KEY")
@@ -184,6 +178,12 @@ fn request(
         .args([
             "exec",
             "--ignore-user-config",
+            "--disable",
+            "shell_tool",
+            "--disable",
+            "shell_snapshot",
+            "--disable",
+            "unified_exec",
             "--sandbox",
             "read-only",
             "--skip-git-repo-check",
@@ -197,8 +197,8 @@ fn request(
         .arg(&response_path)
         .arg("-")
         .stdin(input)
-        .stdout(diagnostics.try_clone()?)
-        .stderr(diagnostics.try_clone()?);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     let child = command.spawn().context(
         "Could not start Codex. Install the Codex CLI and run `codex login` in your terminal",
     )?;

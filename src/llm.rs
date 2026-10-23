@@ -373,6 +373,53 @@ mod tests {
     }
 
     #[test]
+    fn timeouts_and_oversized_responses_fail_without_an_edit() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            request_at(
+                &Profile::new(Provider::Anthropic),
+                "test-secret".into(),
+                "hello",
+                &AtomicBool::new(false),
+                &endpoint,
+                Duration::from_millis(100),
+            )
+        });
+        let (_connection, _) = listener.accept().unwrap();
+        let error = worker.join().unwrap().unwrap_err().to_string();
+        assert!(error.contains("timed out"));
+        assert!(parse_reply(&vec![b' '; MAX_RESPONSE_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn redirects_never_forward_credentials_to_another_endpoint() {
+        let source = TcpListener::bind("127.0.0.1:0").unwrap();
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", source.local_addr().unwrap());
+        let redirect = format!("http://{}", destination.local_addr().unwrap());
+        destination.set_nonblocking(true).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = source.accept().unwrap();
+            let mut bytes = [0; 4096];
+            let count = stream.read(&mut bytes).unwrap();
+            assert!(count > 0);
+            write!(stream, "HTTP/1.1 307 Temporary Redirect\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let result = request_at(
+            &Profile::new(Provider::OpenAi),
+            "test-secret".into(),
+            "hello",
+            &AtomicBool::new(false),
+            &endpoint,
+            Duration::from_secs(1),
+        );
+        assert!(result.is_err());
+        server.join().unwrap();
+        assert!(destination.accept().is_err());
+    }
+
+    #[test]
     fn cancelling_a_pending_network_request_returns_promptly() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
