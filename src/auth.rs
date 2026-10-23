@@ -201,30 +201,62 @@ impl Keychain {
     }
 }
 
+/// Suppress OS dialogs only for the duration of a credential operation. Serialize these
+/// calls because macOS's interaction setting is shared, and restore it even on failure.
+fn without_keychain_dialogs<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    #[cfg(target_os = "macos")]
+    let (_access, _interaction) = {
+        use security_framework::os::macos::keychain::SecKeychain;
+        static ACCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let access = ACCESS
+            .lock()
+            .map_err(|_| anyhow!("Credential access is unavailable"))?;
+        let allowed = SecKeychain::user_interaction_allowed()
+            .map_err(|_| anyhow!("Could not configure non-interactive credential access"))?;
+        let interaction = if allowed {
+            Some(
+                SecKeychain::disable_user_interaction()
+                    .map_err(|_| anyhow!("Could not disable credential dialogs"))?,
+            )
+        } else {
+            None
+        };
+        (access, interaction)
+    };
+
+    operation()
+}
+
 impl SecretStore for Keychain {
     fn get(&self, provider: Provider) -> Result<Option<SecretString>> {
-        match Self::entry(provider)?.get_password() {
+        without_keychain_dialogs(|| match Self::entry(provider)?.get_password() {
             Ok(key) => Ok(Some(key.into())),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err(anyhow!(
-                "Could not unlock the OS credential store. Unlock it and retry /login"
+                "The OS credential store denied access. Use /login and choose {} from the environment, or authorize Texo in your credential store",
+                provider.key_variable().unwrap_or("an API key")
             )),
-        }
+        })
     }
 
     fn set(&self, provider: Provider, key: &SecretString) -> Result<()> {
         validate_key(key.expose_secret())?;
-        Self::entry(provider)?.set_password(key.expose_secret())
-            .map_err(|_| anyhow!("Could not save the key in the OS credential store. No plaintext copy was written"))
+        without_keychain_dialogs(|| {
+            Self::entry(provider)?.set_password(key.expose_secret())
+                .map_err(|_| anyhow!(
+                    "Could not save the key without an OS dialog. Use /login and choose {} from the environment. No plaintext copy was written",
+                    provider.key_variable().unwrap_or("an API key")
+                ))
+        })
     }
 
     fn delete(&self, provider: Provider) -> Result<()> {
-        match Self::entry(provider)?.delete_credential() {
+        without_keychain_dialogs(|| match Self::entry(provider)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(_) => Err(anyhow!(
-                "Could not remove the saved API key from the OS credential store"
+                "Could not remove the saved API key without an OS dialog. Remove Texo's entry in your credential store"
             )),
-        }
+        })
     }
 }
 
@@ -291,6 +323,26 @@ mod tests {
             *self.0.borrow_mut() = None;
             Ok(())
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn credential_operations_suppress_dialogs_and_restore_the_previous_setting() {
+        use security_framework::os::macos::keychain::SecKeychain;
+        let original = SecKeychain::user_interaction_allowed().unwrap();
+        without_keychain_dialogs(|| {
+            assert!(!SecKeychain::user_interaction_allowed().unwrap());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), original);
+
+        let result: Result<()> = without_keychain_dialogs(|| {
+            assert!(!SecKeychain::user_interaction_allowed().unwrap());
+            Err(anyhow!("Synthetic credential failure"))
+        });
+        assert!(result.is_err());
+        assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), original);
     }
 
     #[test]

@@ -357,9 +357,8 @@ impl LoginDialog {
             model: String::new(),
         };
         let key = if self.use_environment || self.reuse_saved_key {
-            resolve_key(&profile, self.store.as_ref()).map_err(|_| {
+            resolve_key(&profile, self.store.as_ref()).inspect_err(|_| {
                 self.step = Step::Method;
-                anyhow!("The selected API key is unavailable. Choose a new API key or another sign-in method")
             })?
         } else {
             validate_key(&self.key)?;
