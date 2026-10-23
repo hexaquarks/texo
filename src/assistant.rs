@@ -1,15 +1,20 @@
 use std::path::Path;
 
+use crate::login::{LoginDialog, LoginResult};
 use anyhow::{Result, ensure};
 use ratatui::{
     Frame,
+    crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers},
     layout::{Alignment, Constraint, Layout, Margin, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
 };
 use ratatui_textarea::{CursorMove, TextArea};
-use texo::theme;
+use texo::{
+    auth::{Keychain, Profile, Provider, disconnect},
+    theme,
+};
 
 use crate::assistant_job::{AssistantJob, ConversationMessage};
 
@@ -18,6 +23,13 @@ const SEND_WIDTH: u16 = 8;
 const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT;
 const PROMPT_WIDTH: u16 = 2;
 const SCROLL_LINES: u16 = 3;
+const CHAT_COMMANDS: [(&str, &str); 2] = [
+    ("/login", "Connect or switch an assistant provider"),
+    (
+        "/logout",
+        "Disconnect Texo and remove the selected saved API key",
+    ),
+];
 
 #[derive(Clone)]
 pub struct ProposedEdit {
@@ -48,6 +60,8 @@ pub struct Assistant {
     source_snapshot: String,
     proposed_edit: Option<ProposedEdit>,
     scroll_from_bottom: u16,
+    login: Option<LoginDialog>,
+    command_selection: usize,
 }
 
 impl Default for Assistant {
@@ -65,7 +79,107 @@ impl Assistant {
             source_snapshot: String::new(),
             proposed_edit: None,
             scroll_from_bottom: 0,
+            login: None,
+            command_selection: 0,
         }
+    }
+
+    pub fn login_open(&self) -> bool {
+        self.login.is_some()
+    }
+
+    pub fn handle_login_event(&mut self, event: Event, area: Rect) {
+        let Some(dialog) = self.login.as_mut() else {
+            return;
+        };
+        match dialog.handle(event, area) {
+            LoginResult::Cancelled => self.login = None,
+            LoginResult::Connected(profile) => self.connected(profile),
+            LoginResult::Pending => {}
+        }
+    }
+
+    fn connected(&mut self, profile: Profile) {
+        self.login = None;
+        self.messages.clear();
+        let mode = if profile.provider == Provider::Codex {
+            "Connected through the existing Codex login.".into()
+        } else {
+            format!(
+                "{} selected · {}. Credentials will be checked on your next message.",
+                profile.provider.label(),
+                profile.model
+            )
+        };
+        self.notice(mode, false);
+    }
+
+    fn notice(&mut self, text: String, error: bool) {
+        self.messages.push(Message::new("assistant", text, error));
+        self.scroll_from_bottom = 0;
+    }
+
+    fn run_command(&mut self, command: &str) -> Result<()> {
+        self.input = new_input();
+        self.command_selection = 0;
+        match command {
+            "/login" => self.login = Some(LoginDialog::new()),
+            "/logout" => {
+                let profile = Profile::load()?;
+                disconnect(&profile, &Keychain, None)?;
+                self.messages.clear();
+                self.notice(
+                    "Texo disconnected. External Codex sign-in and environment variables are unchanged.".into(),
+                    false,
+                );
+            }
+            _ => self.notice(
+                "Unknown command. Use /login to connect or /logout to disconnect.".into(),
+                true,
+            ),
+        }
+        Ok(())
+    }
+
+    fn command_matches(&self) -> Vec<(&'static str, &'static str)> {
+        if self.input.lines().len() != 1 {
+            return Vec::new();
+        }
+        let text = self.input.lines()[0].trim();
+        if !text.starts_with('/') || text.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+        CHAT_COMMANDS
+            .iter()
+            .copied()
+            .filter(|(name, _)| name.starts_with(text))
+            .collect()
+    }
+
+    pub fn complete_command(&mut self, key: KeyEvent) -> bool {
+        let choices = self.command_matches();
+        if choices.is_empty()
+            || key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return false;
+        }
+        self.command_selection = self.command_selection.min(choices.len() - 1);
+        match key.code {
+            KeyCode::Up => self.command_selection = self.command_selection.saturating_sub(1),
+            KeyCode::Down => {
+                self.command_selection = (self.command_selection + 1).min(choices.len() - 1)
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                self.input = new_input();
+                self.input.insert_str(choices[self.command_selection].0);
+                // Enter continues to normal submission; Tab only fills the command.
+                return key.code == KeyCode::Tab;
+            }
+            _ => return false,
+        }
+        true
     }
 
     pub fn is_running(&self) -> bool {
@@ -79,6 +193,12 @@ impl Assistant {
         );
         let prompt = self.input.lines().join("\n");
         ensure!(!prompt.trim().is_empty(), "Type a message first");
+        if prompt.trim_start().starts_with('/') {
+            if let Err(error) = self.run_command(prompt.trim()) {
+                self.notice(error.to_string(), true);
+            }
+            return Ok(());
+        }
         let mut conversation: Vec<_> = self
             .messages
             .iter()
@@ -104,6 +224,9 @@ impl Assistant {
     }
 
     pub fn poll(&mut self) -> Option<Result<()>> {
+        if let Some(profile) = self.login.as_mut().and_then(LoginDialog::poll) {
+            self.connected(profile);
+        }
         let result = self.job.as_ref()?.poll()?;
         self.job = None;
         self.scroll_from_bottom = 0;
@@ -194,6 +317,10 @@ impl Assistant {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        if let Some(login) = &self.login {
+            login.draw(frame, area);
+            return;
+        }
         if area.width < SEND_WIDTH || area.height < INPUT_HEIGHT + 2 {
             return;
         }
@@ -232,6 +359,44 @@ impl Assistant {
             hint_area,
         );
         self.draw_history(frame, history);
+        if focused {
+            let choices = self.command_matches();
+            if !choices.is_empty() {
+                let count = u16::try_from(choices.len())
+                    .unwrap_or(u16::MAX)
+                    .min(history.height);
+                let suggestion_area = Rect::new(
+                    history.x,
+                    history.bottom().saturating_sub(count),
+                    history.width,
+                    count,
+                );
+                frame.render_widget(
+                    Block::default().style(theme::text().bg(theme::ELEVATED)),
+                    suggestion_area,
+                );
+                let selected = self.command_selection.min(choices.len() - 1);
+                let lines: Vec<_> = choices
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (name, description))| {
+                        let style = if index == selected {
+                            theme::text().fg(theme::ACCENT).bg(theme::SELECTION)
+                        } else {
+                            theme::muted()
+                        };
+                        Line::styled(
+                            format!(
+                                " {} {name}  {description}",
+                                if index == selected { "›" } else { " " }
+                            ),
+                            style,
+                        )
+                    })
+                    .collect();
+                frame.render_widget(Paragraph::new(lines), suggestion_area);
+            }
+        }
 
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::BUTTON)),
@@ -370,6 +535,69 @@ fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slash_commands_complete_dynamically_and_never_enter_model_history() {
+        let mut assistant = Assistant::new();
+        assistant.input.insert_str("/lo");
+        assert_eq!(assistant.command_matches().len(), 2);
+        assert!(assistant.complete_command(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(assistant.input.lines()[0], "/login");
+        assistant
+            .submit("resume".into(), Path::new("resume.tex"))
+            .unwrap();
+        assert!(assistant.login_open());
+        assert!(!assistant.is_running());
+        assert!(assistant.messages.is_empty());
+        assistant.handle_login_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Rect::new(0, 0, 80, 20),
+        );
+        assert!(!assistant.login_open());
+        assistant.input.insert_str("/unknown accidental-secret");
+        assistant
+            .submit("resume".into(), Path::new("resume.tex"))
+            .unwrap();
+        assert!(!assistant.is_running());
+        assert!(
+            !assistant
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("accidental-secret")
+        );
+        assert!(assistant.messages.last().unwrap().error);
+    }
+
+    #[test]
+    fn switching_providers_clears_old_conversation_without_changing_the_document() {
+        let mut assistant = Assistant::new();
+        assistant.messages.push(Message::new(
+            "user",
+            "Earlier private conversation".into(),
+            false,
+        ));
+        assistant.connected(Profile::new(Provider::Anthropic));
+        assert_eq!(assistant.messages.len(), 1);
+        assert!(assistant.messages[0].content.contains("Anthropic"));
+        assert!(!assistant.messages[0].content.contains("Earlier private"));
+        assistant.input.insert_str("/logi");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 20)).unwrap();
+        terminal
+            .draw(|frame| assistant.draw(frame, frame.area(), true))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("/login"));
+        assert!(!text.contains("/logout"));
+    }
 
     #[test]
     fn transcript_uses_prompt_markers_and_compact_plain_responses() {

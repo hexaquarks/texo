@@ -224,6 +224,25 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event, area: Rect) -> bool {
+        if self.assistant.login_open() {
+            if let Event::Key(key) = &event {
+                if key.kind == KeyEventKind::Release {
+                    return false;
+                }
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+                    return true;
+                }
+            }
+            let layout = WorkspaceLayout::new(
+                area,
+                self.diagnostics.is_some(),
+                self.projects_visible,
+                self.focus,
+            );
+            self.assistant
+                .handle_login_event(event, pane_content(layout.assistant));
+            return false;
+        }
         if self.overlay_open() {
             return self.handle_overlay(event, area);
         }
@@ -304,6 +323,9 @@ impl App {
             return true;
         }
 
+        if self.focus == Focus::Assistant && self.assistant.complete_command(key) {
+            return false;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             self.handle_control_key(key);
         } else if key.modifiers.contains(KeyModifiers::ALT) {
@@ -831,6 +853,38 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    fn login_captures_typing_paste_and_cancel_without_editing_tex() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let original = app.editor.source();
+        let area = Rect::new(0, 0, 160, 50);
+        app.focus = Focus::Assistant;
+        app.assistant.input.insert_str("/logi");
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            area,
+        );
+        assert!(app.assistant.login_open());
+        app.handle_event(
+            Event::Paste("text should not reach the editor".into()),
+            area,
+        );
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+            area,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        terminal.draw(|frame| app.draw(frame))?;
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            area,
+        );
+        assert!(!app.assistant.login_open());
+        assert_eq!(app.editor.source(), original);
+        assert!(!app.assistant.is_running());
+        Ok(())
     }
 
     #[test]
