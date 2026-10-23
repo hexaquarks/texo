@@ -9,11 +9,14 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderMap, HeaderValue},
 };
 use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::auth::{Profile, Provider};
+use crate::{
+    agent::{AgentTurn, ToolCall, ToolDefinition, ToolExchange},
+    auth::{Profile, Provider},
+};
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -27,7 +30,7 @@ const OPENAI_ENDPOINT: &str = "https://api.openai.com/v1/responses";
 const ANTHROPIC_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantReply {
     pub reply: String,
@@ -65,20 +68,27 @@ pub fn parse_reply(bytes: &[u8]) -> Result<AssistantReply> {
     Ok(reply)
 }
 
-pub fn request(
+pub struct TurnContext<'a> {
+    pub prompt: &'a str,
+    pub tools: &'a [ToolDefinition],
+    pub history: &'a [ToolExchange],
+}
+
+pub fn request_turn(
     profile: &Profile,
     key: SecretString,
-    prompt: &str,
+    context: &TurnContext<'_>,
     cancelled: &AtomicBool,
-) -> Result<AssistantReply> {
+) -> Result<AgentTurn> {
     let endpoint = match profile.provider {
         Provider::OpenAi => OPENAI_ENDPOINT,
         Provider::Anthropic => ANTHROPIC_ENDPOINT,
         _ => bail!("Choose an API provider with /login"),
     };
-    request_at(profile, key, prompt, cancelled, endpoint, REQUEST_TIMEOUT)
+    request_turn_at(profile, key, context, cancelled, endpoint, REQUEST_TIMEOUT)
 }
 
+#[cfg(test)]
 fn request_at(
     profile: &Profile,
     key: SecretString,
@@ -87,6 +97,25 @@ fn request_at(
     endpoint: &str,
     timeout: Duration,
 ) -> Result<AssistantReply> {
+    let context = TurnContext {
+        prompt,
+        tools: &[],
+        history: &[],
+    };
+    match request_turn_at(profile, key, &context, cancelled, endpoint, timeout)? {
+        AgentTurn::Complete(reply) => Ok(reply),
+        AgentTurn::Tools { .. } => bail!("Unexpected tool call"),
+    }
+}
+
+fn request_turn_at(
+    profile: &Profile,
+    key: SecretString,
+    context: &TurnContext<'_>,
+    cancelled: &AtomicBool,
+    endpoint: &str,
+    timeout: Duration,
+) -> Result<AgentTurn> {
     profile.validate()?;
     ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
     let client = provider_client(timeout)?;
@@ -95,7 +124,7 @@ fn request_at(
         .build()?;
     runtime.block_on(async {
         tokio::select! {
-            result = send_request(&client, profile, &key, prompt, endpoint) => result,
+            result = send_request(&client, profile, &key, context, endpoint) => result,
             _ = async {
                 while !cancelled.load(Ordering::Relaxed) {
                     tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
@@ -250,8 +279,9 @@ fn headers(provider: Provider, key: &SecretString) -> Result<HeaderMap> {
     Ok(headers)
 }
 
-fn payload(profile: &Profile, prompt: &str) -> Value {
-    match profile.provider {
+fn payload(profile: &Profile, context: &TurnContext<'_>) -> Value {
+    let prompt = context.prompt;
+    let mut body = match profile.provider {
         Provider::OpenAi => json!({
             "model": profile.model,
             "input": prompt,
@@ -275,26 +305,83 @@ fn payload(profile: &Profile, prompt: &str) -> Value {
             },
         }),
         _ => Value::Null,
+    };
+    match profile.provider {
+        Provider::OpenAi => {
+            let mut input = vec![json!({"role":"user", "content":prompt})];
+            for exchange in context.history {
+                if let Some(items) = exchange.continuation.as_array() {
+                    input.extend(items.clone());
+                }
+                for result in &exchange.results {
+                    input.push(json!({
+                        "type":"function_call_output",
+                        "call_id":result.id,
+                        "output":json!(result).to_string(),
+                    }));
+                }
+            }
+            body["input"] = json!(input);
+            // Reasoning items must be replayable without server-side response storage.
+            body["include"] = json!(["reasoning.encrypted_content"]);
+            if !context.tools.is_empty() {
+                body["tools"] = json!(
+                    context
+                        .tools
+                        .iter()
+                        .map(|tool| json!({
+                            "type":"function", "name":tool.name, "description":tool.description,
+                            "parameters":tool.parameters, "strict":true,
+                        }))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        Provider::Anthropic => {
+            let mut messages = vec![json!({"role":"user", "content":prompt})];
+            for exchange in context.history {
+                messages.push(json!({"role":"assistant", "content":exchange.continuation}));
+                let results: Vec<_> = exchange
+                    .results
+                    .iter()
+                    .map(|result| {
+                        json!({
+                            "type":"tool_result", "tool_use_id":result.id,
+                            "content":result.output.to_string(), "is_error":result.is_error,
+                        })
+                    })
+                    .collect();
+                messages.push(json!({"role":"user", "content":results}));
+            }
+            body["messages"] = json!(messages);
+            if !context.tools.is_empty() {
+                body["tools"] = json!(context.tools.iter().map(|tool| json!({
+                    "name":tool.name, "description":tool.description, "input_schema":tool.parameters,
+                })).collect::<Vec<_>>());
+            }
+        }
+        _ => {}
     }
+    body
 }
 
 async fn send_request(
     client: &Client,
     profile: &Profile,
     key: &SecretString,
-    prompt: &str,
+    context: &TurnContext<'_>,
     endpoint: &str,
-) -> Result<AssistantReply> {
+) -> Result<AgentTurn> {
     let response = client
         .post(endpoint)
         .headers(headers(profile.provider, key)?)
-        .json(&payload(profile, prompt))
+        .json(&payload(profile, context))
         .send()
         .await
         .map_err(connection_error)?;
     let mut remaining_bytes = MAX_RESPONSE_BYTES;
     let response = read_provider_json(response, profile.provider, &mut remaining_bytes).await?;
-    parse_response(profile.provider, &response)
+    parse_turn(profile.provider, &response)
 }
 
 fn provider_client(timeout: Duration) -> Result<Client> {
@@ -361,6 +448,122 @@ fn check_status(provider: Provider, status: StatusCode) -> Result<()> {
     }
 }
 
+fn parse_turn(provider: Provider, response: &Value) -> Result<AgentTurn> {
+    let items = match provider {
+        Provider::OpenAi => {
+            ensure!(
+                response["status"] == "completed",
+                "The response was incomplete. No edit was applied"
+            );
+            response["output"].as_array()
+        }
+        Provider::Anthropic => {
+            ensure!(
+                matches!(
+                    response["stop_reason"].as_str(),
+                    Some("tool_use" | "end_turn")
+                ),
+                "The response was incomplete. No edit was applied"
+            );
+            response["content"].as_array()
+        }
+        _ => bail!("Unsupported provider"),
+    }
+    .ok_or_else(|| anyhow!("Invalid provider response"))?;
+    let mut calls = Vec::new();
+    for item in items {
+        let call = match item["type"].as_str() {
+            Some("function_call") if provider == Provider::OpenAi => Some(ToolCall {
+                id: item["call_id"].as_str().unwrap_or_default().into(),
+                name: item["name"].as_str().unwrap_or_default().into(),
+                arguments: serde_json::from_str(item["arguments"].as_str().unwrap_or_default())
+                    .map_err(|_| anyhow!("Invalid tool arguments"))?,
+            }),
+            Some("tool_use") if provider == Provider::Anthropic => Some(ToolCall {
+                id: item["id"].as_str().unwrap_or_default().into(),
+                name: item["name"].as_str().unwrap_or_default().into(),
+                arguments: item["input"].clone(),
+            }),
+            _ => None,
+        };
+        if let Some(call) = call {
+            calls.push(call);
+        }
+    }
+    if calls.is_empty() {
+        Ok(AgentTurn::Complete(parse_response(provider, response)?))
+    } else {
+        Ok(AgentTurn::Tools {
+            calls,
+            continuation: json!(items),
+        })
+    }
+}
+
+/// Codex CLI has no host tool callback here, so it emits the same tool protocol as JSON.
+pub fn codex_turn_schema() -> Value {
+    let mut schema = reply_schema();
+    schema["properties"]["tool_calls"] = json!({
+        "type":"array", "items": {
+            "type":"object", "properties": {
+                "id":{"type":"string"}, "name":{"type":"string"}, "arguments_json":{"type":"string"}
+            }, "required":["id", "name", "arguments_json"], "additionalProperties":false
+        }
+    });
+    schema["required"] = json!(["reply", "proposed_tex", "tool_calls"]);
+    schema
+}
+
+pub fn parse_codex_turn(bytes: &[u8]) -> Result<AgentTurn> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Call {
+        id: String,
+        name: String,
+        arguments_json: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Response {
+        reply: String,
+        proposed_tex: Option<String>,
+        tool_calls: Vec<Call>,
+    }
+    ensure!(
+        bytes.len() <= MAX_RESPONSE_BYTES,
+        "The assistant response is too large"
+    );
+    let response: Response =
+        serde_json::from_slice(bytes).map_err(|_| anyhow!("Invalid Codex tool response"))?;
+    if response.tool_calls.is_empty() {
+        let reply = parse_reply(&serde_json::to_vec(&AssistantReply {
+            reply: response.reply,
+            proposed_tex: response.proposed_tex,
+        })?)?;
+        return Ok(AgentTurn::Complete(reply));
+    }
+    ensure!(
+        response.proposed_tex.is_none(),
+        "Codex returned tools and a final edit in the same turn"
+    );
+    let calls = response
+        .tool_calls
+        .into_iter()
+        .map(|call| {
+            Ok(ToolCall {
+                id: call.id,
+                name: call.name,
+                arguments: serde_json::from_str(&call.arguments_json)
+                    .map_err(|_| anyhow!("Invalid tool arguments"))?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(AgentTurn::Tools {
+        calls,
+        continuation: Value::Null,
+    })
+}
+
 fn parse_response(provider: Provider, response: &Value) -> Result<AssistantReply> {
     let blocks: Vec<&Value> = match provider {
         Provider::OpenAi => {
@@ -418,6 +621,27 @@ mod tests {
         status: &str,
         body: Value,
     ) -> (Result<AssistantReply>, String) {
+        let context = TurnContext {
+            prompt: "current unsaved resume",
+            tools: &[],
+            history: &[],
+        };
+        let (result, wire) = mock_turn(provider, status, body, &context);
+        (
+            result.and_then(|turn| match turn {
+                AgentTurn::Complete(reply) => Ok(reply),
+                _ => bail!("Unexpected tools"),
+            }),
+            wire,
+        )
+    }
+
+    fn mock_turn(
+        provider: Provider,
+        status: &str,
+        body: Value,
+        context: &TurnContext<'_>,
+    ) -> (Result<AgentTurn>, String) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/test", listener.local_addr().unwrap());
         let status = status.to_owned();
@@ -448,10 +672,10 @@ mod tests {
             write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             String::from_utf8(bytes).unwrap()
         });
-        let result = request_at(
+        let result = request_turn_at(
             &Profile::new(provider),
             "test-api-secret".into(),
-            "current unsaved resume",
+            context,
             &AtomicBool::new(false),
             &endpoint,
             Duration::from_secs(3),
@@ -623,6 +847,88 @@ mod tests {
             let (result, _) = mock_catalog(Provider::OpenAi, vec![(status, body)]);
             assert!(!result.unwrap_err().to_string().contains("catalog-secret"));
         }
+    }
+
+    #[test]
+    fn native_tool_calls_and_results_round_trip_for_both_providers() {
+        let tools = vec![ToolDefinition {
+            name: "read_resume".into(),
+            description: "Read current buffer".into(),
+            parameters: json!({"type":"object", "properties":{}, "required":[], "additionalProperties":false}),
+        }];
+        for provider in [Provider::OpenAi, Provider::Anthropic] {
+            let tool_response = if provider == Provider::OpenAi {
+                json!({"status":"completed", "output":[{"type":"reasoning", "id":"r1", "encrypted_content":"opaque", "summary":[]}, {"type":"function_call", "call_id":"call1", "name":"read_resume", "arguments":"{}"}]})
+            } else {
+                json!({"stop_reason":"tool_use", "content":[{"type":"tool_use", "id":"call1", "name":"read_resume", "input":{}}]})
+            };
+            let context = TurnContext {
+                prompt: "Edit current resume",
+                tools: &tools,
+                history: &[],
+            };
+            let (turn, wire) = mock_turn(provider, "200 OK", tool_response, &context);
+            assert!(wire.contains("read_resume"));
+            assert!(wire.contains(if provider == Provider::OpenAi {
+                "parameters"
+            } else {
+                "input_schema"
+            }));
+            let AgentTurn::Tools {
+                calls,
+                continuation,
+            } = turn.unwrap()
+            else {
+                panic!("expected tool call")
+            };
+            assert_eq!(calls[0].id, "call1");
+            let history = vec![ToolExchange {
+                calls,
+                continuation,
+                results: vec![crate::agent::ToolResult {
+                    id: "call1".into(),
+                    is_error: false,
+                    output: json!({"tex":"unsaved source"}),
+                }],
+            }];
+            let final_text = json!({"reply":"Done", "proposed_tex":null}).to_string();
+            let final_response = if provider == Provider::OpenAi {
+                json!({"status":"completed", "output":[{"type":"message", "content":[{"type":"output_text", "text":final_text}]}]})
+            } else {
+                json!({"stop_reason":"end_turn", "content":[{"type":"text", "text":final_text}]})
+            };
+            let context = TurnContext {
+                prompt: "Edit current resume",
+                tools: &tools,
+                history: &history,
+            };
+            let (turn, wire) = mock_turn(provider, "200 OK", final_response, &context);
+            assert!(matches!(turn.unwrap(), AgentTurn::Complete(_)));
+            assert!(wire.contains("unsaved source"));
+            assert!(wire.contains("call1"));
+            assert!(wire.contains(if provider == Provider::OpenAi {
+                "function_call_output"
+            } else {
+                "tool_result"
+            }));
+            if provider == Provider::OpenAi {
+                assert!(wire.contains("encrypted_content"));
+            }
+        }
+    }
+
+    #[test]
+    fn codex_adapter_rejects_mixed_edits_and_tools_and_parses_calls() {
+        let mut response = json!({"reply":"", "proposed_tex":null, "tool_calls":[{"id":"one", "name":"read_resume", "arguments_json":"{}"}]});
+        assert!(matches!(
+            parse_codex_turn(&serde_json::to_vec(&response).unwrap()).unwrap(),
+            AgentTurn::Tools { .. }
+        ));
+        response["proposed_tex"] = json!("partial edit");
+        assert!(parse_codex_turn(&serde_json::to_vec(&response).unwrap()).is_err());
+        response["proposed_tex"] = Value::Null;
+        response["tool_calls"][0]["arguments_json"] = json!("invalid json");
+        assert!(parse_codex_turn(&serde_json::to_vec(&response).unwrap()).is_err());
     }
 
     #[test]
