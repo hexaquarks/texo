@@ -154,11 +154,15 @@ impl Projects {
                 };
                 ListItem::new(vec![
                     Line::from(vec![
-                        Span::raw("  · "),
+                        Span::styled("  · ", Style::default().fg(theme::TEAL)),
                         Span::styled(name.into_owned(), Style::default().bold()),
                     ])
                     .style(style),
-                    Line::from(format!("    {detail}")).style(style.fg(theme::MUTED)),
+                    Line::from(format!("    {detail}")).style(style.fg(if active {
+                        theme::LAVENDER
+                    } else {
+                        theme::MUTED
+                    })),
                     Line::default(),
                 ])
             })

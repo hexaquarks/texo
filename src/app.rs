@@ -652,7 +652,13 @@ impl App {
         frame.render_widget(
             Block::default()
                 .borders(Borders::RIGHT)
-                .border_style(theme::muted().fg(theme::DIVIDER)),
+                .border_style(Style::default().fg(
+                    if matches!(self.focus, Focus::Editor | Focus::Assistant) {
+                        theme::ACCENT
+                    } else {
+                        theme::DIVIDER
+                    },
+                )),
             layout.center,
         );
         self.draw_editor(frame, layout.editor);
