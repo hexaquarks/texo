@@ -25,3 +25,7 @@ pub fn text() -> Style {
 pub fn muted() -> Style {
     Style::default().fg(MUTED)
 }
+
+pub fn pane_title(focused: bool) -> Style {
+    Style::default().fg(if focused { ACCENT } else { MUTED })
+}
