@@ -1,8 +1,8 @@
 use std::{
-    fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    fs,
+    io::{Seek, Write},
     path::Path,
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -13,12 +13,16 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+pub use texo::llm::AssistantReply;
+use texo::{
+    auth::{Keychain, Profile, Provider, resolve_key},
+    llm,
+};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
-const MAX_DIAGNOSTIC_BYTES: u64 = 4096;
 const MAX_CONTEXT_BYTES: usize = 200_000;
 
 const ASSISTANT_INSTRUCTIONS: &str = "You are Texo, a concise resume editing assistant. \
@@ -43,13 +47,6 @@ pub struct ConversationMessage {
     pub content: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantReply {
-    pub reply: String,
-    pub proposed_tex: Option<String>,
-}
-
 pub struct AssistantJob {
     result: Receiver<Result<AssistantReply>>,
     cancelled: Arc<AtomicBool>,
@@ -65,12 +62,7 @@ impl AssistantJob {
         let worker = thread::Builder::new()
             .name("texo-assistant".into())
             .spawn(move || {
-                let reply = request(
-                    &mut Command::new("codex"),
-                    &prompt,
-                    &worker_cancelled,
-                    REQUEST_TIMEOUT,
-                );
+                let reply = request_selected_provider(&prompt, &worker_cancelled);
                 let _ = sender.send(reply);
             })?;
 
@@ -101,6 +93,57 @@ impl Drop for AssistantJob {
     }
 }
 
+fn request_selected_provider(prompt: &str, cancelled: &AtomicBool) -> Result<AssistantReply> {
+    let profile = Profile::load()?;
+    match profile.provider {
+        Provider::Disconnected => {
+            bail!("No assistant is connected. Type /login to choose a sign-in method")
+        }
+        Provider::Codex => {
+            check_codex_login(cancelled)?;
+            request(
+                &mut Command::new("codex"),
+                prompt,
+                cancelled,
+                REQUEST_TIMEOUT,
+            )
+        }
+        Provider::OpenAi | Provider::Anthropic => {
+            let key = resolve_key(profile.provider, &Keychain)?;
+            llm::request(&profile, key, prompt, cancelled)
+        }
+    }
+}
+
+fn check_codex_login(cancelled: &AtomicBool) -> Result<()> {
+    let child = Command::new("codex")
+        .args(["login", "status"])
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| anyhow!("Codex is not installed. Type /login to choose an API provider"))?;
+    let mut running = RunningProcess(child);
+    let started = Instant::now();
+    loop {
+        ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
+        if let Some(status) = running.0.try_wait()? {
+            ensure!(
+                status.success(),
+                "ChatGPT is not connected. Type /login to sign in or choose an API key"
+            );
+            return Ok(());
+        }
+        ensure!(
+            started.elapsed() < Duration::from_secs(10),
+            "Could not check Codex login. Try /login again"
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn build_prompt(source: &str, path: &Path, messages: &[ConversationMessage]) -> Result<String> {
     let context = serde_json::json!({
         "document": path.file_name().unwrap_or_default().to_string_lossy(),
@@ -126,23 +169,17 @@ fn request(
     let directory = tempfile::tempdir()?;
     let schema_path = directory.path().join("response-schema.json");
     let response_path = directory.path().join("response.json");
-    fs::write(
-        &schema_path,
-        serde_json::to_vec(&serde_json::json!({
-            "type": "object",
-            "properties": {"reply": {"type": "string"}, "proposed_tex": {"type": ["string", "null"]}},
-            "required": ["reply", "proposed_tex"],
-            "additionalProperties": false,
-        }))?,
-    )?;
+    fs::write(&schema_path, serde_json::to_vec(&llm::reply_schema())?)?;
 
     // Temporary files keep large prompts and diagnostic output from blocking pipe buffers.
     // The isolated working directory also avoids loading the resume project's agent instructions.
     let mut input = tempfile::tempfile()?;
     input.write_all(prompt.as_bytes())?;
     input.rewind()?;
-    let mut diagnostics = tempfile::tempfile()?;
+    let diagnostics = tempfile::tempfile()?;
     command
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
         .current_dir(directory.path())
         .args([
             "exec",
@@ -173,8 +210,7 @@ fn request(
         if let Some(status) = running.0.try_wait()? {
             if !status.success() {
                 bail!(
-                    "Codex failed ({status}). Check `codex login status`.\n{}",
-                    read_diagnostics(&mut diagnostics)?
+                    "Codex could not complete this request ({status}). Use /login to check your connection"
                 );
             }
             break;
@@ -194,31 +230,7 @@ fn request(
             <= MAX_RESPONSE_BYTES,
         "Codex returned a response too large to display"
     );
-    let reply: AssistantReply = serde_json::from_slice(&fs::read(response_path)?)
-        .context("Codex returned an invalid structured response")?;
-    ensure!(
-        !reply.reply.trim().is_empty(),
-        "Codex returned an empty reply"
-    );
-    ensure!(
-        reply
-            .proposed_tex
-            .as_ref()
-            .is_none_or(|source| !source.trim().is_empty()),
-        "Codex proposed an empty document"
-    );
-    Ok(reply)
-}
-
-fn read_diagnostics(output: &mut File) -> Result<String> {
-    let offset = output
-        .metadata()?
-        .len()
-        .saturating_sub(MAX_DIAGNOSTIC_BYTES);
-    output.seek(SeekFrom::Start(offset))?;
-    let mut bytes = Vec::new();
-    output.read_to_end(&mut bytes)?;
-    Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
+    llm::parse_reply(&fs::read(response_path)?)
 }
 
 struct RunningProcess(Child);

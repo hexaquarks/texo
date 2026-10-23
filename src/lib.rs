@@ -1,4 +1,6 @@
+pub mod auth;
 pub mod compiler;
+pub mod llm;
 pub mod pdf;
 pub mod preview;
 mod process;
