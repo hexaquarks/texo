@@ -22,3 +22,4 @@ keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sy
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 secrecy = "0.10"
 tokio = { version = "1", features = ["rt", "time", "macros"] }
+zeroize = "1"
