@@ -338,7 +338,14 @@ fn prepare_image(
     let (scroll, visible_height) = viewport_crop(fitted.height(), height, scroll);
     let visible = fitted.crop_imm(0, scroll, width, visible_height);
     let mut image = picker.new_resize_protocol(visible);
-    image.resize_encode(&Resize::Crop(None), area.as_size());
+    let resize = Resize::Crop(None);
+
+    // A short page occupies fewer rows than its pane. Match the widget's target
+    // size so drawing recognizes the prepared image instead of requesting another resize.
+    if let Some(size) = image.needs_resize(&resize, area.as_size()) {
+        image.resize_encode(&resize, size);
+    }
+
     if let Some(result) = image.last_encoding_result() {
         result?;
     }
@@ -438,6 +445,45 @@ mod tests {
             preview.pending.is_none(),
             "An unchanged viewport must use its cache"
         );
+    }
+
+    #[test]
+    fn kitty_preview_transmits_image_on_first_draw_after_background_preparation()
+    -> anyhow::Result<()> {
+        let mut preview = Preview::default();
+        preview.picker.set_protocol_type(ProtocolType::Kitty);
+        preview.set_source(Some(DynamicImage::new_rgb8(120, 60)));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 12))?;
+        let content = Rect::new(0, 0, 20, 12).inner(Margin::new(theme::PANEL_PADDING, 1));
+        finish_viewport(&mut preview, content);
+
+        terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+        let first: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            first.contains("a=T"),
+            "The first frame must transmit the image, not only its placeholders"
+        );
+
+        terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+        let next: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            !next.contains("a=T"),
+            "Unchanged frames must reuse the transmitted image"
+        );
+        assert!(preview.pending.is_none());
+        Ok(())
     }
 
     #[test]

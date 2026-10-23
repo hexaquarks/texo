@@ -69,10 +69,7 @@ struct App {
 }
 
 pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> anyhow::Result<()> {
-    let mut app = App::with_workspace(editor, Preview::detect(), root)?;
-    if !app.editor.is_modified() {
-        app.start_render();
-    }
+    let mut app = App::start(editor, Preview::detect(), root)?;
 
     let mut repaint = false;
 
@@ -157,6 +154,16 @@ impl App {
             diagnostic_scroll: 0,
             focus: Focus::Editor,
         })
+    }
+
+    fn start(editor: Editor, preview: Preview, root: PathBuf) -> anyhow::Result<Self> {
+        let mut app = Self::with_workspace(editor, preview, root)?;
+
+        if !app.editor.is_modified() {
+            app.start_render();
+        }
+
+        Ok(app)
     }
 
     fn overlay_open(&self) -> bool {
@@ -1234,6 +1241,82 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    #[ignore = "requires macOS, Tectonic cache, and Poppler"]
+    fn startup_displays_pdf_and_manual_build_recovers_after_failure() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        let source = r"\documentclass{article}\begin{document}Startup resume\end{document}";
+        std::fs::write(&path, source)?;
+        let editor = Editor::open(path.clone())?;
+        let mut app = App::start(editor, Preview::default(), directory.path().to_path_buf())?;
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+
+        assert!(app.job.is_some(), "Startup must build without a key press");
+        wait_for_visible_pdf(&mut app, &mut terminal)?;
+        assert!(path.with_extension("pdf").is_file());
+        assert_eq!(app.preview.page_status().as_deref(), Some("1 / 1"));
+
+        app.editor.replace_source(
+            r"\documentclass{missing-texo-test-class}\begin{document}Invalid\end{document}",
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(finish_test_render(&mut app).is_err());
+        assert!(
+            app.diagnostics.is_some(),
+            "Failed builds must show diagnostics"
+        );
+        terminal.draw(|frame| app.draw(frame))?;
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("missing-texo-test-class"));
+
+        app.editor.replace_source(source);
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        wait_for_visible_pdf(&mut app, &mut terminal)?;
+        assert!(app.diagnostics.is_none());
+        Ok(())
+    }
+
+    fn wait_for_visible_pdf(
+        app: &mut App,
+        terminal: &mut Terminal<TestBackend>,
+    ) -> anyhow::Result<()> {
+        const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30);
+        const PREVIEW_POLL_INTERVAL: Duration = Duration::from_millis(10);
+        let started = std::time::Instant::now();
+
+        loop {
+            app.receive_render();
+            anyhow::ensure!(
+                app.diagnostics.is_none(),
+                "Build failed: {:?}",
+                app.diagnostics
+            );
+            terminal.draw(|frame| app.draw(frame))?;
+            let visible = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| cell.symbol() == "▀");
+            if app.job.is_none() && visible {
+                return Ok(());
+            }
+
+            anyhow::ensure!(
+                started.elapsed() < PREVIEW_TIMEOUT,
+                "Startup PDF never became visible"
+            );
+            std::thread::sleep(PREVIEW_POLL_INTERVAL);
+        }
     }
 
     #[test]
