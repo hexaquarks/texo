@@ -952,7 +952,12 @@ impl App {
             } else {
                 ""
             };
-            let label = if self.status.is_empty() {
+            let label = if self.proposal_review.is_some() {
+                format!(
+                    "Unapproved changes · {}",
+                    crate::workspace::display_path(&self.editor.path)
+                )
+            } else if self.status.is_empty() {
                 format!(
                     "{}{}",
                     crate::workspace::display_path(&self.editor.path),
@@ -1231,6 +1236,8 @@ mod tests {
         assert!(text.contains("[ Current ]"));
         assert!(text.contains("[ Proposed ]"));
         assert!(text.contains("Changed bullet"));
+        assert!(text.contains("Unapproved changes"));
+        assert!(!text.contains("Original document"));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.handle_event(Event::Paste("hidden edit".into()), Rect::new(0, 0, 160, 45));

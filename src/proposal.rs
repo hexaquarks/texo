@@ -3,7 +3,7 @@ use std::time::Duration;
 use ratatui::{
     Frame,
     layout::{Margin, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -16,9 +16,6 @@ const DIFF_TIMEOUT: Duration = Duration::from_millis(100);
 const SCROLL_LINES: u16 = 3;
 const MIN_LINE_NUMBER_WIDTH: usize = 4;
 const SCROLL_COLUMNS: u16 = 8;
-const ADDED_BACKGROUND: Color = Color::Rgb(28, 53, 38);
-const REMOVED_BACKGROUND: Color = Color::Rgb(62, 30, 34);
-const ADDED_TEXT: Color = Color::Rgb(166, 227, 161);
 
 pub struct ProposalReview {
     pub edit: ProposedEdit,
@@ -34,55 +31,36 @@ impl ProposalReview {
             .diff_lines(&proposal.source_before, &proposal.source_after);
 
         let number_width = proposal
-            .source_before
+            .source_after
             .lines()
             .count()
-            .max(proposal.source_after.lines().count())
             .to_string()
             .len()
             .max(MIN_LINE_NUMBER_WIDTH);
 
-        let before_colors = source_colors(&proposal.source_before);
         let after_colors = source_colors(&proposal.source_after);
 
         let lines = diff
             .iter_all_changes()
-            .map(|change| {
-                let (marker, style) = match change.tag() {
-                    ChangeTag::Delete => (
-                        "−",
-                        Style::default().fg(theme::ERROR).bg(REMOVED_BACKGROUND),
-                    ),
-                    ChangeTag::Insert => {
-                        ("+", Style::default().fg(ADDED_TEXT).bg(ADDED_BACKGROUND))
-                    }
-                    ChangeTag::Equal => (" ", theme::text()),
+            .filter_map(|change| {
+                let index = change.new_index()?;
+                let number = index + 1;
+                let marker = if change.tag() == ChangeTag::Insert {
+                    "▎"
+                } else {
+                    " "
                 };
-                let old = change
-                    .old_index()
-                    .map(|index| (index + 1).to_string())
-                    .unwrap_or_default();
-                let new = change
-                    .new_index()
-                    .map(|index| (index + 1).to_string())
-                    .unwrap_or_default();
                 let text = change
                     .value()
                     .trim_end_matches('\n')
                     .trim_end_matches('\r')
                     .to_owned();
 
-                let colors = if change.tag() == ChangeTag::Delete {
-                    change
-                        .old_index()
-                        .and_then(|index| before_colors.get(index))
-                } else {
-                    change.new_index().and_then(|index| after_colors.get(index))
-                };
-                let mut spans = vec![Span::styled(
-                    format!("{old:>number_width$} {new:>number_width$} {marker} "),
-                    theme::muted(),
-                )];
+                let colors = after_colors.get(index);
+                let mut spans = vec![
+                    Span::styled(format!("{number:>number_width$} "), theme::muted()),
+                    Span::styled(format!("{marker} "), Style::default().fg(theme::ACCENT)),
+                ];
 
                 for (index, character) in text.chars().enumerate() {
                     let color = colors
@@ -100,7 +78,7 @@ impl ProposalReview {
                     }
                 }
 
-                Line::from(spans).style(style)
+                Some(Line::from(spans).style(theme::text()))
             })
             .collect();
 
@@ -167,7 +145,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
-    fn inline_diff_marks_insertions_and_deletions_without_changing_source() -> anyhow::Result<()> {
+    fn proposed_source_shows_only_current_lines_with_subtle_change_markers() -> anyhow::Result<()> {
         let edit = ProposedEdit {
             source_before: "Same\nOld bullet\n".into(),
             source_after: "Same\nNew bullet\n".into(),
@@ -179,20 +157,16 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
 
-        assert!(text.contains("Old bullet"));
+        assert!(!text.contains("Old bullet"));
         assert!(text.contains("New bullet"));
-        assert!(
-            buffer
-                .content
-                .iter()
-                .any(|cell| cell.bg == ADDED_BACKGROUND)
-        );
-        assert!(
-            buffer
-                .content
-                .iter()
-                .any(|cell| cell.bg == REMOVED_BACKGROUND)
-        );
+        assert_eq!(review.lines.len(), 2);
+        assert!(text.contains("▎"));
+        for row in 1..=2 {
+            for column in theme::PANEL_PADDING..80 - theme::PANEL_PADDING {
+                assert_eq!(buffer[(column, row)].bg, theme::BACKGROUND);
+            }
+        }
+
         assert_eq!(review.edit.source_before, edit.source_before);
         Ok(())
     }

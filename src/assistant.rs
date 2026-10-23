@@ -24,6 +24,8 @@ const MODEL_LABEL_HEIGHT: u16 = 1;
 const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT + MODEL_LABEL_HEIGHT;
 const PROMPT_WIDTH: u16 = 2;
 const SCROLL_LINES: u16 = 3;
+const THINKING_VERTICAL_PADDING: u16 = 1;
+const THINKING_HEIGHT: u16 = 1 + THINKING_VERTICAL_PADDING * 2;
 const THINKING_FRAME_MS: u128 = 100;
 const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const CHAT_COMMANDS: [(&str, &str); 3] = [
@@ -362,11 +364,17 @@ impl Assistant {
             horizontal: theme::PANEL_PADDING,
             vertical: 1,
         });
+        let activity_height = if self.is_running() {
+            THINKING_HEIGHT
+        } else {
+            1
+        };
+
         let [header, _, history, activity, composer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(activity_height),
             Constraint::Length(COMPOSER_HEIGHT),
         ])
         .areas(inner);
@@ -400,7 +408,7 @@ impl Assistant {
 
             frame.render_widget(
                 Paragraph::new(label).style(theme::text().fg(theme::ACCENT)),
-                activity,
+                activity.inner(Margin::new(0, THINKING_VERTICAL_PADDING)),
             );
         }
 
