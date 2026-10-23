@@ -162,25 +162,17 @@ fn list_models_at(
                 }
                 let page: Value = serde_json::from_slice(&bytes)
                     .map_err(|_| anyhow!("The provider returned an invalid model catalog"))?;
-                models.extend(catalog_entries(provider, &page)?);
+                models.extend(catalog_entries(&page)?);
                 if provider != Provider::Anthropic || page["has_more"] != true {
-                    models.sort_by(|a, b| {
-                        b.created_seconds.cmp(&a.created_seconds)
-                            .then_with(|| b.created_at.cmp(&a.created_at))
-                            .then_with(|| a.id.cmp(&b.id))
-                    });
-                    let mut seen = std::collections::HashSet::new();
-                    let ids: Vec<_> = models.into_iter()
-                        .map(|entry| entry.id)
-                        .filter(|id| seen.insert(id.clone()))
-                        .collect();
+                    let ids = curated_models(provider, &models);
                     ensure!(
                         !ids.is_empty(),
-                        "No text models are available for this account. Check provider access and retry"
+                        "None of Texo’s supported models are available for this account"
                     );
                     return Ok(ids);
                 }
-                let next = page["last_id"].as_str()
+                let next = page["last_id"]
+                    .as_str()
                     .filter(|id| !id.is_empty() && *id != cursor)
                     .ok_or_else(|| anyhow!("The provider returned invalid model pagination"))?;
                 cursor = next.into();
@@ -200,61 +192,48 @@ fn list_models_at(
     })
 }
 
-struct CatalogModel {
-    id: String,
-    created_seconds: u64,
-    created_at: String,
+// Keep the picker focused on established general-purpose releases, not snapshots or aliases.
+// Sources: developers.openai.com/api/docs/models/all and platform.claude.com/docs/en/models/overview.
+const OPENAI_MODELS: &[&str] = &[
+    "gpt-6.1-sol",
+    "gpt-6-astra",
+    "gpt-6-luna",
+    "gpt-6-sol",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+];
+const ANTHROPIC_MODELS: &[&str] = &[
+    "claude-fable-5-1",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+];
+
+pub fn supported_models(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::OpenAi | Provider::Codex => OPENAI_MODELS,
+        Provider::Anthropic => ANTHROPIC_MODELS,
+        Provider::Disconnected => &[],
+    }
 }
 
-fn catalog_entries(provider: Provider, page: &Value) -> Result<Vec<CatalogModel>> {
+fn curated_models(provider: Provider, available: &[String]) -> Vec<String> {
+    supported_models(provider)
+        .iter()
+        .filter(|id| available.iter().any(|available_id| available_id == **id))
+        .map(|id| (*id).to_owned())
+        .collect()
+}
+
+fn catalog_entries(page: &Value) -> Result<Vec<String>> {
     let data = page["data"]
         .as_array()
         .ok_or_else(|| anyhow!("Invalid model catalog"))?;
-    let mut models = Vec::new();
-    for item in data {
-        let Some(id) = item["id"].as_str() else {
-            continue;
-        };
-        // OpenAI's catalog includes image, audio, embedding, and other non-chat models.
-        // It has no capability field, so restrict this picker to text model families.
-        let text_model = match provider {
-            Provider::OpenAi => {
-                (id.starts_with("gpt-")
-                    || id.starts_with("chatgpt-")
-                    || id.starts_with("o1")
-                    || id.starts_with("o3")
-                    || id.starts_with("o4"))
-                    && ![
-                        "audio",
-                        "realtime",
-                        "transcribe",
-                        "tts",
-                        "image",
-                        "search",
-                        "deep-research",
-                        "codex",
-                        "-pro",
-                    ]
-                    .iter()
-                    .any(|kind| id.contains(kind))
-            }
-            Provider::Anthropic => id.starts_with("claude-"),
-            _ => false,
-        };
-        let profile = Profile {
-            provider,
-            model: id.into(),
-            ..Profile::default()
-        };
-        if text_model && profile.validate().is_ok() {
-            models.push(CatalogModel {
-                id: id.into(),
-                created_seconds: item["created"].as_u64().unwrap_or_default(),
-                created_at: item["created_at"].as_str().unwrap_or_default().into(),
-            });
-        }
-    }
-    Ok(models)
+    Ok(data
+        .iter()
+        .filter_map(|item| item["id"].as_str().map(str::to_owned))
+        .collect())
 }
 
 fn headers(provider: Provider, key: &SecretString) -> Result<HeaderMap> {
@@ -501,19 +480,22 @@ mod tests {
     }
 
     #[test]
-    fn catalog_fetches_current_ids_sorts_and_filters_non_text_models() {
+    fn catalog_fetches_only_available_curated_models_in_recommended_order() {
         let (models, requests) = mock_catalog(
             Provider::OpenAi,
             vec![(
                 "200 OK",
                 json!({"data":[
-                    {"id":"gpt-future", "created":30}, {"id":"gpt-old", "created":10},
-                    {"id":"gpt-new", "created":20}, {"id":"gpt-image-new", "created":40},
-                    {"id":"text-embedding-new", "created":50}, {"id":"gpt-future", "created":30}
+                    {"id":"gpt-6.1-sol", "created":30}, {"id":"gpt-5.6-sol", "created":10},
+                    {"id":"gpt-6-luna", "created":20}, {"id":"gpt-image-new", "created":40},
+                    {"id":"text-embedding-new", "created":50}, {"id":"gpt-6.1-sol", "created":30}
                 ]}),
             )],
         );
-        assert_eq!(models.unwrap(), ["gpt-future", "gpt-new", "gpt-old"]);
+        assert_eq!(
+            models.unwrap(),
+            ["gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-sol"]
+        );
         assert!(requests[0].starts_with("GET /v1/models "));
         assert!(requests[0].contains("authorization: Bearer catalog-secret"));
         assert!(!requests[0].contains("x-api-key"));
@@ -526,16 +508,16 @@ mod tests {
             vec![
                 (
                     "200 OK",
-                    json!({"data":[{"id":"claude-old", "created_at":"2025-01-01T00:00:00Z"}], "has_more":true,"last_id":"claude-old"}),
+                    json!({"data":[{"id":"claude-sonnet-5-5", "created_at":"2025-01-01T00:00:00Z"}], "has_more":true,"last_id":"claude-sonnet-5-5"}),
                 ),
                 (
                     "200 OK",
-                    json!({"data":[{"id":"claude-new", "created_at":"2026-01-01T00:00:00Z"}], "has_more":false}),
+                    json!({"data":[{"id":"claude-opus-5-5", "created_at":"2026-01-01T00:00:00Z"}], "has_more":false}),
                 ),
             ],
         );
-        assert_eq!(models.unwrap(), ["claude-new", "claude-old"]);
-        assert!(requests[1].contains("after_id=claude-old"));
+        assert_eq!(models.unwrap(), ["claude-opus-5-5", "claude-sonnet-5-5"]);
+        assert!(requests[1].contains("after_id=claude-sonnet-5-5"));
         assert!(requests[0].contains("x-api-key: catalog-secret"));
         assert!(!requests[0].contains("authorization:"));
     }
@@ -560,6 +542,30 @@ mod tests {
             worker.join().unwrap().unwrap_err().to_string(),
             "Model discovery cancelled"
         );
+    }
+
+    #[test]
+    fn curated_picker_excludes_aliases_snapshots_and_specialist_models() {
+        let mut available: Vec<String> = OPENAI_MODELS.iter().map(|id| (*id).into()).collect();
+        available.extend(
+            [
+                "gpt-6.1-sol-latest",
+                "gpt-6.1-sol-2026-10-01",
+                "gpt-image-new",
+                "gpt-4o",
+                "gpt-6.1-sol-preview",
+                "gpt-6.1-sol",
+            ]
+            .map(str::to_owned),
+        );
+        let models = curated_models(Provider::OpenAi, &available);
+        assert_eq!(models, OPENAI_MODELS);
+        assert_eq!(models.len(), 7);
+        assert_eq!(
+            curated_models(Provider::OpenAi, &["gpt-6-luna".into()]),
+            ["gpt-6-luna"]
+        );
+        assert!(curated_models(Provider::Anthropic, &available).is_empty());
     }
 
     #[test]

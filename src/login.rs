@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 use ratatui::{
     Frame,
     crossterm::event::{
@@ -30,6 +30,8 @@ use texo::{
     theme,
 };
 use zeroize::{Zeroize, Zeroizing};
+
+pub const MODEL_LOGIN_REQUIRED: &str = "Log in first with /login.";
 
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const MENU_HEADER_ROWS: u16 = 2;
@@ -80,6 +82,7 @@ pub enum LoginResult {
 
 pub struct LoginDialog {
     step: Step,
+    model_only: bool,
     selection: usize,
     provider: Provider,
     key: Zeroizing<String>,
@@ -99,6 +102,7 @@ impl LoginDialog {
     pub fn new() -> Self {
         Self {
             step: Step::Provider,
+            model_only: false,
             selection: 0,
             provider: Provider::OpenAi,
             key: Zeroizing::new(String::new()),
@@ -113,6 +117,29 @@ impl LoginDialog {
             store: Box::new(Keychain),
             preferences: None,
         }
+    }
+
+    pub fn for_model(profile: &Profile) -> Result<Self> {
+        ensure!(
+            profile.provider != Provider::Disconnected,
+            MODEL_LOGIN_REQUIRED
+        );
+        let mut dialog = Self::new();
+        dialog.model_only = true;
+        dialog.provider = profile.provider;
+        dialog.model = profile.model.clone();
+        dialog.use_environment = profile.key_source == KeySource::Environment;
+        dialog.reuse_saved_key = !dialog.use_environment;
+        dialog.start_model_discovery()?;
+        Ok(dialog)
+    }
+
+    pub fn is_loading_models(&self) -> bool {
+        self.step == Step::LoadingModels
+    }
+
+    pub fn is_model_selection(&self) -> bool {
+        self.model_only
     }
 
     fn choices(&self) -> &'static [Choice] {
@@ -216,7 +243,7 @@ impl LoginDialog {
                 KeyCode::Enter => {
                     if let Some(model) = self.models.get(self.selection) {
                         self.model = model.clone();
-                        return self.save_api_profile().map(Some);
+                        return self.save_model_profile().map(Some);
                     }
                     self.start_model_discovery()?;
                 }
@@ -306,6 +333,20 @@ impl LoginDialog {
     }
 
     fn start_model_discovery(&mut self) -> Result<()> {
+        if self.provider == Provider::Codex {
+            // Codex uses the account login it manages, never an API key from our store.
+            self.models = texo::llm::supported_models(Provider::Codex)
+                .iter()
+                .map(|model| (*model).to_owned())
+                .collect();
+            self.selection = self
+                .models
+                .iter()
+                .position(|model| model == &self.model)
+                .unwrap_or(0);
+            self.step = Step::Model;
+            return Ok(());
+        }
         let profile = Profile {
             provider: self.provider,
             key_source: if self.use_environment {
@@ -333,7 +374,7 @@ impl LoginDialog {
         Ok(())
     }
 
-    fn save_api_profile(&mut self) -> Result<Profile> {
+    fn save_model_profile(&mut self) -> Result<Profile> {
         let profile = Profile {
             provider: self.provider,
             model: self.model.trim().into(),
@@ -344,6 +385,10 @@ impl LoginDialog {
             },
         };
         profile.validate()?;
+        if self.provider == Provider::Codex {
+            self.save_preferences(&profile)?;
+            return Ok(profile);
+        }
         if self.use_environment {
             let variable = self.provider.key_variable().unwrap();
             let value = std::env::var(variable)
@@ -379,7 +424,13 @@ impl LoginDialog {
                     self.model_job = None;
                     self.step = Step::Model;
                     match result {
-                        Ok(models) => self.models = models,
+                        Ok(models) => {
+                            self.selection = models
+                                .iter()
+                                .position(|model| model == &self.model)
+                                .unwrap_or(0);
+                            self.models = models;
+                        }
                         Err(error) => self.error = error.to_string(),
                     }
                 }
@@ -416,8 +467,7 @@ impl LoginDialog {
             Step::Provider => "Connect an assistant",
             Step::Method => "Select a sign-in method",
             Step::Key => "Enter your API key",
-            Step::Model => "Choose a model · newest first",
-            Step::LoadingModels => "Fetching available models…",
+            Step::Model | Step::LoadingModels => "Choose a model",
             Step::Waiting => "Complete sign-in",
         };
         let mut lines = vec![
@@ -476,7 +526,7 @@ impl LoginDialog {
                         "•".repeat(self.key.len().min(32))
                     }
                 }
-                Step::LoadingModels => "Requesting the provider’s live catalog…".into(),
+                Step::LoadingModels => String::new(),
                 Step::Waiting => {
                     if self.process.as_ref().is_some_and(|p| p.status_only) {
                         "Checking the existing Codex login…".into()
@@ -818,6 +868,76 @@ mod tests {
             panic!("expected selected model")
         };
         assert_eq!(profile.model, "gpt-live-catalog");
+    }
+
+    #[test]
+    fn model_switch_preselects_current_model_and_preserves_credentials() {
+        for provider in [Provider::OpenAi, Provider::Anthropic] {
+            let (_directory, mut dialog, saved) = dialog(false);
+            *saved.borrow_mut() = Some("existing-secret".into());
+            dialog.provider = provider;
+            dialog.model_only = true;
+            dialog.reuse_saved_key = true;
+            dialog.model = "test-model-old".into();
+            dialog.start_model_discovery().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while dialog.step == Step::LoadingModels && Instant::now() < deadline {
+                dialog.poll();
+                thread::yield_now();
+            }
+            assert_eq!(dialog.selection, 1);
+            assert!(dialog.is_model_selection());
+            dialog
+                .handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+                .unwrap();
+            let LoginResult::Connected(profile) = enter(&mut dialog) else {
+                panic!("expected selected model")
+            };
+            assert_eq!(profile.provider, provider);
+            assert_eq!(profile.model, "test-model-new");
+            assert_eq!(profile.key_source, KeySource::Saved);
+            assert_eq!(saved.borrow().as_deref(), Some("existing-secret"));
+        }
+    }
+
+    #[test]
+    fn model_command_rejects_disconnected_profiles() {
+        assert!(LoginDialog::for_model(&Profile::new(Provider::Disconnected)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_codex_login_can_immediately_select_and_persist_a_model() {
+        let (_directory, mut login, saved) = dialog(false);
+        let mut child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        child.wait().unwrap();
+        login.process = Some(LoginProcess {
+            child,
+            started: Instant::now(),
+            status_only: true,
+        });
+        login.step = Step::Waiting;
+        let profile = login.poll().expect("Codex login should succeed");
+        assert_eq!(profile.provider, Provider::Codex);
+        let loaded = Profile::load_from(login.preferences.as_ref().unwrap()).unwrap();
+        let mut picker = LoginDialog::for_model(&loaded).expect("/model after login should open");
+        picker.preferences = login.preferences.clone();
+        assert!(picker.step == Step::Model);
+        assert!(picker.model_job.is_none());
+        picker
+            .handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+        let expected = picker.models[picker.selection].clone();
+        let LoginResult::Connected(selected) = enter(&mut picker) else {
+            panic!("expected selected model")
+        };
+        assert_eq!(selected.model, expected);
+        let persisted = Profile::load_from(login.preferences.as_ref().unwrap()).unwrap();
+        assert_eq!(persisted.provider, Provider::Codex);
+        assert_eq!(persisted.model, expected);
+        let reopened = LoginDialog::for_model(&persisted).unwrap();
+        assert_eq!(reopened.models[reopened.selection], expected);
+        assert!(saved.borrow().is_none());
     }
 
     #[test]

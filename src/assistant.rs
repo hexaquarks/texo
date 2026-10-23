@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::login::{LoginDialog, LoginResult};
+use crate::login::{LoginDialog, LoginResult, MODEL_LOGIN_REQUIRED};
 use anyhow::{Result, ensure};
 use ratatui::{
     Frame,
@@ -20,11 +20,13 @@ use crate::assistant_job::{AssistantJob, ConversationMessage};
 
 const INPUT_HEIGHT: u16 = 3;
 const SEND_WIDTH: u16 = 8;
-const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT;
+const MODEL_LABEL_HEIGHT: u16 = 1;
+const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT + MODEL_LABEL_HEIGHT;
 const PROMPT_WIDTH: u16 = 2;
 const SCROLL_LINES: u16 = 3;
-const CHAT_COMMANDS: [(&str, &str); 2] = [
+const CHAT_COMMANDS: [(&str, &str); 3] = [
     ("/login", "Connect or switch an assistant provider"),
+    ("/model", "Choose a model for the current provider"),
     (
         "/logout",
         "Disconnect Texo and remove the selected saved API key",
@@ -62,6 +64,7 @@ pub struct Assistant {
     scroll_from_bottom: u16,
     login: Option<LoginDialog>,
     command_selection: usize,
+    profile: Profile,
 }
 
 impl Default for Assistant {
@@ -81,6 +84,7 @@ impl Assistant {
             scroll_from_bottom: 0,
             login: None,
             command_selection: 0,
+            profile: Profile::load().unwrap_or_else(|_| Profile::new(Provider::Disconnected)),
         }
     }
 
@@ -100,7 +104,16 @@ impl Assistant {
     }
 
     fn connected(&mut self, profile: Profile) {
+        let model_changed = self
+            .login
+            .as_ref()
+            .is_some_and(LoginDialog::is_model_selection);
         self.login = None;
+        self.profile = profile.clone();
+        if model_changed {
+            self.notice(format!("Model selected: {}", profile.model), false);
+            return;
+        }
         self.messages.clear();
         let mode = if profile.provider == Provider::Codex {
             "Connected through the existing Codex login.".into()
@@ -124,9 +137,17 @@ impl Assistant {
         self.command_selection = 0;
         match command {
             "/login" => self.login = Some(LoginDialog::new()),
+            "/model" => {
+                let dialog = Profile::load()
+                    .and_then(|profile| LoginDialog::for_model(&profile))
+                    .map_err(|_| anyhow::anyhow!(MODEL_LOGIN_REQUIRED))?;
+                self.login = Some(dialog);
+            }
             "/logout" => {
                 let profile = Profile::load()?;
-                disconnect(&profile, &Keychain, None)?;
+                let result = disconnect(&profile, &Keychain, None);
+                self.profile = Profile::new(Provider::Disconnected);
+                result?;
                 self.messages.clear();
                 self.notice(
                     "Texo disconnected. External Codex sign-in and environment variables are unchanged.".into(),
@@ -134,7 +155,7 @@ impl Assistant {
                 );
             }
             _ => self.notice(
-                "Unknown command. Use /login to connect or /logout to disconnect.".into(),
+                "Unknown command. Use /login, /model, or /logout.".into(),
                 true,
             ),
         }
@@ -290,12 +311,20 @@ impl Assistant {
         }
     }
 
-    pub fn input_area(area: Rect) -> Rect {
+    pub fn input_area(&self, area: Rect) -> Rect {
         composer_layout(area)[0]
     }
 
+    fn model_label(&self) -> &str {
+        match self.profile.provider {
+            Provider::Codex if self.profile.model.is_empty() => "Codex · auto",
+            Provider::Disconnected => "Not connected",
+            _ => &self.profile.model,
+        }
+    }
+
     pub fn click(&mut self, area: Rect, column: u16, row: u16) -> bool {
-        let content = input_block().inner(Self::input_area(area));
+        let content = input_block().inner(self.input_area(area));
         if !content.contains(Position::new(column, row)) {
             return false;
         }
@@ -317,7 +346,9 @@ impl Assistant {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
-        if let Some(login) = &self.login {
+        if let Some(login) = &self.login
+            && !login.is_loading_models()
+        {
             login.draw(frame, area);
             return;
         }
@@ -398,11 +429,16 @@ impl Assistant {
             }
         }
 
+        let [input_box, model] = composer_rows(composer);
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::BUTTON)),
-            composer,
+            input_box,
         );
-        let [input, send] = composer_layout_from_row(composer);
+        let [input, send] = composer_layout_from_row(input_box);
+        frame.render_widget(
+            Paragraph::new(format!(" {}", self.model_label())).style(theme::muted()),
+            model,
+        );
         self.input.set_block(input_block());
         self.input.set_cursor_style(if focused {
             Style::default().add_modifier(Modifier::REVERSED)
@@ -474,7 +510,11 @@ fn composer_layout(area: Rect) -> [Rect; 2] {
     });
     let [_, composer] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(COMPOSER_HEIGHT)]).areas(inner);
-    composer_layout_from_row(composer)
+    composer_layout_from_row(composer_rows(composer)[0])
+}
+
+fn composer_rows(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Min(0), Constraint::Length(MODEL_LABEL_HEIGHT)]).areas(area)
 }
 
 fn composer_layout_from_row(area: Rect) -> [Rect; 2] {
@@ -600,6 +640,39 @@ mod tests {
     }
 
     #[test]
+    fn model_command_completes_and_current_model_renders_below_input() {
+        let mut assistant = Assistant::new();
+        assistant.profile = Profile::new(Provider::OpenAi);
+        assistant.profile.model = "gpt-selected".into();
+        assistant.input.insert_str("/mo");
+        assert!(assistant.complete_command(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(assistant.input.lines()[0], "/model");
+        assistant.input = new_input();
+        let area = Rect::new(0, 0, 100, 20);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        terminal
+            .draw(|frame| assistant.draw(frame, area, true))
+            .unwrap();
+        let input = assistant.input_area(area);
+        let buffer = terminal.backend().buffer();
+        let footer: String = (input.x..area.right())
+            .map(|x| buffer[(x, input.bottom())].symbol())
+            .collect();
+        assert!(footer.contains("gpt-selected"));
+        assert_eq!(buffer[(input.x, input.bottom())].bg, theme::BACKGROUND);
+        assert_eq!(input.x, area.x + theme::PANEL_PADDING);
+        assert!(!assistant.click(area, input.x + 1, input.bottom()));
+        for width in [8, 15, 30] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 10)).unwrap();
+            terminal
+                .draw(|frame| assistant.draw(frame, frame.area(), true))
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn transcript_uses_prompt_markers_and_compact_plain_responses() {
         use ratatui::{Terminal, backend::TestBackend};
         let mut assistant = Assistant::new();
@@ -647,7 +720,7 @@ mod tests {
         let mut assistant = Assistant::new();
         assistant.input.insert_str("hello world");
         let area = Rect::new(20, 10, 70, 15);
-        let input = Assistant::input_area(area);
+        let input = assistant.input_area(area);
         assert!(assistant.click(area, input.x + 5, input.y + 1));
         assert_eq!(assistant.input.cursor(), (0, 2));
         assert!(!assistant.click(area, input.x + 5, input.y));
