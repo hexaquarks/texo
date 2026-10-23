@@ -64,6 +64,13 @@ impl Preview {
         }
     }
 
+    pub fn empty_like(&self) -> Self {
+        Self {
+            picker: self.picker.clone(),
+            ..Self::default()
+        }
+    }
+
     pub fn uses_basic_rendering(&self) -> bool {
         self.picker.protocol_type() == ProtocolType::Halfblocks
     }
