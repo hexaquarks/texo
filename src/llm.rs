@@ -521,6 +521,25 @@ fn parse_turn(provider: Provider, response: &Value) -> Result<AgentTurn> {
         }
     }
 
+    if provider == Provider::Anthropic {
+        let expects_tools = response["stop_reason"] == "tool_use";
+        let has_tool_calls = !calls.is_empty();
+
+        ensure!(
+            expects_tools == has_tool_calls,
+            "The provider returned an inconsistent tool response"
+        );
+    }
+
+    for call in &calls {
+        ensure!(
+            !call.id.trim().is_empty()
+                && !call.name.trim().is_empty()
+                && call.arguments.is_object(),
+            "The provider returned an invalid tool call"
+        );
+    }
+
     if calls.is_empty() {
         Ok(AgentTurn::Complete(parse_response(provider, response)?))
     } else {
@@ -891,6 +910,161 @@ mod tests {
         ] {
             let (result, _) = mock_catalog(Provider::OpenAi, vec![(status, body)]);
             assert!(!result.unwrap_err().to_string().contains("catalog-secret"));
+        }
+    }
+
+    #[test]
+    fn malformed_native_tool_responses_are_rejected() {
+        for (provider, response) in [
+            (
+                Provider::OpenAi,
+                json!({
+                    "status": "completed",
+                    "output": [{"type": "function_call", "call_id": "one", "arguments": "{}"}]
+                }),
+            ),
+            (
+                Provider::OpenAi,
+                json!({
+                    "status": "completed",
+                    "output": [{
+                        "type": "function_call",
+                        "call_id": "one",
+                        "name": "read_resume",
+                        "arguments": "null"
+                    }]
+                }),
+            ),
+            (
+                Provider::Anthropic,
+                json!({
+                    "stop_reason": "end_turn",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "one",
+                        "name": "read_resume",
+                        "input": {}
+                    }]
+                }),
+            ),
+            (
+                Provider::Anthropic,
+                json!({
+                    "stop_reason": "tool_use",
+                    "content": [{"type": "text", "text": "{\"reply\":\"Done\",\"proposed_tex\":null}"}]
+                }),
+            ),
+        ] {
+            assert!(parse_turn(provider, &response).is_err());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Tectonic and cached LaTeX packages"]
+    fn both_http_adapters_drive_real_tools_through_compile_failure_and_repair() {
+        use crate::{agent, resume_tools::ResumeTools};
+
+        let valid = r"\documentclass{article}\begin{document}Revised\end{document}";
+        let broken = r"\documentclass{article}\begin{document}\undefinedcommand\end{document}";
+
+        for provider in [Provider::OpenAi, Provider::Anthropic] {
+            let folder = tempfile::tempdir().unwrap();
+            let saved_path = folder.path().join("main.tex");
+            std::fs::write(&saved_path, "saved source").unwrap();
+
+            let mut tools = ResumeTools::new("main.tex".into(), "unsaved source".into())
+                .in_directory(folder.path().to_owned());
+
+            let result = agent::run(
+                "Edit this resume",
+                &mut tools,
+                &AtomicBool::new(false),
+                |prompt, definitions, history, cancelled| {
+                    let step = history.len();
+                    let next_call = match step {
+                        0 => Some(("read_resume", json!({}))),
+                        1 => {
+                            assert_eq!(history[0].results[0].output["tex"], "unsaved source");
+                            Some(("propose_edit", json!({"tex": broken})))
+                        }
+                        2 => Some(("compile_resume", json!({}))),
+                        3 => {
+                            assert!(history[2].results[0].is_error);
+                            Some(("propose_edit", json!({"tex": valid})))
+                        }
+                        4 => Some(("compile_resume", json!({}))),
+                        _ => {
+                            assert!(!history[4].results[0].is_error);
+                            None
+                        }
+                    };
+
+                    let response = if let Some((name, arguments)) = next_call {
+                        let id = format!("call-{step}");
+
+                        if provider == Provider::OpenAi {
+                            json!({
+                                "status": "completed",
+                                "output": [{
+                                    "type": "function_call",
+                                    "call_id": id,
+                                    "name": name,
+                                    "arguments": arguments.to_string()
+                                }]
+                            })
+                        } else {
+                            json!({
+                                "stop_reason": "tool_use",
+                                "content": [{
+                                    "type": "tool_use",
+                                    "id": id,
+                                    "name": name,
+                                    "input": arguments
+                                }]
+                            })
+                        }
+                    } else {
+                        let final_text =
+                            json!({"reply": "Updated draft", "proposed_tex": null}).to_string();
+
+                        if provider == Provider::OpenAi {
+                            json!({
+                                "status": "completed",
+                                "output": [{
+                                    "type": "message",
+                                    "content": [{"type": "output_text", "text": final_text}]
+                                }]
+                            })
+                        } else {
+                            json!({
+                                "stop_reason": "end_turn",
+                                "content": [{"type": "text", "text": final_text}]
+                            })
+                        }
+                    };
+
+                    let context = TurnContext {
+                        prompt,
+                        tools: definitions,
+                        history,
+                    };
+                    let (turn, wire) = mock_turn(provider, "200 OK", response, &context);
+
+                    assert!(!cancelled.load(Ordering::Relaxed));
+                    assert!(wire.contains("compile_resume"));
+
+                    if step > 0 {
+                        assert!(wire.contains(&format!("call-{}", step - 1)));
+                    }
+
+                    turn
+                },
+            )
+            .unwrap();
+
+            assert_eq!(result.proposed_tex.as_deref(), Some(valid));
+            assert_eq!(std::fs::read_to_string(saved_path).unwrap(), "saved source");
         }
     }
 

@@ -71,8 +71,12 @@ pub fn run(
                 // Validate the whole batch before executing any operation.
                 for call in &calls {
                     ensure!(
-                        !call.id.is_empty() && call.id.len() <= MAX_CALL_ID_BYTES,
+                        !call.id.trim().is_empty() && call.id.len() <= MAX_CALL_ID_BYTES,
                         "Invalid tool call ID"
+                    );
+                    ensure!(
+                        !call.name.trim().is_empty() && call.arguments.is_object(),
+                        "Invalid tool name or arguments"
                     );
                     ensure!(call_ids.insert(call.id.clone()), "Repeated tool call ID");
                 }
@@ -205,6 +209,53 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(tools.executions, 0);
         }
+    }
+
+    #[test]
+    fn malformed_batch_is_rejected_before_any_tool_runs() {
+        for (id, name, arguments) in [
+            (" ", "check", json!({})),
+            ("bad", " ", json!({})),
+            ("bad", "check", json!(null)),
+            ("bad", "check", json!([])),
+        ] {
+            let mut tools = TestTools { executions: 0 };
+
+            let result = run("task", &mut tools, &AtomicBool::new(false), |_, _, _, _| {
+                Ok(AgentTurn::Tools {
+                    calls: vec![
+                        ToolCall {
+                            id: "valid".into(),
+                            name: "check".into(),
+                            arguments: json!({"valid": true}),
+                        },
+                        ToolCall {
+                            id: id.into(),
+                            name: name.into(),
+                            arguments: arguments.clone(),
+                        },
+                    ],
+                    continuation: Value::Null,
+                })
+            });
+
+            assert!(result.is_err());
+            assert_eq!(tools.executions, 0);
+        }
+    }
+
+    #[test]
+    fn cancellation_after_a_model_response_prevents_tool_execution() {
+        let cancelled = AtomicBool::new(false);
+        let mut tools = TestTools { executions: 0 };
+
+        let result = run("task", &mut tools, &cancelled, |_, _, _, cancelled| {
+            cancelled.store(true, Ordering::Relaxed);
+            Ok(calls("one", "check", true))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(tools.executions, 0);
     }
 
     #[test]
