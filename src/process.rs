@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_DIAGNOSTIC_BYTES: u64 = 32 * 1024;
+const MAX_PROCESS_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn run(
     command: &mut Command,
@@ -40,20 +41,30 @@ pub(crate) fn run(
         if cancelled.load(Ordering::Relaxed) {
             bail!("Render cancelled");
         }
-        if let Some(status) = running.0.try_wait()? {
+
+        let status = running.0.try_wait()?;
+        ensure!(
+            output.metadata()?.len() <= MAX_PROCESS_OUTPUT_BYTES,
+            "{program} exceeded its diagnostic output limit"
+        );
+
+        if let Some(status) = status {
             let diagnostics = read_diagnostics(&mut output)?;
             ensure!(
                 status.success(),
                 "{program} failed ({status}):\n{diagnostics}"
             );
+
             return Ok(diagnostics);
         }
+
         if started.elapsed() >= timeout {
             bail!(
                 "{program} exceeded its {} second time limit",
                 timeout.as_secs()
             );
         }
+
         thread::sleep(PROCESS_POLL_INTERVAL);
     }
 }
@@ -122,6 +133,22 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("time limit"));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn excessive_subprocess_output_is_rejected() {
+        let error = run(
+            Command::new("head").args([
+                "-c",
+                &(MAX_PROCESS_OUTPUT_BYTES + 1).to_string(),
+                "/dev/zero",
+            ]),
+            Duration::from_secs(2),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("diagnostic output limit"));
     }
 
     #[test]

@@ -152,6 +152,56 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires Tectonic and cached LaTeX packages"]
+    fn cancellation_stops_a_nonterminating_tex_document() {
+        use std::{
+            sync::{Arc, atomic::Ordering},
+            time::{Duration, Instant},
+        };
+
+        let folder = tempfile::tempdir().unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let started = Instant::now();
+
+        let worker = std::thread::spawn(move || {
+            compile(
+                r"\documentclass{article}\begin{document}\loop\iftrue\repeat\end{document}",
+                folder.path(),
+                &worker_cancelled,
+            )
+        });
+
+        std::thread::sleep(Duration::from_millis(200));
+        cancelled.store(true, Ordering::Relaxed);
+
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    #[ignore = "requires Tectonic and cached LaTeX packages"]
+    fn latex_cannot_overwrite_a_resume_asset() {
+        let folder = tempfile::tempdir().unwrap();
+        let asset = folder.path().join("protected.txt");
+        std::fs::write(&asset, "original").unwrap();
+
+        let source = format!(
+            concat!(
+                r"\documentclass{{article}}\begin{{document}}",
+                r"\newwrite\target\immediate\openout\target={} ",
+                r"\immediate\write\target{{changed}}\immediate\closeout\target",
+                r" Test\end{{document}}",
+            ),
+            asset.display()
+        );
+        let _ = compile(&source, folder.path(), &AtomicBool::new(false));
+
+        assert_eq!(std::fs::read_to_string(asset).unwrap(), "original");
+    }
+
+    #[test]
     #[ignore = "requires installed Tectonic and cached LaTeX packages"]
     fn offline_compilation_builds_a_pdf() {
         let folder = tempfile::tempdir().unwrap();
