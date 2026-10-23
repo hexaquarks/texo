@@ -8,7 +8,7 @@ use ratatui::{
     crossterm::event::{
         self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
     },
-    layout::{Constraint, Layout, Position, Rect, Spacing},
+    layout::{Constraint, Layout, Position, Rect},
     style::Style,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -655,23 +655,14 @@ impl App {
                 self.focus == Focus::Projects,
             );
         }
-        self.draw_editor(frame, pane_content(layout.editor));
-        self.assistant.draw(
-            frame,
-            pane_content(layout.assistant),
-            self.focus == Focus::Assistant,
-        );
-        self.draw_preview(frame, pane_content(layout.preview));
+        let editor = draw_pane_border(frame, layout.editor, self.focus == Focus::Editor);
+        let assistant = draw_pane_border(frame, layout.assistant, self.focus == Focus::Assistant);
+        let preview = draw_pane_border(frame, layout.preview, self.focus == Focus::Preview);
 
-        // Draw frames last so pane contents cannot erase their shared edge.
-        for (pane, focus) in [
-            (layout.editor, Focus::Editor),
-            (layout.assistant, Focus::Assistant),
-            (layout.preview, Focus::Preview),
-        ] {
-            draw_pane_border(frame, pane, self.focus == focus);
-        }
-        layout.draw_shared_border(frame, self.focus);
+        self.draw_editor(frame, editor);
+        self.assistant
+            .draw(frame, assistant, self.focus == Focus::Assistant);
+        self.draw_preview(frame, preview);
         self.draw_diagnostics(frame, &layout);
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
@@ -762,7 +753,7 @@ fn pane_content(area: Rect) -> Rect {
     Block::bordered().inner(area)
 }
 
-fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) {
+fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
     let color = if focused {
         theme::ACCENT
     } else {
@@ -774,6 +765,7 @@ fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) {
             .border_style(Style::default().fg(color)),
         area,
     );
+    pane_content(area)
 }
 
 #[derive(Default)]
@@ -817,7 +809,6 @@ impl WorkspaceLayout {
         .areas(body);
         let [editor, assistant] =
             Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
-                .spacing(Spacing::Overlap(1))
                 .areas(center);
         Self {
             projects,
@@ -825,28 +816,6 @@ impl WorkspaceLayout {
             assistant,
             preview,
             diagnostics,
-        }
-    }
-
-    fn draw_shared_border(&self, frame: &mut Frame, focus: Focus) {
-        if self.editor.is_empty() || self.assistant.is_empty() {
-            return;
-        }
-        let color = if matches!(focus, Focus::Editor | Focus::Assistant) {
-            theme::ACCENT
-        } else {
-            theme::DIVIDER
-        };
-        let border = Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(color));
-        let row = Rect::new(self.assistant.x, self.assistant.y, self.assistant.width, 1);
-        frame.render_widget(border, row);
-        for (column, junction) in [(row.x, "├"), (row.right() - 1, "┤")] {
-            frame.render_widget(
-                Paragraph::new(junction).style(Style::default().fg(color)),
-                Rect::new(column, row.y, 1, 1),
-            );
         }
     }
 }
@@ -1118,7 +1087,7 @@ mod tests {
         let layout = WorkspaceLayout::new(area, false, true, app.focus);
         let panes = [layout.editor, layout.assistant, layout.preview];
         assert_eq!(layout.preview.x, layout.editor.right());
-        assert_eq!(layout.assistant.y + 1, layout.editor.bottom());
+        assert_eq!(layout.assistant.y, layout.editor.bottom());
 
         for (selected, pane) in panes.iter().enumerate() {
             // Border clicks select the pane without activating its content controls.
@@ -1141,38 +1110,20 @@ mod tests {
             assert_eq!(buffer[(layout.preview.x, border_row)].symbol(), "│");
 
             for (index, pane) in panes.iter().enumerate() {
+                let color = if index == selected {
+                    theme::ACCENT
+                } else {
+                    theme::DIVIDER
+                };
                 for position in [
                     (pane.x, pane.y),
                     (pane.right() - 1, pane.y),
                     (pane.x, pane.bottom() - 1),
                     (pane.right() - 1, pane.bottom() - 1),
                 ] {
-                    let shared_edge = index < 2 && position.1 == layout.assistant.y;
-                    let highlighted = index == selected || (shared_edge && selected < 2);
-                    let color = if highlighted {
-                        theme::ACCENT
-                    } else {
-                        theme::DIVIDER
-                    };
                     assert_eq!(buffer[position].fg, color);
                 }
             }
-        }
-
-        app.focus = Focus::Projects;
-        terminal.draw(|frame| app.draw(frame))?;
-        let buffer = terminal.backend().buffer();
-        let shared_row = layout.assistant.y;
-        assert_eq!(
-            buffer[(layout.editor.right() - 1, shared_row)].symbol(),
-            "┤"
-        );
-        assert_eq!(
-            buffer[(layout.editor.right() - 1, shared_row)].fg,
-            theme::DIVIDER
-        );
-        for row in shared_row - 1..=shared_row + 1 {
-            assert_ne!(buffer[(layout.editor.right() - 1, row)].symbol(), " ");
         }
 
         app.focus = Focus::Editor;
