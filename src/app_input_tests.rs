@@ -281,3 +281,68 @@ fn narrow_workspace_keeps_chat_below_the_upper_pane() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires Poppler"]
+fn pdf_zoom_mouse_and_keyboard_events_leave_editor_and_other_preview_untouched()
+-> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let pdf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/two-pages.pdf");
+    let pages = texo::pdf::PdfPages::render(&pdf, &std::sync::atomic::AtomicBool::new(false))?;
+    app.session.preview.set_pages(pages)?;
+    let area = Rect::new(0, 0, 160, 50);
+    let preview = app.workspace_layout(area).preview;
+    let source = app.session.editor.source();
+    let wheel = |kind, modifiers, column| {
+        Event::Mouse(event::MouseEvent {
+            kind,
+            column,
+            row: preview.y + 5,
+            modifiers,
+        })
+    };
+
+    app.handle_event(
+        wheel(
+            MouseEventKind::ScrollUp,
+            KeyModifiers::CONTROL,
+            preview.x + 5,
+        ),
+        area,
+    );
+    assert_eq!(app.session.preview.zoom_percent(), 125);
+    assert_eq!(app.session.proposed_preview.zoom_percent(), 100);
+    app.handle_event(
+        wheel(
+            MouseEventKind::ScrollDown,
+            KeyModifiers::NONE,
+            preview.x + 5,
+        ),
+        area,
+    );
+    assert_eq!(app.session.preview.zoom_percent(), 125);
+    app.handle_event(
+        wheel(MouseEventKind::ScrollUp, KeyModifiers::CONTROL, 0),
+        area,
+    );
+    assert_eq!(app.session.preview.zoom_percent(), 125);
+
+    app.focus = Focus::Preview;
+    for (key, expected) in [('+', 150), ('-', 125), ('0', 100)] {
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+            area,
+        );
+        assert_eq!(app.session.preview.zoom_percent(), expected);
+    }
+    assert_eq!(app.session.editor.source(), source);
+
+    app.focus = Focus::Assistant;
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE)),
+        area,
+    );
+    assert_eq!(app.session.assistant.input.lines().join(""), "+");
+    assert_eq!(app.session.preview.zoom_percent(), 100);
+    Ok(())
+}
