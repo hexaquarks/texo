@@ -13,8 +13,8 @@ use texo::theme;
 use crate::resume_project::{self, Catalog, Project};
 
 const HEADER_HEIGHT: u16 = 4;
-const CONTENT_INSET: u16 = 2;
-const ITEM_HEIGHT: u16 = 3;
+const CONTENT_INSET: u16 = 1;
+const ITEM_HEIGHT: u16 = 2;
 
 pub struct Projects {
     root: PathBuf,
@@ -134,7 +134,7 @@ impl Projects {
         frame.render_widget(
             Block::bordered()
                 .style(theme::text())
-                .border_style(border_style(focused)),
+                .border_style(Style::default().fg(theme::DIVIDER)),
             sidebar,
         );
 
@@ -147,7 +147,7 @@ impl Projects {
                     top_right: "┤",
                     ..ratatui::symbols::border::PLAIN
                 })
-                .border_style(border_style(focused));
+                .border_style(Style::default().fg(theme::DIVIDER));
             frame.render_widget(divider, Rect { height: 1, ..files });
         }
 
@@ -180,7 +180,6 @@ impl Projects {
             .map(|project| {
                 let active = project.document() == active_file;
                 ListItem::new(vec![
-                    Line::default(),
                     Line::from(vec![
                         Span::styled(
                             if active { " · " } else { "   " },
@@ -232,7 +231,6 @@ impl Projects {
         {
             frame.render_widget(
                 Paragraph::new(vec![
-                    Line::default(),
                     Line::from(format!(" · {}", project.manifest.entrypoint.display())),
                     Line::default(),
                 ])
@@ -256,14 +254,6 @@ fn list_area(area: Rect) -> Rect {
         height: inner.height.saturating_sub(header + 1),
         ..inner
     }
-}
-
-fn border_style(focused: bool) -> Style {
-    Style::default().fg(if focused {
-        theme::ACCENT
-    } else {
-        theme::DIVIDER
-    })
 }
 
 #[cfg(test)]
@@ -304,7 +294,7 @@ mod tests {
         assert_eq!(buffer[(0, files.y - 1)].symbol(), "│");
         assert_eq!(buffer[(CONTENT_INSET, list_area(resumes).y)].symbol(), " ");
         assert_eq!(
-            buffer[(CONTENT_INSET, list_area(resumes).y + 2)].symbol(),
+            buffer[(CONTENT_INSET, list_area(resumes).y + ITEM_HEIGHT - 1)].symbol(),
             " "
         );
 
@@ -314,7 +304,7 @@ mod tests {
             buffer[(CONTENT_INSET, list_area(resumes).y)].bg,
             theme::SELECTION
         );
-        assert_eq!(buffer[(0, 0)].fg, theme::ACCENT);
+        assert_eq!(buffer[(0, 0)].fg, theme::DIVIDER);
         assert!(projects.select_at(resumes, list_area(resumes).y + ITEM_HEIGHT));
         assert_ne!(projects.selected_path(), Some(active.document()));
         Ok(())
