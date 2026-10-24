@@ -207,6 +207,10 @@ impl Preview {
                             self.picker = Picker::halfblocks();
                             self.fitted_page = None;
                         } else {
+                            // Keep the error visible instead of spawning another failed worker
+                            // every frame. A new page or viewport can try again.
+                            self.viewport_pixels = Some(pixels);
+                            self.displayed_scroll = Some(self.scroll_pixels);
                             return;
                         }
                     }
@@ -240,7 +244,11 @@ impl Preview {
                     result,
                 });
             }
-            Err(error) => self.notice = format!("Could not prepare the preview: {error}"),
+            Err(error) => {
+                self.notice = format!("Could not prepare the preview: {error}");
+                self.viewport_pixels = Some(pixels);
+                self.displayed_scroll = Some(self.scroll_pixels);
+            }
         }
     }
 
@@ -391,6 +399,37 @@ mod tests {
             );
             thread::sleep(WORKER_TEST_POLL_INTERVAL);
         }
+    }
+
+    #[test]
+    fn failed_preview_does_not_retry_until_the_viewport_changes() {
+        let mut preview = Preview::default();
+        preview.set_source(Some(DynamicImage::new_rgb8(120, 200)));
+        let area = Rect::new(0, 0, 10, 5);
+        let font = preview.picker.font_size();
+        let (sender, result) = mpsc::channel();
+
+        preview.pending = Some(ViewportJob {
+            source: preview.source_page.clone().unwrap(),
+            pixels: (
+                u32::from(area.width) * u32::from(font.width),
+                u32::from(area.height) * u32::from(font.height),
+            ),
+            scroll: 0,
+            result,
+        });
+        sender
+            .send(Err(anyhow!("Synthetic encoding failure")))
+            .unwrap();
+
+        preview.prepare_viewport(area);
+        preview.prepare_viewport(area);
+        assert!(preview.pending.is_none());
+        assert!(preview.image.is_none());
+        assert!(preview.notice.contains("Synthetic encoding failure"));
+
+        finish_viewport(&mut preview, Rect::new(0, 0, 12, 5));
+        assert!(preview.image.is_some());
     }
 
     #[test]
