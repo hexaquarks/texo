@@ -67,6 +67,7 @@ struct App {
     prefix: Prefix,
     export: Option<ExportDialog>,
     assistant: Assistant,
+    chat_maximized: bool,
     proposal_review: Option<ProposalReview>,
     proposed_preview: Preview,
     proposed_job: Option<RenderJob>,
@@ -158,6 +159,7 @@ impl App {
             prefix: Prefix::default(),
             export: None,
             assistant: Assistant::new(),
+            chat_maximized: false,
             proposal_review: None,
             proposed_preview,
             proposed_job: None,
@@ -465,12 +467,7 @@ impl App {
         }
 
         if self.assistant.login_open() {
-            let layout = WorkspaceLayout::new(
-                area,
-                self.diagnostics.is_some(),
-                self.projects_visible,
-                self.focus,
-            );
+            let layout = self.workspace_layout(area);
             self.assistant
                 .handle_login_event(event, pane_content(layout.assistant));
             return false;
@@ -510,14 +507,16 @@ impl App {
                 self.editor.text.insert_str(text);
             }
             Event::Mouse(mouse) => {
-                let layout = WorkspaceLayout::new(
-                    area,
-                    self.diagnostics.is_some(),
-                    self.projects_visible,
-                    self.focus,
-                );
+                let layout = self.workspace_layout(area);
                 let position = Position::new(mouse.column, mouse.row);
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    let chat_body = self.assistant_body(pane_content(layout.assistant));
+                    if Assistant::maximize_button(chat_body).contains(position) {
+                        self.focus = Focus::Assistant;
+                        self.chat_maximized = !self.chat_maximized;
+                        return false;
+                    }
+
                     if self.handle_review_click(position, &layout) {
                         return false;
                     }
@@ -842,6 +841,10 @@ impl App {
         } else {
             self.handle_navigation_key(key);
         }
+        if self.focus == Focus::Editor {
+            self.chat_maximized = false;
+        }
+
         false
     }
 
@@ -890,6 +893,11 @@ impl App {
     }
 
     fn handle_alt_key(&mut self, key: KeyEvent) {
+        if self.focus == Focus::Assistant && key.code == KeyCode::Char('z') {
+            self.chat_maximized = !self.chat_maximized;
+            return;
+        }
+
         if self.focus == Focus::Assistant && key.code == KeyCode::Enter {
             self.assistant.input.insert_newline();
             return;
@@ -1156,26 +1164,37 @@ impl App {
         }
     }
 
-    fn preview_area(&self, area: Rect) -> Rect {
-        WorkspaceLayout::new(
-            area,
-            self.diagnostics.is_some(),
-            self.projects_visible,
-            self.focus,
-        )
-        .preview
-    }
-
-    fn draw(&mut self, frame: &mut Frame) {
-        let area = frame.area();
-        frame.render_widget(Block::default().style(theme::text()), area);
-
-        let layout = WorkspaceLayout::new(
+    fn workspace_layout(&self, area: Rect) -> WorkspaceLayout {
+        let mut layout = WorkspaceLayout::new(
             area,
             self.diagnostics.is_some(),
             self.projects_visible,
             self.focus,
         );
+
+        // Keep the PDF and sidebar in place; chat only takes over the editor's space.
+        if self.chat_maximized && self.focus != Focus::Editor && !layout.editor.is_empty() {
+            layout.assistant = layout.assistant.union(layout.editor);
+            layout.editor = Rect::default();
+        }
+
+        layout
+    }
+
+    fn preview_area(&self, area: Rect) -> Rect {
+        self.workspace_layout(area).preview
+    }
+
+    fn draw(&mut self, frame: &mut Frame) {
+        // Opening another document can focus the editor without a navigation key.
+        if self.focus == Focus::Editor {
+            self.chat_maximized = false;
+        }
+
+        let area = frame.area();
+        frame.render_widget(Block::default().style(theme::text()), area);
+
+        let layout = self.workspace_layout(area);
         if self.projects_visible {
             self.projects.draw(
                 frame,
@@ -1265,8 +1284,12 @@ impl App {
 
     fn draw_assistant(&mut self, frame: &mut Frame, area: Rect) {
         let body = self.assistant_body(area);
-        self.assistant
-            .draw(frame, body, self.focus == Focus::Assistant);
+        self.assistant.draw(
+            frame,
+            body,
+            self.focus == Focus::Assistant,
+            self.chat_maximized,
+        );
 
         if self.proposal_review.is_some() && !self.assistant.login_open() {
             for (button, label) in
@@ -1496,6 +1519,87 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    fn chat_maximizes_and_restores_without_changing_documents_or_prompt() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let source = app.editor.source();
+        app.assistant.input.insert_str("Keep this draft");
+        let shortcut = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT);
+
+        app.handle_key(shortcut);
+        assert!(!app.chat_maximized);
+        app.focus = Focus::Assistant;
+
+        for (width, height) in [(160, 45), (80, 30)] {
+            let area = Rect::new(0, 0, width, height);
+            let original = app.workspace_layout(area);
+            app.handle_key(shortcut);
+            let expanded = app.workspace_layout(area);
+
+            assert!(expanded.editor.is_empty());
+            assert_eq!(
+                expanded.assistant,
+                original.assistant.union(original.editor)
+            );
+            assert_eq!(expanded.preview, original.preview);
+            assert_eq!(expanded.projects, original.projects);
+
+            let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+            terminal.draw(|frame| app.draw(frame))?;
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("Maximized · Alt+Z Restore"));
+
+            for (small_width, small_height) in [(1, 1), (30, 10)] {
+                let mut small_terminal =
+                    Terminal::new(TestBackend::new(small_width, small_height))?;
+                small_terminal.draw(|frame| app.draw(frame))?;
+            }
+
+            app.handle_key(shortcut);
+            let restored = app.workspace_layout(area);
+            assert_eq!(restored.editor, original.editor);
+            assert_eq!(restored.assistant, original.assistant);
+            assert_eq!(app.editor.source(), source);
+            assert_eq!(app.assistant.input.lines()[0], "Keep this draft");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn chat_header_click_toggles_and_editor_focus_restores_split() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let area = Rect::new(0, 0, 160, 45);
+
+        for expected in [true, false, true] {
+            let layout = app.workspace_layout(area);
+            let button = Assistant::maximize_button(pane_content(layout.assistant));
+            app.handle_event(
+                Event::Mouse(event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: button.right() - 1,
+                    row: button.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                area,
+            );
+
+            assert_eq!(app.chat_maximized, expected);
+            assert!(app.focus == Focus::Assistant);
+        }
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        assert!(app.focus == Focus::Editor);
+        assert!(!app.chat_maximized);
+        assert!(!app.workspace_layout(area).editor.is_empty());
+        Ok(())
     }
 
     #[test]
