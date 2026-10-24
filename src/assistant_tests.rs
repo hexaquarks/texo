@@ -190,6 +190,33 @@ fn composer_content(assistant: &Assistant, area: Rect) -> Rect {
         .inner(assistant.input_area(area))
 }
 
+#[test]
+fn chat_header_shades_the_configured_shortcut_without_state_labels_or_send_button() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut assistant = Assistant::new();
+    let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+    terminal
+        .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+a"))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let header: String = (0..70).map(|column| buffer[(column, 1)].symbol()).collect();
+    let header = header.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(header.contains("Ctrl+a u Maximize"));
+    assert!(!header.contains("Split"));
+    assert!(!header.contains("Maximized"));
+
+    let key = (0..70)
+        .find(|column| buffer[(*column, 1)].symbol() == "C")
+        .unwrap();
+    let description = (0..70)
+        .find(|column| buffer[(*column, 1)].symbol() == "M")
+        .unwrap();
+    assert_eq!(buffer[(key, 1)].bg, theme::KEYCAP);
+    assert_eq!(buffer[(description, 1)].bg, theme::BACKGROUND);
+}
+
 fn composer_text(
     assistant: &Assistant,
     terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
@@ -236,12 +263,16 @@ fn composer_wraps_grows_and_shrinks_without_changing_the_prompt_or_undo() {
     };
     assert_eq!(non_whitespace(&rendered), non_whitespace(prompt));
 
-    let send = assistant.send_button(area);
-    assert_eq!(send.y, assistant.input_area(area).y + 1);
-    let button: String = (send.x..send.right())
-        .map(|column| terminal.backend().buffer()[(column, send.y)].symbol())
+    let input = assistant.input_area(area);
+    assert_eq!(input.right(), area.right() - theme::PANEL_PADDING);
+    let all_text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
         .collect();
-    assert!(button.contains("[send]"));
+    assert!(!all_text.contains("[send]"));
 
     assistant.input.undo();
     terminal
@@ -269,7 +300,7 @@ fn composer_bounds_long_pastes_and_keeps_the_cursor_visible_after_resize() {
     assert_eq!(assistant.input.scroll_offset().1, 0);
     assert!(composer_text(&assistant, &terminal, area).contains("END"));
 
-    for (width, height) in [(30, 12), (15, 10), (8, 10), (100, 30)] {
+    for (width, height) in [(30, 12), (15, 10), (8, 10), (1, 20), (4, 10), (100, 30)] {
         let area = Rect::new(0, 0, width, height);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal

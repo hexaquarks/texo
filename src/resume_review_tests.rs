@@ -66,6 +66,7 @@ fn pending_review_protects_the_editor_and_exposes_controls() -> anyhow::Result<(
         .iter()
         .map(|cell| cell.symbol())
         .collect();
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(text.contains("F7 Accept"));
     assert!(text.contains("F8 Modify"));
     assert!(text.contains("F9 Discard"));

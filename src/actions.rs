@@ -43,44 +43,49 @@ pub enum Action {
     Quit,
 }
 
-const ACTIONS: [(Action, &str); 22] = [
-    (Action::NewResume, "New resume"),
-    (Action::ImportResume, "Import resume (copy source/project)"),
-    (Action::RenameResume, "Rename resume"),
-    (Action::DuplicateResume, "Duplicate resume"),
-    (Action::FocusResumes, "Focus resumes"),
-    (Action::FocusFiles, "Focus files"),
-    (Action::ReloadSource, "Reload source from disk (confirm)"),
-    (Action::RecoverSource, "Restore missing source (confirm)"),
-    (Action::WorkspaceWarnings, "Show workspace warnings"),
-    (Action::Settings, "Settings                          ?"),
-    (Action::Build, "Build PDF                         Ctrl+B"),
-    (Action::Export, "Export PDF                        Ctrl+E"),
-    (Action::Save, "Save TeX                          Ctrl+S"),
+const ACTIONS: [(Action, &str, Option<&str>); 22] = [
+    (Action::NewResume, "New resume", None),
+    (
+        Action::ImportResume,
+        "Import resume (copy source/project)",
+        None,
+    ),
+    (Action::RenameResume, "Rename resume", None),
+    (Action::DuplicateResume, "Duplicate resume", None),
+    (Action::FocusResumes, "Focus resumes", None),
+    (Action::FocusFiles, "Focus files", None),
+    (
+        Action::ReloadSource,
+        "Reload source from disk (confirm)",
+        None,
+    ),
+    (
+        Action::RecoverSource,
+        "Restore missing source (confirm)",
+        None,
+    ),
+    (Action::WorkspaceWarnings, "Show workspace warnings", None),
+    (Action::Settings, "Settings", Some("?")),
+    (Action::Build, "Build PDF", Some("Ctrl+B")),
+    (Action::Export, "Export PDF", Some("Ctrl+E")),
+    (Action::Save, "Save TeX", Some("Ctrl+S")),
     (
         Action::ToggleProjects,
-        "Show / hide projects              Ctrl+T",
+        "Show / hide projects",
+        Some("Ctrl+T"),
     ),
-    (
-        Action::PreviousPage,
-        "Previous PDF page                 Alt+Left",
-    ),
-    (
-        Action::NextPage,
-        "Next PDF page                     Alt+Right",
-    ),
-    (Action::ScrollUp, "Scroll PDF up                     Alt+Up"),
-    (
-        Action::ScrollDown,
-        "Scroll PDF down                   Alt+Down",
-    ),
+    (Action::PreviousPage, "Previous PDF page", Some("Alt+Left")),
+    (Action::NextPage, "Next PDF page", Some("Alt+Right")),
+    (Action::ScrollUp, "Scroll PDF up", Some("Alt+Up")),
+    (Action::ScrollDown, "Scroll PDF down", Some("Alt+Down")),
     (
         Action::FocusAssistant,
-        "Focus assistant / editor          Ctrl+J",
+        "Focus assistant / editor",
+        Some("Ctrl+J"),
     ),
-    (Action::ReviewEdit, "Review suggested TeX edit"),
-    (Action::ClearChat, "Clear conversation"),
-    (Action::Quit, "Quit                              Ctrl+Q"),
+    (Action::ReviewEdit, "Review suggested TeX edit", None),
+    (Action::ClearChat, "Clear conversation", None),
+    (Action::Quit, "Quit", Some("Ctrl+Q")),
 ];
 
 #[derive(Default)]
@@ -125,16 +130,31 @@ impl ActionMenu {
     pub fn draw(&mut self, frame: &mut Frame) {
         let area = menu_area(frame.area());
         frame.render_widget(Clear, area);
+        let selected = self.state.selected();
         let rows = ACTIONS
             .iter()
-            .map(|(_, label)| ListItem::new(format!(" {label}")));
+            .enumerate()
+            .map(|(index, (_, description, shortcut))| {
+                let line = match shortcut {
+                    Some(key) => theme::shortcuts(&[(key, description)]),
+                    None => Line::from(format!(" {description}")),
+                };
+                let style = if selected == Some(index) {
+                    theme::text().fg(theme::ACCENT).bg(theme::SELECTION)
+                } else {
+                    theme::text()
+                };
+
+                // Apply selection before the spans, so it does not overwrite keycap shading.
+                ListItem::new(line).style(style)
+            });
+
+        let mut title = Line::from(" Actions  ");
+        title.extend(theme::shortcuts(&[("Enter", "select"), ("Esc", "close")]).spans);
+
         let list = List::new(rows)
-            .block(
-                dialog_block(" Actions · Enter to select · Esc to close ")
-                    .padding(Padding::uniform(1)),
-            )
-            .style(theme::text())
-            .highlight_style(Style::default().fg(theme::ACCENT).bg(theme::SELECTION));
+            .block(dialog_block(title).padding(Padding::uniform(1)))
+            .style(theme::text());
         frame.render_stateful_widget(list, area, &mut self.state);
     }
 }
@@ -155,14 +175,14 @@ impl ExportDialog {
         input.set_cursor_style(Style::default().bg(theme::ACCENT).fg(theme::BACKGROUND));
         Self {
             input,
-            message: "Enter to export · Esc to cancel".into(),
+            message: String::new(),
             overwrite_path: None,
         }
     }
 
     pub fn edited(&mut self) {
         self.overwrite_path = None;
-        self.message = "Enter to export · Esc to cancel".into();
+        self.message.clear();
     }
 
     pub fn export(&mut self, source: &Path, document: &Path) -> Result<Option<PathBuf>> {
@@ -194,7 +214,7 @@ impl ExportDialog {
         );
         if destination.exists() && self.overwrite_path.as_ref() != Some(&destination) {
             self.overwrite_path = Some(destination);
-            self.message = "File exists. Enter again to replace it, or edit the path.".into();
+            self.message = "File exists.".into();
             return Ok(None);
         }
 
@@ -220,14 +240,22 @@ impl ExportDialog {
         .areas(content);
         frame.render_widget(Paragraph::new("Destination"), label);
         frame.render_widget(&self.input, input);
-        frame.render_widget(
-            Paragraph::new(Line::styled(&self.message, theme::muted())),
-            message,
-        );
+
+        let action = if self.overwrite_path.is_some() {
+            "replace"
+        } else {
+            "export"
+        };
+        let mut hint = Line::from(self.message.clone());
+        if !self.message.is_empty() {
+            hint.push_span(" ");
+        }
+        hint.extend(theme::shortcuts(&[("Enter", action), ("Esc", "cancel")]).spans);
+        frame.render_widget(Paragraph::new(hint).style(theme::muted()), message);
     }
 }
 
-fn dialog_block(title: &str) -> Block<'_> {
+fn dialog_block<'a>(title: impl Into<Line<'a>>) -> Block<'a> {
     Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -253,6 +281,30 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_action_keeps_keycaps_distinct_from_its_description() -> Result<()> {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut menu = ActionMenu::open();
+        let settings = ACTIONS
+            .iter()
+            .position(|(action, _, _)| matches!(action, Action::Settings))
+            .unwrap();
+        menu.state.select(Some(settings));
+        let mut terminal = Terminal::new(TestBackend::new(80, 30))?;
+        terminal.draw(|frame| menu.draw(frame))?;
+        let area = menu_area(terminal.backend().buffer().area);
+        let row = area.y + 2 + settings as u16;
+        let column = area.x + 2;
+        let buffer = terminal.backend().buffer();
+
+        assert_eq!(buffer[(column + 1, row)].symbol(), "?");
+        assert_eq!(buffer[(column + 1, row)].bg, theme::KEYCAP);
+        assert_eq!(buffer[(column + 4, row)].symbol(), "S");
+        assert_eq!(buffer[(column + 4, row)].bg, theme::SELECTION);
+        Ok(())
+    }
 
     #[test]
     fn export_requires_confirming_replacement_and_preserves_build_output() -> Result<()> {

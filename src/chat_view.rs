@@ -20,8 +20,6 @@ const HEADER_GAP: u16 = 1;
 
 const CHAT_TITLE_WIDTH: u16 = 13;
 
-const SEND_WIDTH: u16 = 8;
-
 const MODEL_LABEL_HEIGHT: u16 = 1;
 
 const PROMPT_WIDTH: u16 = 2;
@@ -36,7 +34,7 @@ const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "
 
 impl Assistant {
     pub fn input_area(&self, area: Rect) -> Rect {
-        self.composer_layout(area)[0]
+        self.composer_layout(area)
     }
 
     fn model_label(&self) -> &str {
@@ -65,10 +63,6 @@ impl Assistant {
         true
     }
 
-    pub fn send_button(&self, area: Rect) -> Rect {
-        self.composer_layout(area)[1]
-    }
-
     pub fn maximize_button(area: Rect) -> Rect {
         let inner = area.inner(Margin::new(theme::PANEL_PADDING, 1));
         let [_, button] =
@@ -92,14 +86,20 @@ impl Assistant {
             login.draw(frame, area);
             return;
         }
-        if area.width < SEND_WIDTH || area.height < MIN_INPUT_HEIGHT + 2 {
+
+        if area.is_empty() || area.height < MIN_INPUT_HEIGHT + 2 {
             return;
         }
+
         frame.render_widget(Block::default().style(theme::text()), area);
         let inner = area.inner(Margin {
             horizontal: theme::PANEL_PADDING,
             vertical: 1,
         });
+        if inner.is_empty() {
+            return;
+        }
+
         let activity_height = self.activity_height();
         let composer_height = self.composer_height(inner);
 
@@ -111,11 +111,9 @@ impl Assistant {
             Constraint::Length(composer_height),
         ])
         .areas(inner);
-        let hint = if maximized {
-            format!("Maximized · {prefix} u Restore")
-        } else {
-            format!("Split · {prefix} u Maximize")
-        };
+        let shortcut = format!("{prefix} u");
+        let action = if maximized { "Restore" } else { "Maximize" };
+        let hint = theme::shortcuts(&[(&shortcut, action)]);
         let [label, hint_area] =
             Layout::horizontal([Constraint::Length(CHAT_TITLE_WIDTH), Constraint::Min(0)])
                 .areas(header);
@@ -134,10 +132,14 @@ impl Assistant {
         if let Some(job) = &self.job {
             let phase =
                 (job.elapsed().as_millis() / THINKING_FRAME_MS) % THINKING_FRAMES.len() as u128;
-            let label = format!("{} Texo is thinking…", THINKING_FRAMES[phase as usize]);
+            let mut label = Line::styled(
+                format!("{} Texo is thinking…  ", THINKING_FRAMES[phase as usize]),
+                theme::text().fg(theme::ACCENT),
+            );
+            label.extend(theme::shortcuts(&[("Esc", "cancel")]).spans);
 
             frame.render_widget(
-                Paragraph::new(label).style(theme::text().fg(theme::ACCENT)),
+                Paragraph::new(label),
                 activity.inner(Margin::new(0, THINKING_VERTICAL_PADDING)),
             );
         }
@@ -181,12 +183,11 @@ impl Assistant {
             }
         }
 
-        let [input_box, model] = composer_rows(composer);
+        let [input, model] = composer_rows(composer);
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::BUTTON)),
-            input_box,
+            input,
         );
-        let [input, send] = composer_layout_from_row(input_box);
         frame.render_widget(
             Paragraph::new(format!(" {}", self.model_label())).style(theme::muted()),
             model,
@@ -203,24 +204,19 @@ impl Assistant {
             Paragraph::new("› ").style(Style::default().fg(theme::TEAL).bg(theme::BUTTON)),
             prompt,
         );
-        frame.render_widget(
-            Paragraph::new(if self.is_running() {
-                "[cancel]"
-            } else {
-                "[send]"
-            })
-            .right_aligned()
-            .style(theme::muted().bg(theme::BUTTON)),
-            send,
-        );
     }
 
     pub(super) fn draw_history(&mut self, frame: &mut Frame, area: Rect) {
         if area.is_empty() {
             return;
         }
+
         if self.messages.is_empty() {
-            let introduction = "Ask Texo to refine the open resume.\nReview proposed edits before accepting; Ctrl+S saves accepted text.";
+            let introduction = vec![
+                Line::from("Ask Texo to refine the open resume."),
+                Line::from("Review proposed edits before accepting."),
+                theme::shortcuts(&[("Ctrl+S", "save accepted text")]),
+            ];
             frame.render_widget(Paragraph::new(introduction).style(theme::muted()), area);
             return;
         }
@@ -253,7 +249,7 @@ impl Assistant {
         }
     }
 
-    fn composer_layout(&self, area: Rect) -> [Rect; 2] {
+    fn composer_layout(&self, area: Rect) -> Rect {
         let inner = area.inner(Margin::new(theme::PANEL_PADDING, 1));
         let [_, composer] = Layout::vertical([
             Constraint::Min(0),
@@ -261,12 +257,11 @@ impl Assistant {
         ])
         .areas(inner);
 
-        composer_layout_from_row(composer_rows(composer)[0])
+        composer_rows(composer)[0]
     }
 
     fn composer_height(&self, inner: Rect) -> u16 {
-        let [input, _] = composer_layout_from_row(inner);
-        let width = input_block().inner(input).width;
+        let width = input_block().inner(inner).width;
         let reserved = HEADER_HEIGHT
             + HEADER_GAP
             + self.activity_height()
@@ -314,13 +309,6 @@ impl Assistant {
 
 fn composer_rows(area: Rect) -> [Rect; 2] {
     Layout::vertical([Constraint::Min(0), Constraint::Length(MODEL_LABEL_HEIGHT)]).areas(area)
-}
-
-fn composer_layout_from_row(area: Rect) -> [Rect; 2] {
-    let [input, button_column] =
-        Layout::horizontal([Constraint::Min(1), Constraint::Length(SEND_WIDTH)]).areas(area);
-    let send = Rect::new(button_column.x, button_column.y + 1, button_column.width, 1);
-    [input, send]
 }
 
 fn input_block() -> Block<'static> {

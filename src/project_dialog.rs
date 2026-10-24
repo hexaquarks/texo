@@ -172,7 +172,11 @@ impl ProjectDialog {
             error,
         );
         frame.render_widget(
-            Paragraph::new("Enter confirm · Tab field · Esc cancel").style(theme::muted()),
+            Paragraph::new(theme::shortcuts(&[
+                ("Enter", "confirm"),
+                ("Tab", "field"),
+                ("Esc", "cancel"),
+            ])),
             help,
         );
     }
