@@ -191,3 +191,72 @@ fn layout_renders_both_panes_and_handles_small_terminals() -> anyhow::Result<()>
     assert!(!text.contains("Resize to at least"));
     Ok(())
 }
+
+#[test]
+#[ignore = "requires Poppler (pdfinfo and pdftoppm) on PATH"]
+fn settings_do_not_consume_the_first_kitty_upload() -> anyhow::Result<()> {
+    use ratatui::{backend::Backend, buffer::Buffer};
+    use ratatui_image::picker::{Picker, ProtocolType};
+    use std::sync::atomic::AtomicBool;
+
+    const COVERED_FRAME_DURATION: Duration = Duration::from_secs(2);
+    const PREVIEW_READY_TIMEOUT: Duration = Duration::from_secs(5);
+    const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(5);
+    const KITTY_IMAGE_PLACEHOLDER: char = '\u{10eeee}';
+
+    let (_directory, mut app) = application()?;
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Kitty);
+    app.session.preview = Preview::with_picker(picker);
+    app.session.preview.set_pages(texo::pdf::PdfPages::render(
+        std::path::Path::new("tests/fixtures/two-pages.pdf"),
+        &AtomicBool::new(false),
+    )?)?;
+    app.focus = Focus::Preview;
+    app.open_settings();
+
+    // This small screen is fully covered by settings. Give the background image
+    // worker time to finish while the dialog owns the frame.
+    let mut terminal = Terminal::new(TestBackend::new(40, 16))?;
+    let covered_until = std::time::Instant::now() + COVERED_FRAME_DURATION;
+    while std::time::Instant::now() < covered_until {
+        terminal.draw(|frame| app.draw(frame))?;
+        std::thread::sleep(WORKER_POLL_INTERVAL);
+    }
+
+    app.settings = None;
+    let deadline = std::time::Instant::now() + PREVIEW_READY_TIMEOUT;
+    loop {
+        terminal.draw(|frame| app.draw(frame))?;
+        let frame: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        if frame.contains(KITTY_IMAGE_PLACEHOLDER) {
+            let buffer = terminal.backend().buffer();
+            let blank = Buffer::empty(buffer.area);
+            let mut bytes = Vec::new();
+            ratatui::backend::CrosstermBackend::new(&mut bytes)
+                .draw(blank.diff(buffer).into_iter())?;
+            let wire = String::from_utf8(bytes)?;
+
+            assert!(
+                wire.contains("a=T"),
+                "The first visible image must upload its pixels, not only placeholders"
+            );
+            break;
+        }
+
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Preview did not appear"
+        );
+        std::thread::sleep(WORKER_POLL_INTERVAL);
+    }
+
+    Ok(())
+}

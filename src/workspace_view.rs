@@ -219,7 +219,9 @@ impl App {
         let is_loading = loading.is_some();
         if let Some(job) = loading {
             Preview::draw_loading(frame, body, job.elapsed());
-        } else {
+        } else if !self.overlay_open() {
+            // Kitty uploads only on its first draw. A modal must not overwrite that
+            // upload in Ratatui's buffer before it reaches the terminal.
             self.active_preview().draw(frame, body);
         }
 
