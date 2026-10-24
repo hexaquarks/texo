@@ -287,6 +287,7 @@ fn payload(profile: &Profile, context: &TurnContext<'_>) -> Value {
             "model": profile.model,
             "input": prompt,
             "store": false,
+            "reasoning": {"effort": "low"},
             "max_output_tokens": MAX_OUTPUT_TOKENS,
             "text": {
                 "format": {

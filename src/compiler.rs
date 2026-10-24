@@ -38,6 +38,15 @@ pub fn render_draft(
         .parent()
         .context("The document needs a parent directory")?;
     let build = sandbox::build(&source, directory, cancelled)?;
+
+    render_compiled(source, build, cancelled)
+}
+
+pub fn render_compiled(
+    source: String,
+    build: sandbox::CompiledDraft,
+    cancelled: &AtomicBool,
+) -> Result<RenderedDocument> {
     let pages = PdfPages::render(&build.pdf_path, cancelled)?;
     ensure!(!cancelled.load(Ordering::Relaxed), "Render cancelled");
 
