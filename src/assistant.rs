@@ -19,6 +19,7 @@ use texo::{
 use crate::assistant_job::{AssistantJob, ConversationMessage};
 
 const INPUT_HEIGHT: u16 = 3;
+const CHAT_TITLE_WIDTH: u16 = 13;
 const SEND_WIDTH: u16 = 8;
 const MODEL_LABEL_HEIGHT: u16 = 1;
 const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT + MODEL_LABEL_HEIGHT;
@@ -359,7 +360,23 @@ impl Assistant {
         composer_layout(area)[1]
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+    pub fn maximize_button(area: Rect) -> Rect {
+        let inner = area.inner(Margin::new(theme::PANEL_PADDING, 1));
+        let [_, button] =
+            Layout::horizontal([Constraint::Length(CHAT_TITLE_WIDTH), Constraint::Min(0)]).areas(
+                Rect::new(inner.x, inner.y, inner.width, inner.height.min(1)),
+            );
+        button
+    }
+
+    pub fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        maximized: bool,
+        prefix: &str,
+    ) {
         if let Some(login) = &self.login
             && !login.is_loading_models()
         {
@@ -388,17 +405,14 @@ impl Assistant {
             Constraint::Length(COMPOSER_HEIGHT),
         ])
         .areas(inner);
-        let hint = if self.is_running() {
-            "Esc cancel"
-        } else if self.proposal().is_some() {
-            "Not applied · Actions to review"
-        } else if focused {
-            "Enter send · Alt+Enter newline"
+        let hint = if maximized {
+            format!("Maximized · {prefix} u Restore")
         } else {
-            ""
+            format!("Split · {prefix} u Maximize")
         };
         let [label, hint_area] =
-            Layout::horizontal([Constraint::Length(13), Constraint::Min(0)]).areas(header);
+            Layout::horizontal([Constraint::Length(CHAT_TITLE_WIDTH), Constraint::Min(0)])
+                .areas(header);
         frame.render_widget(
             Paragraph::new("texo / chat").style(theme::pane_title(focused)),
             label,
@@ -678,7 +692,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 20)).unwrap();
         terminal
-            .draw(|frame| assistant.draw(frame, frame.area(), true))
+            .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+x"))
             .unwrap();
         let text: String = terminal
             .backend()
@@ -704,7 +718,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
         terminal
-            .draw(|frame| assistant.draw(frame, area, true))
+            .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
             .unwrap();
         let input = assistant.input_area(area);
         let buffer = terminal.backend().buffer();
@@ -719,7 +733,7 @@ mod tests {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 10)).unwrap();
             terminal
-                .draw(|frame| assistant.draw(frame, frame.area(), true))
+                .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+x"))
                 .unwrap();
         }
     }
