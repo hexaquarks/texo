@@ -24,6 +24,10 @@ const MODEL_LABEL_HEIGHT: u16 = 1;
 const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT + MODEL_LABEL_HEIGHT;
 const PROMPT_WIDTH: u16 = 2;
 const SCROLL_LINES: u16 = 3;
+const THINKING_VERTICAL_PADDING: u16 = 1;
+const THINKING_HEIGHT: u16 = 1 + THINKING_VERTICAL_PADDING * 2;
+const THINKING_FRAME_MS: u128 = 100;
+const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const CHAT_COMMANDS: [(&str, &str); 3] = [
     ("/login", "Connect or switch an assistant provider"),
     ("/model", "Choose a model for the current provider"),
@@ -269,14 +273,9 @@ impl Assistant {
         }
     }
 
-    /// Attach the editor's actual result so both the user and future requests see what happened.
+    /// Append the review outcome without rewriting the assistant's earlier summary.
     pub fn report_edit_result(&mut self, outcome: &str) {
-        if let Some(message) = self.messages.last_mut()
-            && message.role == "assistant"
-            && !message.error
-        {
-            message.content = format!("{outcome}\n\n{}", message.content);
-        }
+        self.notice(outcome.to_owned(), false);
     }
 
     pub fn cancel(&mut self) {
@@ -360,16 +359,22 @@ impl Assistant {
             horizontal: theme::PANEL_PADDING,
             vertical: 1,
         });
-        let [header, _, history, _, composer] = Layout::vertical([
+        let activity_height = if self.is_running() {
+            THINKING_HEIGHT
+        } else {
+            1
+        };
+
+        let [header, _, history, activity, composer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(activity_height),
             Constraint::Length(COMPOSER_HEIGHT),
         ])
         .areas(inner);
         let hint = if self.is_running() {
-            "Thinking…  Esc cancel"
+            "Esc cancel"
         } else if self.proposal().is_some() {
             "Not applied · Actions to review"
         } else if focused {
@@ -390,6 +395,18 @@ impl Assistant {
             hint_area,
         );
         self.draw_history(frame, history);
+
+        if let Some(job) = &self.job {
+            let phase =
+                (job.elapsed().as_millis() / THINKING_FRAME_MS) % THINKING_FRAMES.len() as u128;
+            let label = format!("{} Texo is thinking…", THINKING_FRAMES[phase as usize]);
+
+            frame.render_widget(
+                Paragraph::new(label).style(theme::text().fg(theme::ACCENT)),
+                activity.inner(Margin::new(0, THINKING_VERTICAL_PADDING)),
+            );
+        }
+
         if focused {
             let choices = self.command_matches();
             if !choices.is_empty() {
@@ -468,7 +485,7 @@ impl Assistant {
             return;
         }
         if self.messages.is_empty() {
-            let introduction = "Ask Texo to refine the open resume.\nRequested edits update the editor; Ctrl+S saves them.";
+            let introduction = "Ask Texo to refine the open resume.\nReview proposed edits before accepting; Ctrl+S saves accepted text.";
             frame.render_widget(Paragraph::new(introduction).style(theme::muted()), area);
             return;
         }
@@ -575,6 +592,26 @@ fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_confirmation_is_appended_and_scrolls_into_view() {
+        let mut assistant = Assistant::new();
+        assistant.notice("Earlier summary".into(), false);
+        assistant.notice("Build failed".into(), true);
+        assistant.scroll_from_bottom = SCROLL_LINES;
+
+        assistant.report_edit_result("Proposal discarded; no changes accepted.");
+
+        assert_eq!(assistant.messages.len(), 3);
+        assert_eq!(assistant.messages[0].content, "Earlier summary");
+        assert_eq!(assistant.messages[1].content, "Build failed");
+        assert_eq!(
+            assistant.messages[2].content,
+            "Proposal discarded; no changes accepted."
+        );
+        assert!(!assistant.messages[2].error);
+        assert_eq!(assistant.scroll_from_bottom, 0);
+    }
 
     #[test]
     fn slash_commands_complete_dynamically_and_never_enter_model_history() {
