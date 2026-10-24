@@ -111,6 +111,33 @@ impl Settings {
     }
 }
 
+/// Ask macOS for a text editor rather than relying on a .toml file association.
+pub fn open_editor(path: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = text_editor_command(path).status()?;
+        ensure!(status.success(), "Could not launch the text editor");
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        open::that_detached(path).map_err(Into::into)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn text_editor_command(path: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new("/usr/bin/open");
+    command
+        .arg("-t")
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command
+}
+
 fn config_path(home: &Path, windows_config: &Path, xdg: Option<&std::ffi::OsStr>) -> PathBuf {
     if cfg!(windows) {
         return windows_config.join("texo/config.toml");
@@ -142,6 +169,17 @@ pub fn resume_folder(input: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn config_opener_requests_a_text_editor_and_keeps_paths_as_one_argument() {
+        let path = Path::new("/tmp/folder with spaces/config.toml");
+        let command = text_editor_command(path);
+        let arguments: Vec<_> = command.get_args().collect();
+
+        assert_eq!(command.get_program(), "/usr/bin/open");
+        assert_eq!(arguments, [std::ffi::OsStr::new("-t"), path.as_os_str()]);
+    }
 
     #[test]
     fn config_paths_use_xdg_or_home_on_unix() {

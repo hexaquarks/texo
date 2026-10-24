@@ -616,14 +616,26 @@ impl App {
             && matches!(key.code, KeyCode::Char('o' | 'r'))
         {
             let result = if key.code == KeyCode::Char('o') {
-                self.open_config_with(|path| open::that_detached(path).map_err(Into::into))
+                self.open_config_with(crate::config::open_editor)
             } else {
                 self.reload_settings()
             };
-            if let Err(error) = result
-                && let Some(dialog) = &mut self.settings
-            {
-                dialog.error = error.to_string();
+            if let Some(dialog) = &mut self.settings {
+                match result {
+                    Ok(()) => {
+                        dialog.error.clear();
+                        dialog.notice = if key.code == KeyCode::Char('o') {
+                            "Opened config in your text editor."
+                        } else {
+                            "Configuration reloaded."
+                        }
+                        .into();
+                    }
+                    Err(error) => {
+                        dialog.notice.clear();
+                        dialog.error = error.to_string();
+                    }
+                }
             }
             return;
         }
@@ -663,7 +675,9 @@ impl App {
         open_file: impl FnOnce(&std::path::Path) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
         Settings::ensure_file(&self.settings_path)?;
-        open_file(&self.settings_path)
+        open_file(&self.settings_path).map_err(|_| {
+            anyhow::anyhow!("Could not open config. Open the path above in a text editor.")
+        })
     }
 
     fn reload_settings(&mut self) -> anyhow::Result<()> {
@@ -673,7 +687,13 @@ impl App {
             .as_deref()
             .unwrap_or(std::path::Path::new("~/resumes"));
         let root = crate::config::resume_folder(&folder.to_string_lossy())?;
-        self.replace_workspace(root, settings, false)
+        let keep_settings_open = self.settings.is_some();
+        self.replace_workspace(root, settings, false)?;
+
+        if keep_settings_open {
+            self.open_settings();
+        }
+        Ok(())
     }
 
     fn apply_settings(&mut self) -> anyhow::Result<()> {
@@ -1476,6 +1496,75 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    fn reload_shortcut_keeps_settings_open_for_same_new_and_invalid_folders() -> anyhow::Result<()>
+    {
+        let (directory, mut app) = application()?;
+        app.settings_path = directory.path().join("config.toml");
+        let mut settings = Settings {
+            resume_folder: Some(directory.path().to_path_buf()),
+            ..Settings::default()
+        };
+        settings.save(&app.settings_path)?;
+        app.editor.text.insert_str("unsaved text");
+        let source = app.editor.source();
+        app.open_settings();
+        let area = Rect::new(0, 0, 160, 45);
+        let reload = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+
+        app.settings.as_mut().unwrap().error = "Previous error".into();
+        assert!(!app.handle_event(reload.clone(), area));
+        let dialog = app.settings.as_ref().expect("Settings stays open");
+        assert_eq!(dialog.notice, "Configuration reloaded.");
+        assert!(dialog.error.is_empty());
+        assert_eq!(app.editor.source(), source);
+
+        let target = directory.path().join("new resumes");
+        std::fs::create_dir(&target)?;
+        settings.resume_folder = Some(target.clone());
+        settings.keybindings.prefix = "ctrl+a".into();
+        settings.save(&app.settings_path)?;
+        assert!(!app.handle_event(reload.clone(), area));
+        let dialog = app
+            .settings
+            .as_ref()
+            .expect("Settings stays open after switching folders");
+        assert_eq!(
+            dialog.value(),
+            crate::workspace::display_path(&target.canonicalize()?)
+        );
+        assert_eq!(dialog.prefix_label, Prefix::new("ctrl+a")?.label());
+        assert_eq!(dialog.notice, "Configuration reloaded.");
+
+        let saved_value = dialog.value();
+        std::fs::write(&app.settings_path, "broken TOML")?;
+        assert!(!app.handle_event(reload, area));
+        let dialog = app.settings.as_ref().expect("Settings stays open on error");
+        assert!(!dialog.error.is_empty());
+        assert!(dialog.notice.is_empty());
+        assert_eq!(dialog.value(), saved_value);
+        assert_eq!(app.projects.root(), target.canonicalize()?);
+        Ok(())
+    }
+
+    #[test]
+    fn open_config_failure_has_a_concise_error_and_preserves_the_dialog() -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        app.settings_path = directory.path().join("config.toml");
+        app.open_settings();
+        let error = app
+            .open_config_with(|_| anyhow::bail!("Launcher details and exit status"))
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Could not open config. Open the path above in a text editor."
+        );
+        assert!(app.settings.is_some());
+        assert!(app.settings_path.is_file());
+        Ok(())
     }
 
     #[test]

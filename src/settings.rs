@@ -14,6 +14,7 @@ const DIALOG_HEIGHT: u16 = 17;
 pub struct SettingsDialog {
     pub input: TextArea<'static>,
     pub error: String,
+    pub notice: String,
     pub config_path: PathBuf,
     pub prefix_label: String,
 }
@@ -28,6 +29,7 @@ impl SettingsDialog {
         Self {
             input,
             error: String::new(),
+            notice: String::new(),
             config_path: config_path.to_path_buf(),
             prefix_label,
         }
@@ -92,14 +94,19 @@ impl SettingsDialog {
             Paragraph::new("Ctrl+O Open config · Ctrl+R Reload").style(theme::pane_title(true)),
             actions,
         );
+        let (message, color) = if self.error.is_empty() {
+            (self.notice.as_str(), theme::ACCENT)
+        } else {
+            (self.error.as_str(), theme::ERROR)
+        };
         frame.render_widget(
-            Paragraph::new(self.error.as_str())
-                .style(theme::text().fg(theme::ERROR))
+            Paragraph::new(message)
+                .style(theme::text().fg(color))
                 .wrap(Wrap { trim: false }),
             error,
         );
         frame.render_widget(
-            Paragraph::new("Enter apply · Esc cancel").style(theme::muted()),
+            Paragraph::new("Enter apply · Esc close").style(theme::muted()),
             hint,
         );
     }
