@@ -7,7 +7,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
 };
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{TextArea, WrapMode};
 use texo::{
     auth::{Keychain, Profile, Provider, disconnect},
     theme,
@@ -328,6 +328,7 @@ impl Assistant {
 
 fn new_input() -> TextArea<'static> {
     let mut input = TextArea::default();
+    input.set_wrap_mode(WrapMode::WordOrGlyph);
     input.set_style(theme::text().bg(theme::BUTTON));
     input.set_cursor_line_style(Style::default());
     input.set_placeholder_text("Ask Texo...");

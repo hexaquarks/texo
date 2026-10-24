@@ -1,3 +1,4 @@
+use super::chat_view::MAX_INPUT_ROWS;
 use super::*;
 
 #[test]
@@ -179,4 +180,176 @@ fn submit_empty_message_does_not_launch_cli() {
             .is_err()
     );
     assert!(!assistant.is_running());
+}
+
+fn composer_content(assistant: &Assistant, area: Rect) -> Rect {
+    assistant
+        .input
+        .block()
+        .unwrap()
+        .inner(assistant.input_area(area))
+}
+
+fn composer_text(
+    assistant: &Assistant,
+    terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    area: Rect,
+) -> String {
+    let content = composer_content(assistant, area);
+    let mut text = String::new();
+
+    for row in content.y..content.bottom() {
+        for column in content.x..content.right() {
+            text.push_str(terminal.backend().buffer()[(column, row)].symbol());
+        }
+    }
+
+    text
+}
+
+#[test]
+fn composer_wraps_grows_and_shrinks_without_changing_the_prompt_or_undo() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let area = Rect::new(0, 0, 70, 20);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    let mut assistant = Assistant::new();
+    terminal
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .unwrap();
+    let empty_height = assistant.input_area(area).height;
+    let prompt = "Please improve my backend experience while preserving all dates, technologies, and achievements.";
+
+    assistant.input.insert_str(prompt);
+    terminal
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .unwrap();
+
+    assert!(assistant.input_area(area).height > empty_height);
+    assert_eq!(assistant.input.lines(), &[prompt]);
+    assert_eq!(assistant.input.scroll_offset().1, 0);
+    let rendered = composer_text(&assistant, &terminal, area);
+    let non_whitespace = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+    };
+    assert_eq!(non_whitespace(&rendered), non_whitespace(prompt));
+
+    let send = assistant.send_button(area);
+    assert_eq!(send.y, assistant.input_area(area).y + 1);
+    let button: String = (send.x..send.right())
+        .map(|column| terminal.backend().buffer()[(column, send.y)].symbol())
+        .collect();
+    assert!(button.contains("[send]"));
+
+    assistant.input.undo();
+    terminal
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .unwrap();
+    assert_eq!(assistant.input.lines(), &[""]);
+    assert_eq!(assistant.input_area(area).height, empty_height);
+}
+
+#[test]
+fn composer_bounds_long_pastes_and_keeps_the_cursor_visible_after_resize() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut assistant = Assistant::new();
+    let prompt = format!("START {} END", "unbrokenword".repeat(1000));
+    assistant.input.insert_str(&prompt);
+    let area = Rect::new(0, 0, 100, 30);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .unwrap();
+
+    assert_eq!(composer_content(&assistant, area).height, MAX_INPUT_ROWS);
+    assert!(assistant.input.scroll_offset().0 > 0);
+    assert_eq!(assistant.input.scroll_offset().1, 0);
+    assert!(composer_text(&assistant, &terminal, area).contains("END"));
+
+    for (width, height) in [(30, 12), (15, 10), (8, 10), (100, 30)] {
+        let area = Rect::new(0, 0, width, height);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+            .unwrap();
+        assert_eq!(assistant.input.lines(), &[prompt.as_str()]);
+        assert_eq!(assistant.input.scroll_offset().1, 0);
+    }
+}
+
+#[test]
+fn wrapped_composer_clicks_and_navigation_follow_visual_rows() {
+    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui_textarea::CursorMove;
+
+    let area = Rect::new(0, 0, 70, 20);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    let mut assistant = Assistant::new();
+    assistant.input.insert_str("界".repeat(60));
+    terminal
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .unwrap();
+    let content = composer_content(&assistant, area);
+    let second_row_character = usize::from(content.width / 2) + 1;
+
+    assert!(assistant.click(area, content.x + 2, content.y + 1));
+    assert_eq!(assistant.input.cursor(), (0, second_row_character));
+    assistant
+        .input
+        .input(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(assistant.input.cursor(), (0, 1));
+    assistant
+        .input
+        .input(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(assistant.input.cursor(), (0, second_row_character));
+
+    assistant.input.move_cursor(CursorMove::Top);
+    assistant.input.select_all();
+    assistant.input.insert_str("🙂e\u{301}".repeat(30));
+    terminal
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .unwrap();
+    let symbols: Vec<_> = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(symbols.contains(&"🙂"));
+    assert!(symbols.contains(&"e\u{301}"));
+    assert!(!symbols.contains(&"\u{301}"));
+}
+
+#[test]
+fn composer_preserves_explicit_newlines_and_shrinks_after_clear() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let area = Rect::new(0, 0, 70, 20);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    let mut assistant = Assistant::new();
+    assistant
+        .input
+        .insert_str("First line\nSecond line\n\nFourth line");
+    terminal
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .unwrap();
+    assert_eq!(composer_content(&assistant, area).height, 4);
+    assert_eq!(
+        assistant.input.lines(),
+        &["First line", "Second line", "", "Fourth line"]
+    );
+
+    assistant.clear_input();
+    terminal
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .unwrap();
+    assert_eq!(composer_content(&assistant, area).height, 1);
+    assert_eq!(
+        assistant.input.wrap_mode(),
+        ratatui_textarea::WrapMode::WordOrGlyph
+    );
 }
