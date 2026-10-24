@@ -131,22 +131,11 @@ impl Projects {
         } else {
             resumes.union(files)
         };
-        frame.render_widget(
-            Block::bordered()
-                .style(theme::text())
-                .border_style(Style::default().fg(theme::DIVIDER)),
-            sidebar,
-        );
+        frame.render_widget(Block::default().style(theme::text()), sidebar);
 
         if !files.is_empty() {
-            // One shared rule joins the outer border instead of stacking two pane edges.
             let divider = Block::default()
-                .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-                .border_set(ratatui::symbols::border::Set {
-                    top_left: "├",
-                    top_right: "┤",
-                    ..ratatui::symbols::border::PLAIN
-                })
+                .borders(Borders::TOP)
                 .border_style(Style::default().fg(theme::DIVIDER));
             frame.render_widget(divider, Rect { height: 1, ..files });
         }
@@ -288,10 +277,10 @@ mod tests {
             buffer[(CONTENT_INSET, list_area(resumes).y)].bg,
             theme::SELECTION
         );
-        assert_eq!(buffer[(0, 0)].fg, theme::DIVIDER);
-        assert_eq!(buffer[(0, files.y)].symbol(), "├");
-        assert_eq!(buffer[(23, files.y)].symbol(), "┤");
-        assert_eq!(buffer[(0, files.y - 1)].symbol(), "│");
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+        assert_eq!(buffer[(0, files.y)].symbol(), "─");
+        assert_eq!(buffer[(23, files.y)].symbol(), "─");
+        assert_eq!(buffer[(0, files.y - 1)].symbol(), " ");
         assert_eq!(buffer[(CONTENT_INSET, list_area(resumes).y)].symbol(), " ");
         assert_eq!(
             buffer[(CONTENT_INSET, list_area(resumes).y + ITEM_HEIGHT - 1)].symbol(),
@@ -304,7 +293,7 @@ mod tests {
             buffer[(CONTENT_INSET, list_area(resumes).y)].bg,
             theme::SELECTION
         );
-        assert_eq!(buffer[(0, 0)].fg, theme::DIVIDER);
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
         assert!(projects.select_at(resumes, list_area(resumes).y + ITEM_HEIGHT));
         assert_ne!(projects.selected_path(), Some(active.document()));
         Ok(())
