@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Margin, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, List, ListItem, ListState, Paragraph},
 };
 use texo::theme;
 
@@ -14,7 +14,7 @@ use crate::resume_project::{self, Catalog, Project};
 
 const HEADER_HEIGHT: u16 = 4;
 const CONTENT_INSET: u16 = 1;
-const ITEM_HEIGHT: u16 = 2;
+const ITEM_HEIGHT: u16 = 1;
 
 pub struct Projects {
     root: PathBuf,
@@ -133,13 +133,6 @@ impl Projects {
         };
         frame.render_widget(Block::default().style(theme::text()), sidebar);
 
-        if !files.is_empty() {
-            let divider = Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(theme::DIVIDER));
-            frame.render_widget(divider, Rect { height: 1, ..files });
-        }
-
         let inner = resumes.inner(Margin::new(CONTENT_INSET, 1));
         let header = Rect {
             height: HEADER_HEIGHT.min(inner.height),
@@ -168,16 +161,13 @@ impl Projects {
             .iter()
             .map(|project| {
                 let active = project.document() == active_file;
-                ListItem::new(vec![
-                    Line::from(vec![
-                        Span::styled(
-                            if active { " · " } else { "   " },
-                            Style::default().fg(theme::TEAL),
-                        ),
-                        Span::raw(project.manifest.name.clone()),
-                    ]),
-                    Line::default(),
-                ])
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        if active { " · " } else { "   " },
+                        Style::default().fg(theme::TEAL),
+                    ),
+                    Span::raw(project.manifest.name.clone()),
+                ]))
             })
             .collect();
         frame.render_stateful_widget(
@@ -219,11 +209,8 @@ impl Projects {
             && files_inner.height > 1
         {
             frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from(format!(" · {}", project.manifest.entrypoint.display())),
-                    Line::default(),
-                ])
-                .style(theme::text().bg(theme::SELECTION)),
+                Paragraph::new(format!(" · {}", project.manifest.entrypoint.display()))
+                    .style(theme::text().bg(theme::SELECTION)),
                 Rect::new(
                     files_inner.x,
                     files_inner.y + 1,
@@ -278,13 +265,17 @@ mod tests {
             theme::SELECTION
         );
         assert_eq!(buffer[(0, 0)].symbol(), " ");
-        assert_eq!(buffer[(0, files.y)].symbol(), "─");
-        assert_eq!(buffer[(23, files.y)].symbol(), "─");
+        assert_eq!(buffer[(0, files.y)].symbol(), " ");
+        assert_eq!(buffer[(23, files.y)].symbol(), " ");
         assert_eq!(buffer[(0, files.y - 1)].symbol(), " ");
         assert_eq!(buffer[(CONTENT_INSET, list_area(resumes).y)].symbol(), " ");
         assert_eq!(
-            buffer[(CONTENT_INSET, list_area(resumes).y + ITEM_HEIGHT - 1)].symbol(),
-            " "
+            buffer[(CONTENT_INSET + 3, list_area(resumes).y)].symbol(),
+            "A"
+        );
+        assert_ne!(
+            buffer[(CONTENT_INSET, list_area(resumes).y + ITEM_HEIGHT)].bg,
+            theme::SELECTION
         );
 
         terminal.draw(|frame| projects.draw(frame, resumes, files, &active.document(), true))?;
