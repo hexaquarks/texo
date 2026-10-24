@@ -6,13 +6,15 @@ use ratatui::{
     layout::{Margin, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use texo::theme;
 
 use crate::resume_project::{self, Catalog, Project};
 
 const HEADER_HEIGHT: u16 = 4;
+const CONTENT_INSET: u16 = 2;
+const ITEM_HEIGHT: u16 = 3;
 
 pub struct Projects {
     root: PathBuf,
@@ -98,7 +100,7 @@ impl Projects {
         if row < content.y || row >= content.bottom() {
             return false;
         }
-        let index = usize::from(row - content.y) + self.state.offset();
+        let index = usize::from((row - content.y) / ITEM_HEIGHT) + self.state.offset();
         if index >= self.catalog.projects.len() {
             return false;
         }
@@ -124,16 +126,32 @@ impl Projects {
         active_file: &Path,
         focused: bool,
     ) {
-        let resumes_block = Block::bordered()
-            .style(theme::text())
-            .border_style(border_style(focused && !self.files_focused));
-        let files_block = Block::bordered()
-            .style(theme::text())
-            .border_style(border_style(focused && self.files_focused));
-        frame.render_widget(resumes_block, resumes);
-        frame.render_widget(files_block, files);
+        let sidebar = if files.is_empty() {
+            resumes
+        } else {
+            resumes.union(files)
+        };
+        frame.render_widget(
+            Block::bordered()
+                .style(theme::text())
+                .border_style(border_style(focused)),
+            sidebar,
+        );
 
-        let inner = resumes.inner(Margin::new(1, 1));
+        if !files.is_empty() {
+            // One shared rule joins the outer border instead of stacking two pane edges.
+            let divider = Block::default()
+                .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                .border_set(ratatui::symbols::border::Set {
+                    top_left: "├",
+                    top_right: "┤",
+                    ..ratatui::symbols::border::PLAIN
+                })
+                .border_style(border_style(focused));
+            frame.render_widget(divider, Rect { height: 1, ..files });
+        }
+
+        let inner = resumes.inner(Margin::new(CONTENT_INSET, 1));
         let header = Rect {
             height: HEADER_HEIGHT.min(inner.height),
             ..inner
@@ -146,7 +164,7 @@ impl Projects {
                     theme::muted(),
                 ),
                 Line::default(),
-                Line::styled("RESUMES", theme::muted()),
+                Line::styled("RESUMES", theme::pane_title(focused && !self.files_focused)),
             ]),
             header,
         );
@@ -161,13 +179,17 @@ impl Projects {
             .iter()
             .map(|project| {
                 let active = project.document() == active_file;
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        if active { " · " } else { "   " },
-                        Style::default().fg(theme::TEAL),
-                    ),
-                    Span::raw(project.manifest.name.clone()),
-                ]))
+                ListItem::new(vec![
+                    Line::default(),
+                    Line::from(vec![
+                        Span::styled(
+                            if active { " · " } else { "   " },
+                            Style::default().fg(theme::TEAL),
+                        ),
+                        Span::raw(project.manifest.name.clone()),
+                    ]),
+                    Line::default(),
+                ])
             })
             .collect();
         frame.render_stateful_widget(
@@ -192,13 +214,14 @@ impl Projects {
             );
         }
 
-        let files_inner = files.inner(Margin::new(1, 1));
+        let files_inner = files.inner(Margin::new(CONTENT_INSET, 1));
         let project = self.project_for(active_file);
         let name = project
             .map(|project| project.manifest.name.as_str())
             .unwrap_or("");
         frame.render_widget(
-            Paragraph::new(format!("FILES  {name}")).style(theme::muted()),
+            Paragraph::new(format!("FILES  {name}"))
+                .style(theme::pane_title(focused && self.files_focused)),
             Rect {
                 height: files_inner.height.min(1),
                 ..files_inner
@@ -208,16 +231,25 @@ impl Projects {
             && files_inner.height > 1
         {
             frame.render_widget(
-                Paragraph::new(format!(" · {}", project.manifest.entrypoint.display()))
-                    .style(theme::text().bg(theme::SELECTION)),
-                Rect::new(files_inner.x, files_inner.y + 1, files_inner.width, 1),
+                Paragraph::new(vec![
+                    Line::default(),
+                    Line::from(format!(" · {}", project.manifest.entrypoint.display())),
+                    Line::default(),
+                ])
+                .style(theme::text().bg(theme::SELECTION)),
+                Rect::new(
+                    files_inner.x,
+                    files_inner.y + 1,
+                    files_inner.width,
+                    ITEM_HEIGHT.min(files_inner.height - 1),
+                ),
             );
         }
     }
 }
 
 fn list_area(area: Rect) -> Rect {
-    let inner = area.inner(Margin::new(1, 1));
+    let inner = area.inner(Margin::new(CONTENT_INSET, 1));
     let header = HEADER_HEIGHT.min(inner.height);
     Rect {
         y: inner.y + header,
@@ -262,14 +294,28 @@ mod tests {
         assert!(text.contains("RESUMES") && text.contains("FILES  AI engineer"));
         assert!(text.contains("main.tex"));
         assert!(!text.contains("notes.tex") && !text.contains("main.pdf"));
-        assert_eq!(buffer[(1, list_area(resumes).y)].bg, theme::SELECTION);
+        assert_eq!(
+            buffer[(CONTENT_INSET, list_area(resumes).y)].bg,
+            theme::SELECTION
+        );
         assert_eq!(buffer[(0, 0)].fg, theme::DIVIDER);
+        assert_eq!(buffer[(0, files.y)].symbol(), "├");
+        assert_eq!(buffer[(23, files.y)].symbol(), "┤");
+        assert_eq!(buffer[(0, files.y - 1)].symbol(), "│");
+        assert_eq!(buffer[(CONTENT_INSET, list_area(resumes).y)].symbol(), " ");
+        assert_eq!(
+            buffer[(CONTENT_INSET, list_area(resumes).y + 2)].symbol(),
+            " "
+        );
 
         terminal.draw(|frame| projects.draw(frame, resumes, files, &active.document(), true))?;
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(1, list_area(resumes).y)].bg, theme::SELECTION);
+        assert_eq!(
+            buffer[(CONTENT_INSET, list_area(resumes).y)].bg,
+            theme::SELECTION
+        );
         assert_eq!(buffer[(0, 0)].fg, theme::ACCENT);
-        assert!(projects.select_at(resumes, list_area(resumes).y + 1));
+        assert!(projects.select_at(resumes, list_area(resumes).y + ITEM_HEIGHT));
         assert_ne!(projects.selected_path(), Some(active.document()));
         Ok(())
     }
