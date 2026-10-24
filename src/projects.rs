@@ -162,12 +162,8 @@ impl Projects {
             .projects
             .iter()
             .map(|project| {
-                let active = project.document() == active_file;
                 ListItem::new(Line::from(vec![
-                    Span::styled(
-                        if active { " ● " } else { " • " },
-                        Style::default().fg(theme::ACCENT),
-                    ),
+                    Span::styled(" • ", Style::default().fg(theme::ACCENT)),
                     Span::raw(project.manifest.name.clone()),
                 ]))
             })
@@ -222,7 +218,7 @@ impl Projects {
             && files_inner.height > entry_offset
         {
             let entry = Line::from(vec![
-                Span::styled(" ● ", Style::default().fg(theme::ACCENT)),
+                Span::styled(" • ", Style::default().fg(theme::ACCENT)),
                 Span::raw(project.manifest.entrypoint.display().to_string()),
             ]);
             frame.render_widget(
@@ -289,7 +285,7 @@ mod tests {
         assert!(rows[usize::from(files.y + 2)].trim().is_empty());
         assert_eq!(
             buffer[(CONTENT_INSET + 1, list_area(resumes).y)].symbol(),
-            "●"
+            "•"
         );
         assert_eq!(
             buffer[(CONTENT_INSET + 1, list_area(resumes).y)].fg,
