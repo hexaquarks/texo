@@ -21,25 +21,27 @@ pub struct RenderJob {
 
 impl RenderJob {
     pub fn start(source: String, path: PathBuf) -> Result<Self> {
-        Self::spawn(source, path, false)
+        Self::spawn(move |cancelled| compiler::render(source, &path, cancelled))
     }
 
     pub fn draft(source: String, path: PathBuf) -> Result<Self> {
-        Self::spawn(source, path, true)
+        Self::spawn(move |cancelled| compiler::render_draft(source, &path, cancelled))
     }
 
-    fn spawn(source: String, path: PathBuf, draft: bool) -> Result<Self> {
+    pub fn compiled(source: String, build: texo::sandbox::CompiledDraft) -> Result<Self> {
+        Self::spawn(move |cancelled| compiler::render_compiled(source, build, cancelled))
+    }
+
+    fn spawn(
+        render: impl FnOnce(&AtomicBool) -> Result<RenderedDocument> + Send + 'static,
+    ) -> Result<Self> {
         let (sender, result) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
         let worker = thread::Builder::new()
             .name("texo-render".into())
             .spawn(move || {
-                let rendered = if draft {
-                    compiler::render_draft(source, &path, &worker_cancelled)
-                } else {
-                    compiler::render(source, &path, &worker_cancelled)
-                };
+                let rendered = render(&worker_cancelled);
                 let _ = sender.send(rendered);
             })?;
 

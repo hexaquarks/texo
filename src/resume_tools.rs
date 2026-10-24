@@ -19,7 +19,7 @@ pub struct ResumeTools {
     document: String,
     draft: String,
     proposed: bool,
-    compiled: bool,
+    build: Option<crate::sandbox::CompiledDraft>,
     directory: Option<PathBuf>,
 }
 
@@ -29,9 +29,13 @@ impl ResumeTools {
             document,
             draft: source,
             proposed: false,
-            compiled: false,
+            build: None,
             directory: None,
         }
+    }
+
+    pub fn take_build(&mut self) -> Option<crate::sandbox::CompiledDraft> {
+        self.build.take()
     }
 
     pub fn in_directory(mut self, directory: PathBuf) -> Self {
@@ -99,17 +103,18 @@ impl ToolSet for ResumeTools {
                 serde_json::from_value::<NoArguments>(arguments.clone())
                     .map_err(|_| anyhow!("compile_resume accepts no arguments"))?;
 
-                self.compiled = false;
+                self.build = None;
                 let directory = self
                     .directory
                     .as_ref()
                     .ok_or_else(|| anyhow!("No resume folder selected"))?;
 
-                let diagnostics = crate::sandbox::compile(&self.draft, directory, cancelled)?;
+                let build = crate::sandbox::build(&self.draft, directory, cancelled)?;
+                let result = json!({"compiled":true, "diagnostics":build.diagnostics});
 
-                self.compiled = true;
+                self.build = Some(build);
 
-                Ok(json!({"compiled":true, "diagnostics":diagnostics}))
+                Ok(result)
             }
             "read_resume" => {
                 serde_json::from_value::<NoArguments>(arguments.clone())
@@ -137,7 +142,7 @@ impl ToolSet for ResumeTools {
                 self.draft = edit.tex;
                 self.proposed = true;
 
-                self.compiled = false;
+                self.build = None;
 
                 Ok(json!({"staged":true, "saved":false, "bytes":self.draft.len()}))
             }
@@ -148,7 +153,7 @@ impl ToolSet for ResumeTools {
     fn finish(&mut self, mut reply: AssistantReply) -> Result<AssistantReply> {
         if self.proposed {
             ensure!(
-                self.compiled,
+                self.build.is_some(),
                 "Compile the staged draft successfully before completing the edit"
             );
             ensure!(
@@ -179,6 +184,81 @@ mod tests {
         agent::{self, AgentTurn},
         tools::ToolCall,
     };
+
+    #[test]
+    #[ignore = "requires macOS, cached Tectonic, and Poppler"]
+    fn batched_edit_reuses_validated_pdf_and_invalidates_it_on_revision() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let asset = directory.path().join("bullet.tex");
+        std::fs::write(&asset, "Example bullet")?;
+        let source = r"\documentclass{article}\begin{document}\input{bullet}\end{document}";
+        let mut tools = ResumeTools::new("resume.tex".into(), "Original".into())
+            .in_directory(directory.path().to_owned());
+        let calls = vec![
+            crate::tools::ToolCall {
+                id: "edit".into(),
+                name: "propose_edit".into(),
+                arguments: json!({"tex": source}),
+            },
+            crate::tools::ToolCall {
+                id: "compile".into(),
+                name: "compile_resume".into(),
+                arguments: json!({}),
+            },
+        ];
+        let cancelled = AtomicBool::new(false);
+        let definitions = tools.definitions();
+        let results = crate::tools::execute_calls(&mut tools, &definitions, &calls, &cancelled)?;
+        assert!(results.iter().all(|result| !result.is_error));
+
+        assert!(
+            tools
+                .finish(AssistantReply {
+                    reply: "Done".into(),
+                    proposed_tex: Some("Different from the compiled source".into()),
+                })
+                .is_err()
+        );
+
+        let reply = tools.finish(AssistantReply {
+            reply: "Changed bullet".into(),
+            proposed_tex: None,
+        })?;
+        let build = tools
+            .take_build()
+            .expect("Successful compilation must retain its PDF");
+        let pdf_path = build.pdf_path.clone();
+        let bytes = std::fs::read(&pdf_path)?;
+        std::fs::remove_file(&asset)?;
+
+        // Recompiling now would fail: the preview must consume the validated artifact.
+        let preview =
+            crate::compiler::render_compiled(reply.proposed_tex.unwrap(), build, &cancelled)?;
+        assert_eq!(preview.pages.page_count(), 1);
+        assert_eq!(std::fs::read(&preview.pdf_path)?, bytes);
+        drop(preview);
+        assert!(!pdf_path.exists());
+
+        std::fs::write(&asset, "Restored bullet")?;
+        tools.execute("compile_resume", &json!({}), &cancelled)?;
+        let previous_pdf = tools.build.as_ref().unwrap().pdf_path.clone();
+        tools.execute(
+            "propose_edit",
+            &json!({"tex": "Invalid revision"}),
+            &cancelled,
+        )?;
+        assert!(tools.take_build().is_none());
+        assert!(!previous_pdf.exists());
+        assert!(
+            tools
+                .finish(AssistantReply {
+                    reply: "Done".into(),
+                    proposed_tex: None
+                })
+                .is_err()
+        );
+        Ok(())
+    }
 
     #[cfg(target_os = "macos")]
     fn call(id: &str, name: &str, arguments: Value) -> AgentTurn {
@@ -317,7 +397,6 @@ mod tests {
             )
             .unwrap();
 
-        tools.compiled = true;
         assert!(
             tools
                 .finish(AssistantReply {

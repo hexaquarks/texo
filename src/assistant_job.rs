@@ -42,6 +42,8 @@ const ASSISTANT_INSTRUCTIONS: &str = "You are Texo, a concise resume editing ass
     use propose_edit with the COMPLETE revised TeX document, not just a description or a patch. \
     Return proposed_tex=null in your final response; Texo takes the proposal from the staged draft. \
     Call compile_resume after editing, and fix compilation errors before completing. \
+    For a straightforward edit, return propose_edit followed by compile_resume in the SAME tool-call batch; \
+    Texo executes calls in order. The current TeX is already supplied, so do not read it again unless needed. \
     Texo presents the staged text and PDF for user review; only the user can accept or discard it. \
     In reply, summarize the specific changes in a few concise bullets, including any limitations. Never \
     claim changes have already been accepted or saved to disk. Texo reports the actual result. \
@@ -53,8 +55,13 @@ pub struct ConversationMessage {
     pub content: String,
 }
 
+pub struct CompletedTask {
+    pub reply: AssistantReply,
+    pub build: Option<texo::sandbox::CompiledDraft>,
+}
+
 pub struct AssistantJob {
-    result: Receiver<Result<AssistantReply>>,
+    result: Receiver<Result<CompletedTask>>,
     cancelled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     started: Instant,
@@ -82,7 +89,11 @@ impl AssistantJob {
             .name("texo-assistant".into())
             .spawn(move || {
                 let reply = request_selected_provider(&prompt, &mut tools, &worker_cancelled);
-                let _ = sender.send(reply);
+                let completed = reply.map(|reply| CompletedTask {
+                    reply,
+                    build: tools.take_build(),
+                });
+                let _ = sender.send(completed);
             })?;
 
         Ok(Self {
@@ -97,7 +108,7 @@ impl AssistantJob {
         self.started.elapsed()
     }
 
-    pub fn poll(&self) -> Option<Result<AssistantReply>> {
+    pub fn poll(&self) -> Option<Result<CompletedTask>> {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
@@ -145,7 +156,10 @@ fn request_selected_provider(
                 tools,
                 history,
             };
-            if let Some(key) = &key {
+            #[cfg(test)]
+            let started = Instant::now();
+
+            let result = if let Some(key) = &key {
                 llm::request_turn(&profile, key.clone(), &context, cancelled)
             } else {
                 let prompt = codex_tool_prompt(&context)?;
@@ -155,7 +169,16 @@ fn request_selected_provider(
                     cancelled,
                     REQUEST_TIMEOUT,
                 )
-            }
+            };
+
+            #[cfg(test)]
+            eprintln!(
+                "Model turn {}: {:.2}s",
+                history.len() + 1,
+                started.elapsed().as_secs_f64()
+            );
+
+            result
         },
     )
 }
@@ -173,6 +196,8 @@ fn codex_tool_prompt(context: &llm::TurnContext<'_>) -> Result<String> {
 
 fn codex_request_command(profile: &Profile) -> Command {
     let mut command = codex_command();
+    command.args(["-c", "model_reasoning_effort=\"low\""]);
+
     if !profile.model.is_empty() {
         command.args(["--model", &profile.model]);
     }
@@ -314,13 +339,71 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "uses the selected live provider and account; requires cached Tectonic"]
+    fn live_dummy_edit_latency() -> Result<()> {
+        if std::env::var("TEXO_RUN_LIVE_TESTS").as_deref() != Ok("1") {
+            eprintln!("Set TEXO_RUN_LIVE_TESTS=1 to use the selected live provider.");
+            return Ok(());
+        }
+
+        let directory = tempfile::tempdir()?;
+        let source = r"\documentclass{article}\begin{document}Dummy resume.\end{document}";
+        let path = directory.path().join("dummy.tex");
+        let messages = [ConversationMessage {
+            role: "user",
+            content: "Make a dummy change: replace 'Dummy resume.' with 'Example resume.'".into(),
+        }];
+        let prompt = build_prompt(source, &path, &messages)?;
+        let mut tools = ResumeTools::new("dummy.tex".into(), source.into())
+            .in_directory(directory.path().to_path_buf());
+        let started = Instant::now();
+        let reply = request_selected_provider(&prompt, &mut tools, &AtomicBool::new(false))?;
+
+        eprintln!(
+            "Synthetic edit elapsed: {:.2}s",
+            started.elapsed().as_secs_f64()
+        );
+        ensure!(
+            reply
+                .proposed_tex
+                .as_deref()
+                .is_some_and(|tex| tex.contains("Example resume.")),
+            "Expected edit missing"
+        );
+
+        let preview_started = Instant::now();
+        let build = tools
+            .take_build()
+            .context("Validated PDF was not retained")?;
+        let preview = texo::compiler::render_compiled(
+            reply.proposed_tex.unwrap(),
+            build,
+            &AtomicBool::new(false),
+        )?;
+        ensure!(preview.pages.page_count() == 1, "Expected one-page preview");
+        eprintln!(
+            "Cached PDF rasterization: {:.2}s",
+            preview_started.elapsed().as_secs_f64()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn codex_requests_use_the_selected_model_and_preserve_automatic_selection() {
         let mut profile = Profile::new(Provider::Codex);
-        assert_eq!(codex_request_command(&profile).get_args().count(), 0);
+        assert_eq!(codex_request_command(&profile).get_args().count(), 2);
         profile.model = "gpt-6.1-sol".into();
         let command = codex_request_command(&profile);
         let args: Vec<_> = command.get_args().collect();
-        assert_eq!(args, ["--model", "gpt-6.1-sol"]);
+        assert_eq!(
+            args,
+            [
+                "-c",
+                "model_reasoning_effort=\"low\"",
+                "--model",
+                "gpt-6.1-sol"
+            ]
+        );
     }
 
     #[test]

@@ -65,6 +65,7 @@ pub struct Assistant {
     job: Option<AssistantJob>,
     source_snapshot: String,
     proposed_edit: Option<ProposedEdit>,
+    compiled_draft: Option<texo::sandbox::CompiledDraft>,
     scroll_from_bottom: u16,
     login: Option<LoginDialog>,
     command_selection: usize,
@@ -85,6 +86,7 @@ impl Assistant {
             job: None,
             source_snapshot: String::new(),
             proposed_edit: None,
+            compiled_draft: None,
             scroll_from_bottom: 0,
             login: None,
             command_selection: 0,
@@ -243,6 +245,7 @@ impl Assistant {
         self.input = new_input();
         self.source_snapshot = source;
         self.proposed_edit = None;
+        self.compiled_draft = None;
         self.scroll_from_bottom = 0;
         self.job = Some(job);
         Ok(())
@@ -256,7 +259,9 @@ impl Assistant {
         self.job = None;
         self.scroll_from_bottom = 0;
         match result {
-            Ok(response) => {
+            Ok(completed) => {
+                let response = completed.reply;
+                self.compiled_draft = completed.build;
                 self.proposed_edit = response.proposed_tex.map(|source_after| ProposedEdit {
                     source_before: self.source_snapshot.clone(),
                     source_after,
@@ -298,7 +303,12 @@ impl Assistant {
         self.proposed_edit.as_ref()
     }
 
+    pub fn take_compiled_draft(&mut self) -> Option<texo::sandbox::CompiledDraft> {
+        self.compiled_draft.take()
+    }
+
     pub fn take_proposal(&mut self) -> Option<ProposedEdit> {
+        self.compiled_draft = None;
         self.proposed_edit.take()
     }
 

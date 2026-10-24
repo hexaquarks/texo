@@ -226,12 +226,17 @@ impl App {
         }
 
         self.proposal_review = Some(ProposalReview::new(&edit));
+        let build = self.assistant.take_compiled_draft();
         self.assistant.take_proposal();
-        self.start_proposed_render();
+        self.render_proposal(build);
         self.status = "Review changes · F7 accept · F8 modify · F9 discard".into();
     }
 
     fn start_proposed_render(&mut self) {
+        self.render_proposal(None);
+    }
+
+    fn render_proposal(&mut self, build: Option<texo::sandbox::CompiledDraft>) {
         self.proposed_job = None;
         self.proposed_build = None;
         self.proposed_preview.clear();
@@ -242,7 +247,13 @@ impl App {
             return;
         };
 
-        match RenderJob::draft(review.edit.source_after.clone(), self.editor.path.clone()) {
+        let source = review.edit.source_after.clone();
+        let job = match build {
+            Some(build) => RenderJob::compiled(source, build),
+            None => RenderJob::draft(source, self.editor.path.clone()),
+        };
+
+        match job {
             Ok(job) => self.proposed_job = Some(job),
             Err(error) => self.report_error(error),
         }
