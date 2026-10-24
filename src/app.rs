@@ -5,8 +5,11 @@ use anyhow::Context;
 
 use ratatui::{
     DefaultTerminal, Frame,
-    crossterm::event::{
-        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    crossterm::{
+        SynchronizedUpdate,
+        event::{
+            self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+        },
     },
     layout::{Constraint, Layout, Position, Rect},
     style::Style,
@@ -66,25 +69,31 @@ struct App {
 }
 
 pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> anyhow::Result<()> {
-    let mut app = App::with_workspace(editor, Preview::detect(), root)?;
-    if !app.editor.is_modified() {
-        app.start_render();
-    }
+    let mut app = App::start(editor, Preview::detect(), root)?;
+
+    let mut repaint = false;
 
     loop {
         let was_proposed_loading = app.proposed_job.is_some();
         app.receive_render();
         app.receive_assistant();
         app.receive_proposed_render();
-        if was_proposed_loading != app.proposed_job.is_some() {
-            terminal.clear()?;
-        }
-        terminal.draw(|frame| app.draw(frame))?;
+        repaint |= was_proposed_loading != app.proposed_job.is_some();
+
+        // Keep graphics cleanup and the replacement frame invisible until both are complete.
+        std::io::stdout().sync_update(|_| -> std::io::Result<()> {
+            if repaint {
+                terminal.clear()?;
+            }
+            terminal.draw(|frame| app.draw(frame))?;
+            Ok(())
+        })??;
+        repaint = false;
 
         if event::poll(EVENT_POLL_INTERVAL)? {
             let area = terminal.get_frame().area();
             let preview_was_loading = app.job.is_some();
-            let previous_focus = app.focus;
+            let previous_preview_area = app.preview_area(area);
             let previous_version = app.show_proposed;
             let review_was_open = app.proposal_review.is_some();
             let proposed_was_loading = app.proposed_job.is_some();
@@ -97,14 +106,14 @@ pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> any
             if previous_version != app.show_proposed
                 || review_was_open != app.proposal_review.is_some()
                 || proposed_was_loading != app.proposed_job.is_some()
-                || previous_focus != app.focus
+                || previous_preview_area != app.preview_area(area)
                 || projects_was_visible != app.projects_visible
                 || overlay_was_open != app.overlay_open()
                 || previous_document != app.editor.path
                 || preview_was_loading != app.job.is_some()
             {
                 // Repaint cells formerly occupied by the terminal's PDF image placement.
-                terminal.clear()?;
+                repaint = true;
             }
         }
     }
@@ -145,6 +154,16 @@ impl App {
             diagnostic_scroll: 0,
             focus: Focus::Editor,
         })
+    }
+
+    fn start(editor: Editor, preview: Preview, root: PathBuf) -> anyhow::Result<Self> {
+        let mut app = Self::with_workspace(editor, preview, root)?;
+
+        if !app.editor.is_modified() {
+            app.start_render();
+        }
+
+        Ok(app)
     }
 
     fn overlay_open(&self) -> bool {
@@ -909,6 +928,16 @@ impl App {
         }
     }
 
+    fn preview_area(&self, area: Rect) -> Rect {
+        WorkspaceLayout::new(
+            area,
+            self.diagnostics.is_some(),
+            self.projects_visible,
+            self.focus,
+        )
+        .preview
+    }
+
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         frame.render_widget(Block::default().style(theme::text()), area);
@@ -1212,6 +1241,105 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    #[ignore = "requires macOS, Tectonic cache, and Poppler"]
+    fn startup_displays_pdf_and_manual_build_recovers_after_failure() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        let source = r"\documentclass{article}\begin{document}Startup resume\end{document}";
+        std::fs::write(&path, source)?;
+        let editor = Editor::open(path.clone())?;
+        let mut app = App::start(editor, Preview::default(), directory.path().to_path_buf())?;
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+
+        assert!(app.job.is_some(), "Startup must build without a key press");
+        wait_for_visible_pdf(&mut app, &mut terminal)?;
+        assert!(path.with_extension("pdf").is_file());
+        assert_eq!(app.preview.page_status().as_deref(), Some("1 / 1"));
+
+        app.editor.replace_source(
+            r"\documentclass{missing-texo-test-class}\begin{document}Invalid\end{document}",
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(finish_test_render(&mut app).is_err());
+        assert!(
+            app.diagnostics.is_some(),
+            "Failed builds must show diagnostics"
+        );
+        terminal.draw(|frame| app.draw(frame))?;
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("missing-texo-test-class"));
+
+        app.editor.replace_source(source);
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        wait_for_visible_pdf(&mut app, &mut terminal)?;
+        assert!(app.diagnostics.is_none());
+        Ok(())
+    }
+
+    fn wait_for_visible_pdf(
+        app: &mut App,
+        terminal: &mut Terminal<TestBackend>,
+    ) -> anyhow::Result<()> {
+        const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30);
+        const PREVIEW_POLL_INTERVAL: Duration = Duration::from_millis(10);
+        let started = std::time::Instant::now();
+
+        loop {
+            app.receive_render();
+            anyhow::ensure!(
+                app.diagnostics.is_none(),
+                "Build failed: {:?}",
+                app.diagnostics
+            );
+            terminal.draw(|frame| app.draw(frame))?;
+            let visible = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| cell.symbol() == "▀");
+            if app.job.is_none() && visible {
+                return Ok(());
+            }
+
+            anyhow::ensure!(
+                started.elapsed() < PREVIEW_TIMEOUT,
+                "Startup PDF never became visible"
+            );
+            std::thread::sleep(PREVIEW_POLL_INTERVAL);
+        }
+    }
+
+    #[test]
+    fn focus_changes_only_invalidate_preview_placement_when_layout_changes() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let wide = Rect::new(0, 0, 160, 45);
+        let preview_area = app.preview_area(wide);
+        for focus in [
+            Focus::Editor,
+            Focus::Assistant,
+            Focus::Preview,
+            Focus::Projects,
+        ] {
+            app.focus = focus;
+            assert_eq!(app.preview_area(wide), preview_area);
+        }
+
+        let narrow = Rect::new(0, 0, 80, 45);
+        app.focus = Focus::Editor;
+        assert!(app.preview_area(narrow).is_empty());
+        app.focus = Focus::Preview;
+        assert!(!app.preview_area(narrow).is_empty());
+        Ok(())
     }
 
     #[test]
