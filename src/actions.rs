@@ -19,6 +19,7 @@ const EXPORT_HEIGHT: u16 = 8;
 
 #[derive(Clone, Copy)]
 pub enum Action {
+    Settings,
     Build,
     Export,
     Save,
@@ -33,7 +34,8 @@ pub enum Action {
     Quit,
 }
 
-const ACTIONS: [(Action, &str); 12] = [
+const ACTIONS: [(Action, &str); 13] = [
+    (Action::Settings, "Settings                          F2"),
     (Action::Build, "Build PDF                         Ctrl+B"),
     (Action::Export, "Export PDF                        Ctrl+E"),
     (Action::Save, "Save TeX                          Ctrl+S"),

@@ -18,6 +18,24 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn resolve(input: Option<&Path>) -> Result<Self> {
+        Self::resolve_with_settings(input, &crate::config::Settings::path()?)
+    }
+
+    fn resolve_with_settings(input: Option<&Path>, settings_path: &Path) -> Result<Self> {
+        if let Some(input) = input {
+            return Self::resolve_folder(Some(input));
+        }
+
+        let settings = crate::config::Settings::load(settings_path)?;
+        if let Some(root) = settings.resume_folder {
+            let root = crate::config::resume_folder(&root.to_string_lossy())
+                .context("Resume folder unavailable. Run texo with another folder and use F2 to update settings")?;
+            return Self::resolve_folder(Some(&root));
+        }
+        Self::resolve_folder(None)
+    }
+
+    fn resolve_folder(input: Option<&Path>) -> Result<Self> {
         let path = match input {
             Some(path) => env::current_dir()?.join(path),
             None => {
@@ -109,6 +127,30 @@ fn first_document(root: &Path) -> Result<Option<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_folder_is_used_and_explicit_path_overrides_it() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let folder = directory.path().join("resumes");
+        fs::create_dir(&folder)?;
+        fs::write(folder.join("main.tex"), "saved resume")?;
+        let settings_path = directory.path().join("settings.json");
+        crate::config::Settings {
+            resume_folder: Some(folder.clone()),
+        }
+        .save(&settings_path)?;
+
+        let workspace = Workspace::resolve_with_settings(None, &settings_path)?;
+        assert_eq!(workspace.root, folder.canonicalize()?);
+        let explicit = directory.path().join("other.tex");
+        fs::write(&settings_path, "invalid settings")?;
+        assert_eq!(
+            Workspace::resolve_with_settings(Some(&explicit), &settings_path)?.document,
+            directory.path().canonicalize()?.join("other.tex")
+        );
+        assert!(Workspace::resolve_with_settings(None, &settings_path).is_err());
+        Ok(())
+    }
 
     #[test]
     fn opens_nested_documents_deterministically_and_respects_ignore_rules() -> Result<()> {

@@ -32,6 +32,10 @@ impl Projects {
         Ok(projects)
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn refresh(&mut self) -> Result<()> {
         let selected = self.selected_path();
         let mut entries = Vec::new();
@@ -116,7 +120,14 @@ impl Projects {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from("texo").style(Style::default().fg(theme::ACCENT).bold()),
-                Line::from("resumes").style(theme::muted()),
+                Line::from(
+                    self.root
+                        .file_name()
+                        .unwrap_or(self.root.as_os_str())
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+                .style(theme::muted()),
             ])
             .block(Block::default().padding(Padding::horizontal(2))),
             header,
