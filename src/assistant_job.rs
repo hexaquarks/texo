@@ -104,6 +104,19 @@ impl AssistantJob {
         })
     }
 
+    #[cfg(test)]
+    pub fn pending() -> (Self, mpsc::Sender<Result<CompletedTask>>) {
+        let (sender, result) = mpsc::channel();
+        let job = Self {
+            result,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            worker: None,
+            started: Instant::now(),
+        };
+
+        (job, sender)
+    }
+
     pub fn elapsed(&self) -> Duration {
         self.started.elapsed()
     }

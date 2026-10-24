@@ -257,6 +257,18 @@ impl Assistant {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub fn pending_request(
+        &mut self,
+        source: String,
+    ) -> std::sync::mpsc::Sender<Result<crate::assistant_job::CompletedTask>> {
+        let (job, sender) = AssistantJob::pending();
+        self.source_snapshot = source;
+        self.job = Some(job);
+
+        sender
+    }
+
     pub fn poll(&mut self) -> Option<Result<()>> {
         if let Some(profile) = self.login.as_mut().and_then(LoginDialog::poll) {
             self.connected(profile);

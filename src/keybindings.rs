@@ -2,6 +2,7 @@ use anyhow::{Result, ensure};
 use crokey::KeyCombination;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+#[derive(Clone)]
 pub struct Prefix {
     key: KeyCombination,
     pub armed: bool,

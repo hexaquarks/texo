@@ -1,31 +1,37 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
-use ignore::WalkBuilder;
+use anyhow::Result;
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, List, ListItem, ListState, Padding, Paragraph},
+    widgets::{Block, List, ListItem, ListState, Paragraph},
 };
 use texo::theme;
 
-const HEADER_HEIGHT: u16 = 3;
-const ITEM_HEIGHT: u16 = 3;
+use crate::resume_project::{self, Catalog, Project};
+
+const HEADER_HEIGHT: u16 = 4;
+const SECTION_HEADER_GAP: u16 = 1;
+const FILES_LABEL_WIDTH: u16 = 6;
+const CONTENT_INSET: u16 = 1;
+const ITEM_HEIGHT: u16 = 1;
 
 pub struct Projects {
     root: PathBuf,
-    entries: Vec<PathBuf>,
+    pub catalog: Catalog,
     state: ListState,
+    pub files_focused: bool,
 }
 
 impl Projects {
     pub fn new(root: PathBuf, active_file: &Path) -> Result<Self> {
         let mut projects = Self {
             root,
-            entries: Vec::new(),
+            catalog: Catalog::default(),
             state: ListState::default(),
+            files_focused: false,
         };
         projects.refresh()?;
         projects.select_path(active_file);
@@ -38,62 +44,53 @@ impl Projects {
 
     pub fn refresh(&mut self) -> Result<()> {
         let selected = self.selected_path();
-        let mut entries = Vec::new();
-        for entry in WalkBuilder::new(&self.root)
-            .max_depth(Some(1))
-            .follow_links(false)
-            .build()
-            .skip(1)
-        {
-            let entry = entry.context("Could not read projects")?;
-            let directory = entry.file_type().is_some_and(|kind| kind.is_dir());
-            let document = entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "tex");
-            if directory || document {
-                entries.push(entry.into_path());
-            }
-        }
-        entries.sort();
-        self.entries = entries;
+        self.catalog = resume_project::discover(&self.root)?;
         if let Some(path) = selected {
             self.select_path(&path);
         }
         if self
             .state
             .selected()
-            .is_none_or(|index| index >= self.entries.len())
+            .is_none_or(|index| index >= self.catalog.projects.len())
         {
-            self.state.select((!self.entries.is_empty()).then_some(0));
+            self.state
+                .select((!self.catalog.projects.is_empty()).then_some(0));
         }
         Ok(())
     }
 
-    pub fn select_path(&mut self, path: &Path) {
-        let index = self
-            .entries
+    pub fn project_for(&self, path: &Path) -> Option<&Project> {
+        self.catalog
+            .projects
             .iter()
-            .position(|entry| entry == path || (entry.is_dir() && path.starts_with(entry)));
-        if index.is_some() {
-            self.state.select(index);
+            .find(|project| project.document() == path)
+    }
+
+    pub fn select_path(&mut self, path: &Path) {
+        if let Some(index) = self
+            .catalog
+            .projects
+            .iter()
+            .position(|project| project.document() == path)
+        {
+            self.state.select(Some(index));
         }
     }
 
     pub fn selected_path(&self) -> Option<PathBuf> {
         self.state
             .selected()
-            .and_then(|index| self.entries.get(index))
-            .cloned()
+            .and_then(|index| self.catalog.projects.get(index))
+            .map(Project::document)
     }
 
     pub fn move_selection(&mut self, down: bool) {
-        if self.entries.is_empty() {
+        if self.catalog.projects.is_empty() || self.files_focused {
             return;
         }
         let current = self.state.selected().unwrap_or(0);
         let next = if down {
-            (current + 1).min(self.entries.len() - 1)
+            (current + 1).min(self.catalog.projects.len() - 1)
         } else {
             current.saturating_sub(1)
         };
@@ -106,111 +103,222 @@ impl Projects {
             return false;
         }
         let index = usize::from((row - content.y) / ITEM_HEIGHT) + self.state.offset();
-        if index >= self.entries.len() {
+        if index >= self.catalog.projects.len() {
             return false;
         }
         self.state.select(Some(index));
+        self.files_focused = false;
         true
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, active_file: &Path, focused: bool) {
-        frame.render_widget(Block::default().style(theme::text()), area);
-        let [header, _] =
-            Layout::vertical([Constraint::Length(HEADER_HEIGHT), Constraint::Min(0)]).areas(area);
+    pub fn new_button(area: Rect) -> Rect {
+        Rect::new(
+            area.right().saturating_sub(3),
+            area.y.saturating_add(HEADER_HEIGHT),
+            area.width.min(1),
+            area.height.saturating_sub(HEADER_HEIGHT).min(1),
+        )
+    }
+
+    pub fn draw(
+        &mut self,
+        frame: &mut Frame,
+        resumes: Rect,
+        files: Rect,
+        active_file: &Path,
+        focused: bool,
+    ) {
+        let sidebar = if files.is_empty() {
+            resumes
+        } else {
+            resumes.union(files)
+        };
+        frame.render_widget(Block::default().style(theme::text()), sidebar);
+
+        let inner = resumes.inner(Margin::new(CONTENT_INSET, 1));
+        let header = Rect {
+            height: HEADER_HEIGHT.min(inner.height),
+            ..inner
+        };
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from("texo").style(Style::default().fg(theme::ACCENT).bold()),
-                Line::from(
-                    self.root
-                        .file_name()
-                        .unwrap_or(self.root.as_os_str())
-                        .to_string_lossy()
-                        .into_owned(),
-                )
-                .style(theme::muted()),
-            ])
-            .block(Block::default().padding(Padding::horizontal(2))),
+                Line::styled(" texo", theme::pane_title(true)),
+                Line::styled(
+                    format!(" {}", crate::workspace::display_path(&self.root)),
+                    theme::muted(),
+                ),
+                Line::default(),
+                Line::styled("RESUMES", theme::pane_title(focused && !self.files_focused)),
+            ]),
             header,
         );
-        let selected = self.selected_path();
-        let items = self
-            .entries
+        frame.render_widget(
+            Paragraph::new("+").style(theme::pane_title(true)),
+            Self::new_button(resumes),
+        );
+
+        let items: Vec<_> = self
+            .catalog
+            .projects
             .iter()
-            .map(|path| {
-                let active = if focused {
-                    selected.as_ref() == Some(path)
-                } else {
-                    path == active_file || (path.is_dir() && active_file.starts_with(path))
-                };
-                let background = if active {
-                    theme::SELECTION
-                } else {
-                    theme::SIDEBAR
-                };
-                let style = Style::default().fg(theme::TEXT).bg(background);
-                let name = if path.is_dir() {
-                    path.file_name()
-                } else {
-                    path.file_stem()
-                }
-                .unwrap_or(path.as_os_str())
-                .to_string_lossy();
-                let detail = if path.is_dir() {
-                    "project".to_owned()
-                } else {
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned()
-                };
-                ListItem::new(vec![
-                    Line::from(vec![
-                        Span::styled("  · ", Style::default().fg(theme::TEAL)),
-                        Span::styled(name.into_owned(), Style::default().bold()),
-                    ])
-                    .style(style),
-                    Line::from(format!("    {detail}")).style(style.fg(if active {
-                        theme::LAVENDER
-                    } else {
-                        theme::MUTED
-                    })),
-                    Line::default(),
-                ])
+            .map(|project| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(" • ", Style::default().fg(theme::ACCENT)),
+                    Span::raw(project.manifest.name.clone()),
+                ]))
             })
-            .collect::<Vec<_>>();
-        frame.render_stateful_widget(List::new(items), list_area(area), &mut self.state);
+            .collect();
+        frame.render_stateful_widget(
+            List::new(items)
+                .style(theme::text())
+                .highlight_style(Style::default().bg(theme::SELECTION)),
+            list_area(resumes),
+            &mut self.state,
+        );
+
+        let note = if !self.catalog.warnings.is_empty() {
+            format!("{} invalid projects · Actions", self.catalog.warnings.len())
+        } else if self.catalog.projects.is_empty() {
+            "No resumes yet".into()
+        } else {
+            String::new()
+        };
+        if inner.height > HEADER_HEIGHT {
+            frame.render_widget(
+                Paragraph::new(note).style(theme::muted()),
+                Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
+            );
+        }
+
+        let files_inner = files.inner(Margin::new(CONTENT_INSET, 1));
+        let project = self.project_for(active_file);
+        let name = project
+            .map(|project| project.manifest.name.as_str())
+            .unwrap_or("");
+        let [label, resume_name] =
+            Layout::horizontal([Constraint::Length(FILES_LABEL_WIDTH), Constraint::Min(0)]).areas(
+                Rect {
+                    height: files_inner.height.min(1),
+                    ..files_inner
+                },
+            );
+        frame.render_widget(
+            Paragraph::new("FILES").style(theme::pane_title(focused && self.files_focused)),
+            label,
+        );
+        frame.render_widget(
+            Paragraph::new(name)
+                .alignment(Alignment::Right)
+                .style(theme::muted()),
+            resume_name,
+        );
+
+        let entry_offset = 1 + SECTION_HEADER_GAP;
+        if let Some(project) = project
+            && files_inner.height > entry_offset
+        {
+            let entry = Line::from(vec![
+                Span::styled(" • ", Style::default().fg(theme::ACCENT)),
+                Span::raw(project.manifest.entrypoint.display().to_string()),
+            ]);
+            frame.render_widget(
+                Paragraph::new(entry).style(theme::text().bg(theme::SELECTION)),
+                Rect::new(
+                    files_inner.x,
+                    files_inner.y + entry_offset,
+                    files_inner.width,
+                    ITEM_HEIGHT.min(files_inner.height - entry_offset),
+                ),
+            );
+        }
     }
 }
 
 fn list_area(area: Rect) -> Rect {
-    let [_, list] =
-        Layout::vertical([Constraint::Length(HEADER_HEIGHT), Constraint::Min(0)]).areas(area);
-    list
+    let inner = area.inner(Margin::new(CONTENT_INSET, 1));
+    let header = (HEADER_HEIGHT + SECTION_HEADER_GAP).min(inner.height);
+    Rect {
+        y: inner.y + header,
+        height: inner.height.saturating_sub(header + 1),
+        ..inner
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
-    fn lists_projects_and_tex_documents_without_generated_files() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let project = directory.path().join("Backend");
-        fs::create_dir(&project)?;
-        let document = project.join("main.tex");
-        fs::write(&document, "Resume")?;
-        fs::write(directory.path().join("main.pdf"), "PDF")?;
-        fs::write(directory.path().join("other.tex"), "Other")?;
-        let mut projects = Projects::new(directory.path().to_path_buf(), &document)?;
-        assert_eq!(projects.entries.len(), 2);
-        assert_eq!(projects.selected_path(), Some(project));
-        assert!(!projects.select_at(Rect::new(0, 0, 30, 20), 1));
-        assert!(projects.select_at(Rect::new(0, 0, 30, 20), HEADER_HEIGHT + ITEM_HEIGHT));
-        assert_eq!(
-            projects.selected_path(),
-            Some(directory.path().join("other.tex"))
+    fn split_sidebar_keeps_selection_visible_without_keyboard_focus() -> Result<()> {
+        let workspace = tempfile::tempdir()?;
+        let active = resume_project::create(workspace.path(), "AI engineer")?;
+        for name in ["General", "Backend", "C++ / Systems"] {
+            resume_project::create(workspace.path(), name)?;
+        }
+        std::fs::write(active.root.join("notes.tex"), "supporting file")?;
+        std::fs::write(active.root.join("main.pdf"), "generated PDF")?;
+        std::fs::write(workspace.path().join("legacy.tex"), "legacy")?;
+        let mut projects = Projects::new(workspace.path().to_path_buf(), &active.document())?;
+        let resumes = Rect::new(0, 0, 24, 18);
+        let files = Rect::new(0, 18, 24, 14);
+        let mut terminal = Terminal::new(TestBackend::new(24, 32))?;
+
+        terminal.draw(|frame| projects.draw(frame, resumes, files, &active.document(), false))?;
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..32)
+            .map(|y| (0..24).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let text = rows.join("\n");
+        assert!(
+            text.contains("RESUMES")
+                && text.contains("FILES")
+                && rows[usize::from(files.y + 1)].ends_with("AI engineer ")
         );
+        assert!(text.contains("main.tex"));
+        assert!(!text.contains("loose TeX") && !text.contains("Import"));
+        assert!(
+            rows[usize::from(list_area(resumes).y - 1)]
+                .trim()
+                .is_empty()
+        );
+        assert!(rows[usize::from(files.y + 2)].trim().is_empty());
+        assert_eq!(
+            buffer[(CONTENT_INSET + 1, list_area(resumes).y)].symbol(),
+            "•"
+        );
+        assert_eq!(
+            buffer[(CONTENT_INSET + 1, list_area(resumes).y)].fg,
+            theme::ACCENT
+        );
+        assert!(!text.contains("notes.tex") && !text.contains("main.pdf"));
+        assert_eq!(
+            buffer[(CONTENT_INSET, list_area(resumes).y)].bg,
+            theme::SELECTION
+        );
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+        assert_eq!(buffer[(0, files.y)].symbol(), " ");
+        assert_eq!(buffer[(23, files.y)].symbol(), " ");
+        assert_eq!(buffer[(0, files.y - 1)].symbol(), " ");
+        assert_eq!(buffer[(CONTENT_INSET, list_area(resumes).y)].symbol(), " ");
+        assert_eq!(
+            buffer[(CONTENT_INSET + 3, list_area(resumes).y)].symbol(),
+            "A"
+        );
+        assert_ne!(
+            buffer[(CONTENT_INSET, list_area(resumes).y + ITEM_HEIGHT)].bg,
+            theme::SELECTION
+        );
+
+        terminal.draw(|frame| projects.draw(frame, resumes, files, &active.document(), true))?;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(CONTENT_INSET, list_area(resumes).y)].bg,
+            theme::SELECTION
+        );
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+        assert!(projects.select_at(resumes, list_area(resumes).y + ITEM_HEIGHT));
+        assert_ne!(projects.selected_path(), Some(active.document()));
         Ok(())
     }
 }

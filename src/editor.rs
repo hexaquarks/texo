@@ -16,8 +16,15 @@ use syntect::{
 use texo::theme;
 
 const TAB_WIDTH: u8 = 4;
-const STARTER_DOCUMENT: &str =
+pub const STARTER_DOCUMENT: &str =
     "\\documentclass{article}\n\\begin{document}\nYour resume starts here.\n\\end{document}\n";
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DiskState {
+    Unchanged,
+    Changed,
+    Missing,
+}
 
 pub struct Editor {
     pub path: PathBuf,
@@ -39,6 +46,14 @@ impl Editor {
             Err(error) => return Err(error).context("Could not open the TeX document"),
         };
 
+        Self::from_source(path, saved_source)
+    }
+
+    pub fn placeholder(path: PathBuf) -> Result<Self> {
+        Self::from_source(path, None)
+    }
+
+    fn from_source(path: PathBuf, saved_source: Option<String>) -> Result<Self> {
         let source = saved_source.as_deref().unwrap_or(STARTER_DOCUMENT);
         // Keep the final empty line so opening and saving preserves a trailing newline.
         let mut text = TextArea::new(source.split('\n').map(String::from).collect());
@@ -98,7 +113,50 @@ impl Editor {
         true
     }
 
+    pub fn disk_state(&self) -> Result<DiskState> {
+        match fs::read_to_string(&self.path) {
+            Ok(source) if self.saved_source.as_deref() == Some(source.as_str()) => {
+                Ok(DiskState::Unchanged)
+            }
+            Ok(_) => Ok(DiskState::Changed),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                Ok(if self.saved_source.is_some() {
+                    DiskState::Missing
+                } else {
+                    DiskState::Unchanged
+                })
+            }
+            Err(error) => Err(error).context("Could not read the source on disk"),
+        }
+    }
+
+    pub fn reload(&mut self) -> Result<()> {
+        let source = fs::read_to_string(&self.path)
+            .context("Could not reload source; your editor text is preserved")?;
+        self.replace_source(&source);
+        self.saved_source = Some(source);
+        Ok(())
+    }
+
+    pub fn recover_missing(&mut self) -> Result<()> {
+        use std::io::Write;
+
+        let source = self.source();
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.path)
+            .context("Source already exists or cannot be restored; nothing was overwritten")?;
+        file.write_all(source.as_bytes())?;
+        self.saved_source = Some(source);
+        Ok(())
+    }
+
     pub fn save(&mut self) -> Result<()> {
+        ensure!(
+            self.disk_state()? == DiskState::Unchanged,
+            "Source changed or disappeared on disk. Use Reload or Restore source in Actions"
+        );
         let source = self.source();
         let directory = self
             .path
@@ -387,6 +445,38 @@ mod tests {
         editor.save()?;
         assert!(path.exists());
         assert!(!editor.is_modified());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod external_change_tests {
+    use super::*;
+
+    #[test]
+    fn external_changes_and_deletions_never_overwrite_unsaved_work() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("main.tex");
+        fs::write(&path, "Original")?;
+        let mut editor = Editor::open(path.clone())?;
+        editor.text.insert_str("Unsaved ");
+        fs::write(&path, "External")?;
+
+        assert_eq!(editor.disk_state()?, DiskState::Changed);
+        assert!(editor.save().is_err());
+        assert_eq!(fs::read_to_string(&path)?, "External");
+        assert!(editor.source().contains("Unsaved"));
+
+        editor.reload()?;
+        assert_eq!(editor.source(), "External");
+        assert!(!editor.is_modified());
+
+        fs::remove_file(&path)?;
+        assert_eq!(editor.disk_state()?, DiskState::Missing);
+        assert!(editor.save().is_err());
+        editor.recover_missing()?;
+        assert_eq!(fs::read_to_string(&path)?, "External");
+        assert!(editor.recover_missing().is_err());
         Ok(())
     }
 }

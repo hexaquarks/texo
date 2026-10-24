@@ -6,9 +6,11 @@ mod config;
 mod editor;
 mod keybindings;
 mod login;
+mod project_dialog;
 mod projects;
 mod proposal;
 mod render_job;
+mod resume_project;
 mod settings;
 mod terminal;
 mod workspace;
@@ -26,10 +28,14 @@ struct Arguments {
 fn main() -> anyhow::Result<()> {
     let arguments = Arguments::parse();
     let workspace = workspace::Workspace::resolve(arguments.path.as_deref())?;
-    let editor = editor::Editor::open(workspace.document.clone())?;
+    let editor = if workspace.empty {
+        editor::Editor::placeholder(workspace.document.clone())?
+    } else {
+        editor::Editor::open(workspace.document.clone())?
+    };
 
     ratatui::run(|terminal| {
         let _input_mode = terminal::InputMode::enable()?;
-        app::run(terminal, editor, workspace.root)
+        app::run(terminal, editor, workspace.root, workspace.empty)
     })
 }

@@ -27,6 +27,7 @@ similar = "3.2.0"
 toml_edit = { version = "0.25", features = ["serde"] }
 open = "5.4.5"
 crokey = "1.5.1"
+uuid = { version = "1.29.0", features = ["v4", "serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"

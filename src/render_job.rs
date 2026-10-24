@@ -20,6 +20,7 @@ pub struct RenderJob {
 }
 
 impl RenderJob {
+    #[cfg(test)]
     pub fn start(source: String, path: PathBuf) -> Result<Self> {
         Self::spawn(move |cancelled| compiler::render(source, &path, cancelled))
     }

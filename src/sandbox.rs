@@ -49,7 +49,7 @@ pub fn build(source: &str, directory: &Path, cancelled: &AtomicBool) -> Result<C
 #[cfg(target_os = "macos")]
 fn compile_macos(source: &str, directory: &Path, cancelled: &AtomicBool) -> Result<CompiledDraft> {
     use anyhow::{Context, ensure};
-    use std::{fs, io::Write, time::Duration};
+    use std::{io::Write, time::Duration};
 
     const COMPILE_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -64,29 +64,20 @@ fn compile_macos(source: &str, directory: &Path, cancelled: &AtomicBool) -> Resu
         .context("Local LaTeX resources are missing. Prepare Tectonic's cache before using offline compilation")?;
 
     let directory = directory.canonicalize()?;
+    let project_root = project_root(&directory);
     let build = tempfile::tempdir()?;
     let build_path = build.path().canonicalize()?;
 
-    // Link local assets into the build root so relative TeX includes resolve normally.
-    // The OS policy follows symlink targets: links outside the resume remain unreadable.
-    const MAX_ROOT_ENTRIES: usize = 1024;
-    for (index, entry) in fs::read_dir(&directory)?.enumerate() {
-        ensure!(
-            index < MAX_ROOT_ENTRIES,
-            "Resume folder contains too many entries"
-        );
-
-        let entry = entry?;
-        std::os::unix::fs::symlink(entry.path(), build_path.join(entry.file_name()))?;
-    }
+    let input_directory = link_project_assets(&project_root, &directory, &build_path)?;
 
     let mut input = tempfile::Builder::new()
         .prefix(".texo-agent-")
         .suffix(".tex")
-        .tempfile_in(&build_path)?;
+        .tempfile_in(&input_directory)?;
     input.write_all(source.as_bytes())?;
 
-    let mut command = isolated_command(&compiler, &cache, &directory, &build_path)?;
+    let mut command = isolated_command(&compiler, &cache, &project_root, &build_path)?;
+    command.current_dir(&directory);
     command
         .args([
             "-X",
@@ -96,7 +87,7 @@ fn compile_macos(source: &str, directory: &Path, cancelled: &AtomicBool) -> Resu
             "--keep-logs",
             "--outdir",
         ])
-        .arg(&build_path)
+        .arg(&input_directory)
         .arg(input.path())
         .env("HOME", home.home_dir());
 
@@ -111,6 +102,92 @@ fn compile_macos(source: &str, directory: &Path, cancelled: &AtomicBool) -> Resu
         diagnostics,
         _directory: build,
     })
+}
+
+// Mirror only the directories leading to the entrypoint. Linking a whole parent directory
+// would put the draft outside temporary storage; flattening it breaks ../ includes.
+#[cfg(target_os = "macos")]
+fn link_project_assets(root: &Path, directory: &Path, build: &Path) -> Result<PathBuf> {
+    use std::fs;
+
+    const MAX_ROOT_ENTRIES: usize = 1024;
+    let relative = directory.strip_prefix(root)?;
+    let mut components = relative.components().peekable();
+    let mut original = root.to_path_buf();
+    let mut destination = build.to_path_buf();
+
+    loop {
+        for (index, entry) in fs::read_dir(&original)?.enumerate() {
+            anyhow::ensure!(
+                index < MAX_ROOT_ENTRIES,
+                "Resume folder contains too many entries"
+            );
+            let entry = entry?;
+            let target = destination.join(entry.file_name());
+            let is_ancestor = components
+                .peek()
+                .is_some_and(|part| part.as_os_str() == entry.file_name());
+
+            if is_ancestor {
+                fs::create_dir(&target)?;
+            } else {
+                // The sandbox checks symlink targets, so external assets remain unreadable.
+                std::os::unix::fs::symlink(entry.path(), target)?;
+            }
+        }
+
+        let Some(component) = components.next() else {
+            return Ok(destination);
+        };
+        original.push(component);
+        destination.push(component);
+    }
+}
+
+pub const PROJECT_MANIFEST_FILE: &str = "texo.toml";
+pub const MAX_PROJECT_MANIFEST_BYTES: u64 = 16 * 1024;
+
+/// A nested entrypoint may include assets elsewhere in its own project, never in a sibling project.
+#[cfg(target_os = "macos")]
+fn project_root(directory: &Path) -> PathBuf {
+    #[derive(serde::Deserialize)]
+    struct CompileManifest {
+        entrypoint: PathBuf,
+    }
+
+    for root in directory.ancestors() {
+        let path = root.join(PROJECT_MANIFEST_FILE);
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_PROJECT_MANIFEST_BYTES {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(manifest) = toml_edit::de::from_str::<CompileManifest>(&text) else {
+            continue;
+        };
+
+        if !manifest
+            .entrypoint
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        if root
+            .join(manifest.entrypoint)
+            .parent()
+            .and_then(|path| path.canonicalize().ok())
+            .as_deref()
+            == Some(directory)
+        {
+            return root.to_path_buf();
+        }
+    }
+    directory.to_path_buf()
 }
 
 // Use Apple's loader rules rather than reproducing platform-specific loader permissions.
@@ -321,5 +398,33 @@ mod tests {
         .unwrap_err();
 
         assert!(!error.to_string().contains("SYNTHETIC_PRIVATE_MARKER"));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod project_compile_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires Tectonic and cached LaTeX packages"]
+    fn nested_entrypoint_can_include_project_assets_but_not_sibling_projects() -> Result<()> {
+        let workspace = tempfile::tempdir()?;
+        let root = workspace.path().join("resume");
+        let nested = root.join("source");
+        std::fs::create_dir_all(&nested)?;
+        std::fs::write(
+            root.join(PROJECT_MANIFEST_FILE),
+            r#"entrypoint = "source/main.tex""#,
+        )?;
+        std::fs::write(root.join("section.tex"), "Local experience")?;
+        std::fs::write(workspace.path().join("private.tex"), "Other project")?;
+
+        let cancelled = AtomicBool::new(false);
+        let good = r"\documentclass{article}\begin{document}\input{../section.tex}\end{document}";
+        build(good, &nested, &cancelled)?;
+
+        let bad = r"\documentclass{article}\begin{document}\input{../../private.tex}\end{document}";
+        assert!(build(bad, &nested, &cancelled).is_err());
+        Ok(())
     }
 }

@@ -20,6 +20,15 @@ const EXPORT_HEIGHT: u16 = 8;
 #[derive(Clone, Copy)]
 pub enum Action {
     Settings,
+    NewResume,
+    ImportResume,
+    RenameResume,
+    DuplicateResume,
+    FocusResumes,
+    FocusFiles,
+    ReloadSource,
+    RecoverSource,
+    WorkspaceWarnings,
     Build,
     Export,
     Save,
@@ -34,7 +43,16 @@ pub enum Action {
     Quit,
 }
 
-const ACTIONS: [(Action, &str); 13] = [
+const ACTIONS: [(Action, &str); 22] = [
+    (Action::NewResume, "New resume"),
+    (Action::ImportResume, "Import resume (copy source/project)"),
+    (Action::RenameResume, "Rename resume"),
+    (Action::DuplicateResume, "Duplicate resume"),
+    (Action::FocusResumes, "Focus resumes"),
+    (Action::FocusFiles, "Focus files"),
+    (Action::ReloadSource, "Reload source from disk (confirm)"),
+    (Action::RecoverSource, "Restore missing source (confirm)"),
+    (Action::WorkspaceWarnings, "Show workspace warnings"),
     (Action::Settings, "Settings                          ?"),
     (Action::Build, "Build PDF                         Ctrl+B"),
     (Action::Export, "Export PDF                        Ctrl+E"),
