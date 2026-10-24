@@ -5,4 +5,7 @@ pub mod llm;
 pub mod pdf;
 pub mod preview;
 mod process;
+pub mod resume_tools;
+pub mod sandbox;
 pub mod theme;
+pub mod tools;
