@@ -28,7 +28,8 @@ const THINKING_VERTICAL_PADDING: u16 = 1;
 const THINKING_HEIGHT: u16 = 1 + THINKING_VERTICAL_PADDING * 2;
 const THINKING_FRAME_MS: u128 = 100;
 const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const CHAT_COMMANDS: [(&str, &str); 3] = [
+const CHAT_COMMANDS: [(&str, &str); 4] = [
+    ("/settings", "Configure the resume folder"),
     ("/login", "Connect or switch an assistant provider"),
     ("/model", "Choose a model for the current provider"),
     (
@@ -92,6 +93,10 @@ impl Assistant {
             command_selection: 0,
             profile: Profile::load().unwrap_or_else(|_| Profile::new(Provider::Disconnected)),
         }
+    }
+
+    pub fn clear_input(&mut self) {
+        self.input = new_input();
     }
 
     pub fn login_open(&self) -> bool {

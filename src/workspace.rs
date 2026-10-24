@@ -7,7 +7,6 @@ use anyhow::{Context, Result, bail};
 use ignore::WalkBuilder;
 
 const MAX_DISCOVERY_DEPTH: usize = 8;
-const MAX_DISCOVERY_ENTRIES: usize = 10_000;
 const DEFAULT_WORKSPACE: &str = "resumes";
 const DEFAULT_DOCUMENT: &str = "main.tex";
 
@@ -18,6 +17,24 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn resolve(input: Option<&Path>) -> Result<Self> {
+        Self::resolve_with_settings(input, &crate::config::Settings::path()?)
+    }
+
+    fn resolve_with_settings(input: Option<&Path>, settings_path: &Path) -> Result<Self> {
+        if let Some(input) = input {
+            return Self::resolve_folder(Some(input));
+        }
+
+        let settings = crate::config::Settings::load(settings_path)?;
+        if let Some(root) = settings.resume_folder {
+            let root = crate::config::resume_folder(&root.to_string_lossy())
+                .context("Resume folder unavailable. Run texo with another folder and use ? to update settings")?;
+            return Self::resolve_folder(Some(&root));
+        }
+        Self::resolve_folder(None)
+    }
+
+    fn resolve_folder(input: Option<&Path>) -> Result<Self> {
         let path = match input {
             Some(path) => env::current_dir()?.join(path),
             None => {
@@ -79,20 +96,23 @@ pub fn project_document(root: &Path) -> Result<Option<PathBuf>> {
     first_document(root)
 }
 
-// Bound startup work for large workspaces and never traverse directory symlinks.
+// Limit search depth and skip generated content; never traverse directory symlinks.
 // Sorting the walk makes the initial document stable between launches.
 fn first_document(root: &Path) -> Result<Option<PathBuf>> {
-    for (index, entry) in WalkBuilder::new(root)
-        .hidden(false)
+    for entry in WalkBuilder::new(root)
+        .hidden(true)
+        .require_git(false)
+        .filter_entry(|entry| {
+            let generated_directory = entry.file_type().is_some_and(|kind| kind.is_dir())
+                && matches!(entry.file_name().to_str(), Some("node_modules" | "target"));
+
+            entry.depth() == 0 || !generated_directory
+        })
         .follow_links(false)
         .max_depth(Some(MAX_DISCOVERY_DEPTH))
         .sort_by_file_path(|left, right| left.cmp(right))
         .build()
-        .enumerate()
     {
-        if index >= MAX_DISCOVERY_ENTRIES {
-            bail!("Workspace is too large to choose a document; open a specific .tex file");
-        }
         let entry = entry.context("Could not inspect the workspace")?;
         if entry.file_type().is_some_and(|kind| kind.is_file())
             && entry
@@ -111,6 +131,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saved_folder_is_used_and_explicit_path_overrides_it() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let folder = directory.path().join("resumes");
+        fs::create_dir(&folder)?;
+        fs::write(folder.join("main.tex"), "saved resume")?;
+        let settings_path = directory.path().join("settings.json");
+        crate::config::Settings {
+            resume_folder: Some(folder.clone()),
+            ..crate::config::Settings::default()
+        }
+        .save(&settings_path)?;
+
+        let workspace = Workspace::resolve_with_settings(None, &settings_path)?;
+        assert_eq!(workspace.root, folder.canonicalize()?);
+        let explicit = directory.path().join("other.tex");
+        fs::write(&settings_path, "invalid settings")?;
+        assert_eq!(
+            Workspace::resolve_with_settings(Some(&explicit), &settings_path)?.document,
+            directory.path().canonicalize()?.join("other.tex")
+        );
+        assert!(Workspace::resolve_with_settings(None, &settings_path).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn opens_nested_documents_deterministically_and_respects_ignore_rules() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
@@ -126,6 +171,48 @@ mod tests {
         assert_eq!(
             workspace.document,
             root.canonicalize()?.join("AI engineering/main.tex")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_handles_many_unrelated_files_without_rejecting_the_workspace() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        // Exceed the former limit before reaching the actual resume alphabetically.
+        let unrelated_file_count = 10_001;
+        for index in 0..unrelated_file_count {
+            fs::write(directory.path().join(format!("asset-{index:05}.txt")), "")?;
+        }
+
+        let document = directory.path().join("z-resume.tex");
+        fs::write(&document, "Resume")?;
+        assert_eq!(project_document(directory.path())?, Some(document.clone()));
+
+        fs::remove_file(document)?;
+        let workspace = Workspace::resolve(Some(directory.path()))?;
+        assert_eq!(workspace.document, workspace.root.join(DEFAULT_DOCUMENT));
+        assert!(!workspace.document.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_skips_hidden_dependencies_builds_and_ignored_folders() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        for folder in [".cache", "node_modules", "target", "a-ignored"] {
+            fs::create_dir(root.join(folder))?;
+            fs::write(root.join(folder).join("main.tex"), "Not a resume")?;
+        }
+        fs::write(root.join(".gitignore"), "a-ignored/\n")?;
+        let resume = root.join("z-resume");
+        fs::create_dir(&resume)?;
+        fs::write(resume.join("main.tex"), "Resume")?;
+
+        assert_eq!(project_document(root)?, Some(resume.join("main.tex")));
+        // An explicitly chosen folder remains usable, regardless of its name.
+        assert_eq!(
+            project_document(&root.join("target"))?,
+            Some(root.join("target/main.tex"))
         );
         Ok(())
     }

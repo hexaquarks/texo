@@ -20,11 +20,16 @@ use texo::{preview::Preview, theme};
 use crate::{
     actions::{Action, ActionMenu, ExportDialog},
     assistant::{Assistant, ProposedEdit},
+    config::Settings,
     editor::Editor,
+    keybindings::{Prefix, PrefixInput},
     projects::Projects,
     proposal::ProposalReview,
     render_job::RenderJob,
+    settings::SettingsDialog,
 };
+
+const SETTINGS_HINT: &str = "? Settings";
 
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MULTIPANE_WIDTH: u16 = 100;
@@ -32,6 +37,8 @@ const MULTIPANE_HEIGHT: u16 = 20;
 const SIDEBAR_WIDTH: u16 = 24;
 const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 55;
+// Borders, padding, header, and composer must fit even with the status row visible.
+const MIN_CHAT_HEIGHT: u16 = 11;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
 const REVIEW_CONTROLS_HEIGHT: u16 = 2;
@@ -55,6 +62,9 @@ struct App {
     rendered_source: Option<String>,
     rendered_pdf: Option<PathBuf>,
     actions: Option<ActionMenu>,
+    settings: Option<SettingsDialog>,
+    settings_path: PathBuf,
+    prefix: Prefix,
     export: Option<ExportDialog>,
     assistant: Assistant,
     proposal_review: Option<ProposalReview>,
@@ -70,6 +80,7 @@ struct App {
 
 pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> anyhow::Result<()> {
     let mut app = App::start(editor, Preview::detect(), root)?;
+    app.prefix = Prefix::new(&Settings::load(&app.settings_path)?.keybindings.prefix)?;
 
     let mut repaint = false;
 
@@ -142,6 +153,9 @@ impl App {
             rendered_source: None,
             rendered_pdf: None,
             actions: None,
+            settings: None,
+            settings_path: Settings::path()?,
+            prefix: Prefix::default(),
             export: None,
             assistant: Assistant::new(),
             proposal_review: None,
@@ -167,10 +181,16 @@ impl App {
     }
 
     fn overlay_open(&self) -> bool {
-        self.actions.is_some() || self.export.is_some()
+        self.actions.is_some() || self.export.is_some() || self.settings.is_some()
     }
 
     fn send_message(&mut self) {
+        if self.assistant.input.lines().join("\n").trim() == "/settings" {
+            self.assistant.clear_input();
+            self.open_settings();
+            return;
+        }
+
         let source = self.assistant_source();
 
         match self.assistant.submit(source, &self.editor.path) {
@@ -430,15 +450,21 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event, area: Rect) -> bool {
-        if self.assistant.login_open() {
-            if let Event::Key(key) = &event {
-                if key.kind == KeyEventKind::Release {
-                    return false;
-                }
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
-                    return true;
-                }
+        if let Event::Key(key) = &event {
+            if key.kind == KeyEventKind::Release {
+                return false;
             }
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+                return true;
+            }
+        }
+
+        if self.settings.is_some() {
+            self.handle_settings_event(event);
+            return false;
+        }
+
+        if self.assistant.login_open() {
             let layout = WorkspaceLayout::new(
                 area,
                 self.diagnostics.is_some(),
@@ -452,6 +478,29 @@ impl App {
         if self.overlay_open() {
             return self.handle_overlay(event, area);
         }
+
+        if let Event::Key(key) = event {
+            match self.prefix.handle(key) {
+                PrefixInput::Pending => return false,
+                PrefixInput::Action(code) => {
+                    self.handle_prefix_action(code);
+                    return false;
+                }
+                PrefixInput::Pass => {}
+            }
+
+            if key.code == KeyCode::Char('?')
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                self.open_settings();
+                return false;
+            }
+        } else if !matches!(event, Event::Resize(_, _)) {
+            self.prefix.armed = false;
+        }
+
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => return self.handle_key(key),
             Event::Paste(text) if self.focus == Focus::Assistant => {
@@ -538,6 +587,170 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    fn handle_prefix_action(&mut self, code: KeyCode) {
+        if matches!(code, KeyCode::Char('s' | '?')) {
+            self.open_settings();
+        }
+    }
+
+    fn open_settings(&mut self) {
+        if self.settings.is_some() {
+            return;
+        }
+
+        self.actions = None;
+        self.export = None;
+        self.prefix.armed = false;
+        self.settings = Some(SettingsDialog::new(
+            self.projects.root(),
+            &self.settings_path,
+            self.prefix.label(),
+        ));
+    }
+
+    fn handle_settings_event(&mut self, event: Event) {
+        if let Event::Key(key) = event
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('o' | 'r'))
+        {
+            let result = if key.code == KeyCode::Char('o') {
+                self.open_config_with(crate::config::open_editor)
+            } else {
+                self.reload_settings()
+            };
+            if let Some(dialog) = &mut self.settings {
+                match result {
+                    Ok(()) => {
+                        dialog.error.clear();
+                        dialog.notice = if key.code == KeyCode::Char('o') {
+                            "Opened config in your text editor."
+                        } else {
+                            "Configuration reloaded."
+                        }
+                        .into();
+                    }
+                    Err(error) => {
+                        dialog.notice.clear();
+                        dialog.error = error.to_string();
+                    }
+                }
+            }
+            return;
+        }
+
+        match event {
+            Event::Key(key) if key.code == KeyCode::Esc => self.settings = None,
+            Event::Key(key) if key.code == KeyCode::Enter => {
+                if let Err(error) = self.apply_settings()
+                    && let Some(dialog) = &mut self.settings
+                {
+                    dialog.error = error.to_string();
+                }
+            }
+            Event::Key(key) => {
+                if let Some(dialog) = &mut self.settings {
+                    dialog.input.input(key);
+                    dialog.error.clear();
+                }
+            }
+            Event::Paste(text) => {
+                if let Some(dialog) = &mut self.settings {
+                    let text = text.trim();
+                    if text.contains(['\r', '\n']) {
+                        dialog.error = "Enter a single folder path".into();
+                    } else {
+                        dialog.input.insert_str(text);
+                        dialog.error.clear();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn open_config_with(
+        &self,
+        open_file: impl FnOnce(&std::path::Path) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        Settings::ensure_file(&self.settings_path)?;
+        open_file(&self.settings_path).map_err(|_| {
+            anyhow::anyhow!("Could not open config. Open the path above in a text editor.")
+        })
+    }
+
+    fn reload_settings(&mut self) -> anyhow::Result<()> {
+        let settings = Settings::load(&self.settings_path)?;
+        let folder = settings
+            .resume_folder
+            .as_deref()
+            .unwrap_or(std::path::Path::new("~/resumes"));
+        let root = crate::config::resume_folder(&folder.to_string_lossy())?;
+        let keep_settings_open = self.settings.is_some();
+        self.replace_workspace(root, settings, false)?;
+
+        if keep_settings_open {
+            self.open_settings();
+        }
+        Ok(())
+    }
+
+    fn apply_settings(&mut self) -> anyhow::Result<()> {
+        let Some(dialog) = &self.settings else {
+            return Ok(());
+        };
+        let root = crate::config::resume_folder(&dialog.value())?;
+        let mut settings = Settings::load(&self.settings_path)?;
+        settings.resume_folder = Some(root.clone());
+        self.replace_workspace(root, settings, true)
+    }
+
+    fn replace_workspace(
+        &mut self,
+        root: PathBuf,
+        settings: Settings,
+        save: bool,
+    ) -> anyhow::Result<()> {
+        let prefix = Prefix::new(&settings.keybindings.prefix)?;
+
+        // Different spellings or symlinks to the current folder are not a switch.
+        let unchanged = self
+            .projects
+            .root()
+            .canonicalize()
+            .is_ok_and(|current| current == root);
+        if unchanged {
+            if save {
+                settings.save(&self.settings_path)?;
+            }
+            self.prefix = prefix;
+            self.settings = None;
+            return Ok(());
+        }
+
+        // Prepare the replacement before discarding anything. Failed reads or saves
+        // leave the current editor, proposals, chat, and workers untouched.
+        let workspace = crate::workspace::Workspace::resolve(Some(&root))?;
+        let editor = Editor::open(workspace.document)?;
+        let mut replacement = Self::with_workspace(editor, self.preview.empty_like(), root)?;
+        replacement.settings_path = self.settings_path.clone();
+        replacement.prefix = prefix;
+        if save {
+            settings.save(&self.settings_path)?;
+        }
+
+        // Join cancelled workers before exposing the replacement so old results
+        // cannot reach the new workspace or publish over its preview.
+        self.assistant.cancel();
+        self.job = None;
+        self.proposed_job = None;
+        *self = replacement;
+
+        if !self.editor.is_modified() {
+            self.start_render();
+        }
+        Ok(())
     }
 
     fn handle_review_click(&mut self, position: Position, layout: &WorkspaceLayout) -> bool {
@@ -812,6 +1025,10 @@ impl App {
 
     fn perform_action(&mut self, action: Action) -> bool {
         let key = match action {
+            Action::Settings => {
+                self.open_settings();
+                return false;
+            }
             Action::Build => 'b',
             Action::Export => 'e',
             Action::Save => 's',
@@ -975,11 +1192,27 @@ impl App {
         self.draw_assistant(frame, assistant);
         self.draw_preview(frame, preview);
         self.draw_diagnostics(frame, &layout);
+
+        let settings_hint = if self.prefix.armed {
+            "Prefix · s Settings · Esc Cancel".to_owned()
+        } else {
+            format!("{} Prefix · {SETTINGS_HINT} ", self.prefix.label())
+        };
+        frame.render_widget(
+            Paragraph::new(settings_hint)
+                .alignment(ratatui::layout::Alignment::Right)
+                .style(theme::muted().bg(theme::ELEVATED)),
+            layout.status,
+        );
+
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
         }
         if let Some(export) = &mut self.export {
             export.draw(frame);
+        }
+        if let Some(settings) = &self.settings {
+            settings.draw(frame);
         }
     }
 
@@ -1178,10 +1411,14 @@ struct WorkspaceLayout {
     assistant: Rect,
     preview: Rect,
     diagnostics: Rect,
+    status: Rect,
 }
 
 impl WorkspaceLayout {
     fn new(area: Rect, show_diagnostics: bool, show_projects: bool, focus: Focus) -> Self {
+        let [area, status] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+
         let diagnostics_height = if show_diagnostics {
             DIAGNOSTICS_HEIGHT.min(area.height / 2)
         } else {
@@ -1193,12 +1430,15 @@ impl WorkspaceLayout {
         // A narrow terminal can still fit a vertical workspace. Keep chat visible and
         // use the upper pane for the editor, preview, or projects as focus changes.
         if area.width < MULTIPANE_WIDTH && body.height >= MULTIPANE_HEIGHT {
-            let [upper, assistant] =
-                Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
-                    .areas(body);
+            let [upper, assistant] = Layout::vertical([
+                Constraint::Percentage(EDITOR_PERCENT),
+                Constraint::Min(MIN_CHAT_HEIGHT),
+            ])
+            .areas(body);
             let mut layout = Self {
                 assistant,
                 diagnostics,
+                status,
                 ..Self::default()
             };
             match focus {
@@ -1211,6 +1451,7 @@ impl WorkspaceLayout {
         if area.width < MULTIPANE_WIDTH || body.height < MULTIPANE_HEIGHT {
             let mut layout = Self {
                 diagnostics,
+                status,
                 ..Self::default()
             };
             match focus {
@@ -1228,15 +1469,18 @@ impl WorkspaceLayout {
             Constraint::Percentage(PREVIEW_PERCENT),
         ])
         .areas(body);
-        let [editor, assistant] =
-            Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
-                .areas(center);
+        let [editor, assistant] = Layout::vertical([
+            Constraint::Percentage(EDITOR_PERCENT),
+            Constraint::Min(MIN_CHAT_HEIGHT),
+        ])
+        .areas(center);
         Self {
             projects,
             editor,
             assistant,
             preview,
             diagnostics,
+            status,
         }
     }
 }
@@ -1252,6 +1496,294 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    fn reload_shortcut_keeps_settings_open_for_same_new_and_invalid_folders() -> anyhow::Result<()>
+    {
+        let (directory, mut app) = application()?;
+        app.settings_path = directory.path().join("config.toml");
+        let mut settings = Settings {
+            resume_folder: Some(directory.path().to_path_buf()),
+            ..Settings::default()
+        };
+        settings.save(&app.settings_path)?;
+        app.editor.text.insert_str("unsaved text");
+        let source = app.editor.source();
+        app.open_settings();
+        let area = Rect::new(0, 0, 160, 45);
+        let reload = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+
+        app.settings.as_mut().unwrap().error = "Previous error".into();
+        assert!(!app.handle_event(reload.clone(), area));
+        let dialog = app.settings.as_ref().expect("Settings stays open");
+        assert_eq!(dialog.notice, "Configuration reloaded.");
+        assert!(dialog.error.is_empty());
+        assert_eq!(app.editor.source(), source);
+
+        let target = directory.path().join("new resumes");
+        std::fs::create_dir(&target)?;
+        settings.resume_folder = Some(target.clone());
+        settings.keybindings.prefix = "ctrl+a".into();
+        settings.save(&app.settings_path)?;
+        assert!(!app.handle_event(reload.clone(), area));
+        let dialog = app
+            .settings
+            .as_ref()
+            .expect("Settings stays open after switching folders");
+        assert_eq!(
+            dialog.value(),
+            crate::workspace::display_path(&target.canonicalize()?)
+        );
+        assert_eq!(dialog.prefix_label, Prefix::new("ctrl+a")?.label());
+        assert_eq!(dialog.notice, "Configuration reloaded.");
+
+        let saved_value = dialog.value();
+        std::fs::write(&app.settings_path, "broken TOML")?;
+        assert!(!app.handle_event(reload, area));
+        let dialog = app.settings.as_ref().expect("Settings stays open on error");
+        assert!(!dialog.error.is_empty());
+        assert!(dialog.notice.is_empty());
+        assert_eq!(dialog.value(), saved_value);
+        assert_eq!(app.projects.root(), target.canonicalize()?);
+        Ok(())
+    }
+
+    #[test]
+    fn open_config_failure_has_a_concise_error_and_preserves_the_dialog() -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        app.settings_path = directory.path().join("config.toml");
+        app.open_settings();
+        let error = app
+            .open_config_with(|_| anyhow::bail!("Launcher details and exit status"))
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Could not open config. Open the path above in a text editor."
+        );
+        assert!(app.settings.is_some());
+        assert!(app.settings_path.is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn config_open_reload_and_folder_apply_preserve_prefix_and_reject_invalid_edits()
+    -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        app.settings_path = directory.path().join("config.toml");
+        app.open_settings();
+        app.open_config_with(|path| {
+            assert_eq!(path, app.settings_path);
+            assert!(path.is_file());
+            Ok(())
+        })?;
+
+        let mut settings = Settings::load(&app.settings_path)?;
+        settings.resume_folder = Some(directory.path().to_path_buf());
+        settings.keybindings.prefix = "ctrl+a".into();
+        settings.save(&app.settings_path)?;
+        app.reload_settings()?;
+        assert_eq!(app.prefix.label(), Prefix::new("ctrl+a")?.label());
+
+        let area = Rect::new(0, 0, 160, 45);
+        for (code, modifiers) in [
+            (KeyCode::Char('a'), KeyModifiers::CONTROL),
+            (KeyCode::Char('s'), KeyModifiers::NONE),
+        ] {
+            app.handle_event(Event::Key(KeyEvent::new(code, modifiers)), area);
+        }
+        assert!(app.settings.is_some());
+
+        let target = directory.path().join("new");
+        std::fs::create_dir(&target)?;
+        app.settings.as_mut().unwrap().input =
+            ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
+        app.apply_settings()?;
+        assert_eq!(
+            Settings::load(&app.settings_path)?.keybindings.prefix,
+            "ctrl+a"
+        );
+        assert_eq!(app.prefix.label(), Prefix::new("ctrl+a")?.label());
+
+        app.editor.text.insert_str("unsaved");
+        let source = app.editor.source();
+        app.open_settings();
+        std::fs::write(&app.settings_path, "invalid TOML")?;
+        assert!(app.reload_settings().is_err());
+        assert_eq!(app.editor.source(), source);
+        assert_eq!(app.projects.root(), target.canonicalize()?);
+        assert_eq!(app.prefix.label(), Prefix::new("ctrl+a")?.label());
+        // The Open action must still work so a broken file can be repaired.
+        app.open_config_with(|_| Ok(()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn settings_switch_discards_pending_state_and_refreshes_an_empty_workspace()
+    -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        let original = app.editor.source();
+        app.editor.text.insert_str("unsaved");
+        app.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+            source_before: app.editor.source(),
+            source_after: "pending".into(),
+        }));
+        app.assistant.input.insert_str("old prompt");
+        app.show_proposed = true;
+        app.diagnostics = Some("old error".into());
+        app.settings_path = directory.path().join("config/settings.json");
+        let target = directory.path().join("New resumes");
+        std::fs::create_dir(&target)?;
+        app.open_settings();
+        app.settings.as_mut().unwrap().input =
+            ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
+        app.apply_settings()?;
+
+        assert_eq!(app.projects.root(), target.canonicalize()?);
+        assert_eq!(app.editor.path, target.canonicalize()?.join("main.tex"));
+        assert!(!app.editor.path.exists());
+        assert!(app.proposal_review.is_none() && app.proposed_build.is_none());
+        assert!(app.job.is_none() && app.proposed_job.is_none());
+        assert!(!app.show_proposed && app.diagnostics.is_none());
+        assert!(app.rendered_pdf.is_none() && app.rendered_source.is_none());
+        assert!(app.assistant.input.lines()[0].is_empty());
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("resume.tex"))?,
+            original
+        );
+        assert_eq!(
+            Settings::load(&app.settings_path)?.resume_folder,
+            Some(target.canonicalize()?)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unchanged_folder_preserves_unsaved_text_and_pending_review() -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        app.settings_path = directory.path().join("settings.json");
+        app.editor.text.insert_str("unsaved");
+        let source = app.editor.source();
+        app.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+            source_before: source.clone(),
+            source_after: "pending".into(),
+        }));
+        app.open_settings();
+        app.apply_settings()?;
+
+        assert!(app.settings.is_none());
+        assert_eq!(app.editor.source(), source);
+        assert!(app.proposal_review.is_some());
+        assert!(Settings::load(&app.settings_path)?.resume_folder.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_or_unsavable_settings_preserve_pending_work() -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        app.editor.text.insert_str("unsaved");
+        let source = app.editor.source();
+        app.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+            source_before: source.clone(),
+            source_after: "pending".into(),
+        }));
+        let root = app.projects.root().to_path_buf();
+        let target = directory.path().join("target");
+        std::fs::create_dir(&target)?;
+        app.settings_path = directory.path().join("resume.tex/settings.json");
+        app.open_settings();
+
+        for path in [
+            directory.path().join("missing"),
+            directory.path().join("resume.tex"),
+            target,
+        ] {
+            app.settings.as_mut().unwrap().input =
+                ratatui_textarea::TextArea::new(vec![path.display().to_string()]);
+            assert!(app.apply_settings().is_err());
+            assert_eq!(app.editor.source(), source);
+            assert_eq!(app.projects.root(), root);
+            assert!(app.settings.is_some());
+            assert!(app.proposal_review.is_some());
+        }
+        app.handle_settings_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(app.settings.is_none());
+        assert_eq!(app.editor.source(), source);
+        Ok(())
+    }
+
+    #[test]
+    fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let area = Rect::new(0, 0, 160, 45);
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+            area,
+        );
+        assert!(app.settings.is_some());
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        terminal.draw(|frame| app.draw(frame))?;
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Settings") && text.contains("Resume folder"));
+        app.handle_settings_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        app.assistant.input.insert_str("/set");
+        app.assistant
+            .complete_command(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.assistant.input.lines()[0], "/settings");
+        app.send_message();
+        assert!(app.settings.is_some());
+        app.settings = None;
+        app.perform_action(Action::Settings);
+        assert!(app.settings.is_some());
+        app.settings = None;
+        terminal.draw(|frame| app.draw(frame))?;
+        let footer: String = (0..area.width)
+            .map(|x| terminal.backend().buffer()[(x, area.height - 1)].symbol())
+            .collect();
+        assert!(footer.contains(SETTINGS_HINT));
+        assert_eq!(
+            terminal.backend().buffer()[(0, area.height - 1)].bg,
+            theme::ELEVATED
+        );
+
+        let layout = WorkspaceLayout::new(area, false, true, app.focus);
+        assert_eq!(layout.preview.bottom(), layout.status.y);
+        assert_eq!(layout.assistant.bottom(), layout.status.y);
+        assert_eq!(layout.status.height, 1);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires macOS, cached Tectonic, and Poppler"]
+    fn switching_folders_cancels_old_builds_and_displays_the_new_pdf() -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        app.settings_path = directory.path().join("settings.json");
+        let looping = r"\documentclass{article}\begin{document}\loop\iftrue\repeat\end{document}";
+        app.job = Some(RenderJob::start(looping.into(), app.editor.path.clone())?);
+        app.proposed_job = Some(RenderJob::draft(looping.into(), app.editor.path.clone())?);
+        let target = directory.path().join("new");
+        std::fs::create_dir(&target)?;
+        let source = r"\documentclass{article}\begin{document}New workspace\end{document}";
+        std::fs::write(target.join("main.tex"), source)?;
+        app.open_settings();
+        app.settings.as_mut().unwrap().input =
+            ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
+        app.apply_settings()?;
+
+        assert!(app.proposed_job.is_none());
+        assert_eq!(app.editor.source(), source);
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+        wait_for_visible_pdf(&mut app, &mut terminal)?;
+        assert!(target.join("main.pdf").is_file());
+        assert!(!directory.path().join("resume.pdf").exists());
+        Ok(())
     }
 
     #[test]
@@ -1896,7 +2428,8 @@ mod tests {
                     Focus::Projects => layout.projects,
                     Focus::Preview => layout.preview,
                 };
-                assert_eq!(visible, area);
+                assert_eq!(visible.height, area.height.saturating_sub(1));
+                assert_eq!(visible.width, area.width);
                 let mut terminal = Terminal::new(TestBackend::new(width, height))?;
                 terminal.draw(|frame| app.draw(frame))?;
             }
@@ -1933,7 +2466,7 @@ mod tests {
                     _ => layout.editor,
                 };
                 assert_eq!(upper.bottom(), layout.assistant.y);
-                assert_eq!(layout.assistant.bottom(), area.bottom());
+                assert_eq!(layout.assistant.bottom(), layout.status.y);
                 assert_eq!(layout.assistant.width, area.width);
                 let mut terminal = Terminal::new(TestBackend::new(width, height))?;
                 terminal.draw(|frame| app.draw(frame))?;
@@ -1961,7 +2494,7 @@ mod tests {
         terminal.draw(|frame| app.draw(frame))?;
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-        assert!(text.contains("resumes"));
+        assert!(text.contains(app.projects.root().file_name().unwrap().to_str().unwrap()));
         assert!(text.contains("texo / chat"));
         assert!(text.contains("Original document"));
 

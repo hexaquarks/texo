@@ -2,11 +2,14 @@ mod actions;
 mod app;
 mod assistant;
 mod assistant_job;
+mod config;
 mod editor;
+mod keybindings;
 mod login;
 mod projects;
 mod proposal;
 mod render_job;
+mod settings;
 mod terminal;
 mod workspace;
 
@@ -16,7 +19,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(version, about = "A terminal workspace for LaTeX resumes")]
 struct Arguments {
-    /// Workspace directory or TeX document. Defaults to ~/resumes.
+    /// Workspace directory or TeX document. Defaults to the configured folder or ~/resumes.
     path: Option<PathBuf>,
 }
 
