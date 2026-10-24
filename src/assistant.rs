@@ -369,7 +369,14 @@ impl Assistant {
         button
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool, maximized: bool) {
+    pub fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        maximized: bool,
+        prefix: &str,
+    ) {
         if let Some(login) = &self.login
             && !login.is_loading_models()
         {
@@ -399,9 +406,9 @@ impl Assistant {
         ])
         .areas(inner);
         let hint = if maximized {
-            "Maximized · Alt+Z Restore"
+            format!("Maximized · {prefix} u Restore")
         } else {
-            "Split · Alt+Z Maximize"
+            format!("Split · {prefix} u Maximize")
         };
         let [label, hint_area] =
             Layout::horizontal([Constraint::Length(CHAT_TITLE_WIDTH), Constraint::Min(0)])
@@ -685,7 +692,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 20)).unwrap();
         terminal
-            .draw(|frame| assistant.draw(frame, frame.area(), true, false))
+            .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+x"))
             .unwrap();
         let text: String = terminal
             .backend()
@@ -711,7 +718,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
         terminal
-            .draw(|frame| assistant.draw(frame, area, true, false))
+            .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
             .unwrap();
         let input = assistant.input_area(area);
         let buffer = terminal.backend().buffer();
@@ -726,7 +733,7 @@ mod tests {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 10)).unwrap();
             terminal
-                .draw(|frame| assistant.draw(frame, frame.area(), true, false))
+                .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+x"))
                 .unwrap();
         }
     }

@@ -589,8 +589,12 @@ impl App {
     }
 
     fn handle_prefix_action(&mut self, code: KeyCode) {
-        if matches!(code, KeyCode::Char('s' | '?')) {
-            self.open_settings();
+        match code {
+            KeyCode::Char('u') if self.focus == Focus::Assistant => {
+                self.chat_maximized = !self.chat_maximized;
+            }
+            KeyCode::Char('s' | '?') => self.open_settings(),
+            _ => {}
         }
     }
 
@@ -893,11 +897,6 @@ impl App {
     }
 
     fn handle_alt_key(&mut self, key: KeyEvent) {
-        if self.focus == Focus::Assistant && key.code == KeyCode::Char('z') {
-            self.chat_maximized = !self.chat_maximized;
-            return;
-        }
-
         if self.focus == Focus::Assistant && key.code == KeyCode::Enter {
             self.assistant.input.insert_newline();
             return;
@@ -1213,7 +1212,11 @@ impl App {
         self.draw_diagnostics(frame, &layout);
 
         let settings_hint = if self.prefix.armed {
-            "Prefix · s Settings · Esc Cancel".to_owned()
+            if self.focus == Focus::Assistant {
+                "Prefix · u Maximize/restore chat · s Settings · Esc Cancel".to_owned()
+            } else {
+                "Prefix · s Settings · Esc Cancel".to_owned()
+            }
         } else {
             format!("{} Prefix · {SETTINGS_HINT} ", self.prefix.label())
         };
@@ -1289,6 +1292,7 @@ impl App {
             body,
             self.focus == Focus::Assistant,
             self.chat_maximized,
+            &self.prefix.label(),
         );
 
         if self.proposal_review.is_some() && !self.assistant.login_open() {
@@ -1526,16 +1530,23 @@ mod tests {
         let (_directory, mut app) = application()?;
         let source = app.editor.source();
         app.assistant.input.insert_str("Keep this draft");
-        let shortcut = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT);
+        let toggle = |app: &mut App, area| {
+            for (code, modifiers) in [
+                (KeyCode::Char('x'), KeyModifiers::CONTROL),
+                (KeyCode::Char('u'), KeyModifiers::NONE),
+            ] {
+                app.handle_event(Event::Key(KeyEvent::new(code, modifiers)), area);
+            }
+        };
 
-        app.handle_key(shortcut);
+        toggle(&mut app, Rect::new(0, 0, 160, 45));
         assert!(!app.chat_maximized);
         app.focus = Focus::Assistant;
 
         for (width, height) in [(160, 45), (80, 30)] {
             let area = Rect::new(0, 0, width, height);
             let original = app.workspace_layout(area);
-            app.handle_key(shortcut);
+            toggle(&mut app, area);
             let expanded = app.workspace_layout(area);
 
             assert!(expanded.editor.is_empty());
@@ -1555,7 +1566,7 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect();
-            assert!(text.contains("Maximized · Alt+Z Restore"));
+            assert!(text.contains(&format!("Maximized · {} u Restore", app.prefix.label())));
 
             for (small_width, small_height) in [(1, 1), (30, 10)] {
                 let mut small_terminal =
@@ -1563,13 +1574,63 @@ mod tests {
                 small_terminal.draw(|frame| app.draw(frame))?;
             }
 
-            app.handle_key(shortcut);
+            toggle(&mut app, area);
             let restored = app.workspace_layout(area);
             assert_eq!(restored.editor, original.editor);
             assert_eq!(restored.assistant, original.assistant);
             assert_eq!(app.editor.source(), source);
             assert_eq!(app.assistant.input.lines()[0], "Keep this draft");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn chat_toggle_uses_reloaded_prefix_and_cancels_without_typing_action_keys()
+    -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        app.settings_path = directory.path().join("config.toml");
+        Settings {
+            resume_folder: Some(directory.path().to_path_buf()),
+            keybindings: crate::config::Keybindings {
+                prefix: "ctrl+a".into(),
+            },
+        }
+        .save(&app.settings_path)?;
+        app.reload_settings()?;
+        app.focus = Focus::Assistant;
+        let area = Rect::new(0, 0, 160, 45);
+        let prefix = Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        let action = Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+
+        app.handle_event(prefix.clone(), area);
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            area,
+        );
+        assert!(!app.chat_maximized && !app.prefix.armed);
+
+        app.handle_event(prefix.clone(), area);
+        app.handle_event(action.clone(), area);
+        assert!(app.chat_maximized);
+        assert_eq!(app.assistant.input.lines()[0], "");
+
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        terminal.draw(|frame| app.draw(frame))?;
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains(&format!("{} u Restore", app.prefix.label())));
+        assert!(!text.contains("Alt+Z"));
+
+        app.handle_event(prefix, area);
+        app.handle_event(action, area);
+        assert!(!app.chat_maximized);
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT));
+        assert!(!app.chat_maximized);
         Ok(())
     }
 
