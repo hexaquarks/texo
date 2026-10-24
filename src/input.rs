@@ -180,7 +180,7 @@ impl App {
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                     if mouse.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
-                    self.active_preview().zoom_at(
+                    self.active_preview().zoom_from_wheel(
                         mouse.kind == MouseEventKind::ScrollUp,
                         body,
                         position,

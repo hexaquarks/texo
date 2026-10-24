@@ -353,7 +353,78 @@ fn source_viewport_keeps_fractional_edges_and_stays_inside_the_page() {
 }
 
 #[test]
-fn zoom_anchors_the_cursor_clamps_limits_and_resets_to_fit_width() {
+fn trackpad_zoom_uses_paced_steps_without_replaying_a_swipe() {
+    let mut preview = Preview::default();
+    preview.set_source(Some(patterned_page(120, 200)));
+    let area = Rect::new(0, 0, 24, 12);
+    let pointer = Position::new(12, 6);
+    let started = Instant::now();
+
+    // A burst of wheel reports represents one short trackpad swipe.
+    for elapsed_ms in 0..100 {
+        preview.zoom_from_wheel_at(
+            true,
+            area,
+            pointer,
+            started + Duration::from_millis(elapsed_ms),
+        );
+    }
+    assert_eq!(preview.zoom_percent(), 110);
+
+    preview.zoom_from_wheel_at(true, area, pointer, started + WHEEL_ZOOM_INTERVAL);
+    assert_eq!(preview.zoom_percent(), 120);
+
+    preview.zoom_from_wheel_at(false, area, pointer, started + WHEEL_ZOOM_INTERVAL * 2);
+    assert_eq!(preview.zoom_percent(), 110);
+
+    // There is no queued gesture work after input ends, and keyboard steps stay immediate.
+    finish_viewport(&mut preview, preview_content(area));
+    assert_eq!(preview.zoom_percent(), 110);
+    preview.zoom_at(true, area, pointer);
+    preview.zoom_at(true, area, pointer);
+    assert_eq!(preview.zoom_percent(), 130);
+}
+
+#[test]
+fn zoom_out_stops_at_the_whole_page_and_tracks_viewport_changes() {
+    let mut preview = Preview::default();
+    preview.set_source(Some(patterned_page(600, 900)));
+    let area = Rect::new(0, 0, 84, 32);
+    let pointer = Position::new(42, 16);
+    let content = preview_content(area);
+
+    for _ in 0..30 {
+        preview.zoom_at(false, area, pointer);
+    }
+    finish_viewport(&mut preview, content);
+    assert_eq!(preview.zoom_percent(), 50);
+    assert_eq!(preview.scaled_page_size, Some((400, 600)));
+    assert_eq!(preview.scroll_pixels, 0);
+    assert_eq!(preview.horizontal_pixels, 0);
+
+    preview.zoom_at(false, area, pointer);
+    preview.prepare_viewport(content);
+    assert!(
+        preview.pending.is_none(),
+        "The minimum must not trigger another render"
+    );
+
+    // A taller viewport can fit the whole page at its full width.
+    finish_viewport(&mut preview, Rect::new(0, 0, 80, 80));
+    assert_eq!(preview.zoom_percent(), FIT_WIDTH_PERCENT);
+    assert_eq!(preview.scaled_page_size, Some((800, 1200)));
+
+    preview.zoom_at(true, area, pointer);
+    preview.reset_zoom(area);
+    assert_eq!(preview.zoom_percent(), 50);
+
+    preview.set_source(Some(patterned_page(900, 600)));
+    preview.reset_zoom(area);
+    assert_eq!(preview.zoom_percent(), FIT_WIDTH_PERCENT);
+}
+
+#[test]
+fn zoom_anchors_the_cursor_clamps_limits_and_resets_to_fit_page() {
     let mut preview = Preview::default();
     preview.set_source(Some(DynamicImage::new_rgb8(120, 200)));
     let area = Rect::new(0, 0, 14, 7);
@@ -362,11 +433,11 @@ fn zoom_anchors_the_cursor_clamps_limits_and_resets_to_fit_width() {
     finish_viewport(&mut preview, content);
 
     preview.zoom_at(true, area, pointer);
-    assert_eq!(preview.zoom_percent(), 125);
-    assert_eq!(preview.horizontal_pixels, 10);
-    assert_eq!(preview.scroll_pixels, 10);
+    assert_eq!(preview.zoom_percent(), 110);
+    assert_eq!(preview.horizontal_pixels, 4);
+    assert_eq!(preview.scroll_pixels, 4);
     finish_viewport(&mut preview, content);
-    assert_eq!(preview.scaled_page_size.unwrap().0, 125);
+    assert_eq!(preview.scaled_page_size.unwrap().0, 110);
 
     for _ in 0..20 {
         preview.zoom_at(true, area, pointer);
@@ -382,15 +453,15 @@ fn zoom_anchors_the_cursor_clamps_limits_and_resets_to_fit_width() {
 
     preview.reset_zoom(area);
     finish_viewport(&mut preview, content);
-    assert_eq!(preview.zoom_percent(), FIT_WIDTH_PERCENT);
+    assert_eq!(preview.zoom_percent(), 60);
     assert_eq!(preview.horizontal_pixels, 0);
-    assert_eq!(preview.scaled_page_size.unwrap().0, 100);
+    assert_eq!(preview.scaled_page_size.unwrap().0, 60);
 
     for _ in 0..20 {
         preview.zoom_at(false, area, pointer);
     }
     finish_viewport(&mut preview, content);
-    assert_eq!(preview.zoom_percent(), MIN_ZOOM_PERCENT);
+    assert_eq!(preview.zoom_percent(), 60);
     assert_eq!(preview.horizontal_pixels, 0);
     assert_eq!(preview.scroll_pixels, 0);
 
@@ -434,9 +505,9 @@ fn late_zoom_work_cannot_replace_the_latest_scale_or_pan() {
     assert!(preview.image.is_none());
 
     finish_viewport(&mut preview, content);
-    assert_eq!(preview.scaled_page_size.unwrap().0, 125);
-    assert_eq!(preview.displayed_horizontal, Some(10));
-    assert_eq!(preview.displayed_scroll, Some(10));
+    assert_eq!(preview.scaled_page_size.unwrap().0, 110);
+    assert_eq!(preview.displayed_horizontal, Some(4));
+    assert_eq!(preview.displayed_scroll, Some(4));
     preview.prepare_viewport(content);
     assert!(preview.pending.is_none());
 
@@ -469,7 +540,7 @@ fn kitty_transmits_a_new_image_after_zooming() -> anyhow::Result<()> {
         .map(|cell| cell.symbol())
         .collect();
     assert!(output.contains("a=T"));
-    assert_eq!(preview.scaled_page_size.unwrap().0, 200);
+    assert_eq!(preview.scaled_page_size.unwrap().0, 176);
     Ok(())
 }
 
@@ -500,7 +571,7 @@ fn zoomed_out_page_is_centered_and_clears_old_image_cells() -> anyhow::Result<()
         buffer[(content.x + 10, content.y)].fg,
         ratatui::style::Color::Rgb(255, 255, 255)
     );
-    assert_eq!(preview.zoom_percent(), 50);
+    assert_eq!(preview.zoom_percent(), 80);
     Ok(())
 }
 

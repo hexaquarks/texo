@@ -4,7 +4,7 @@ use std::{
         mpsc::{self, Receiver, TryRecvError},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow};
@@ -30,9 +30,9 @@ const LOADING_FRAME_MS: u128 = 150;
 const LOADING_FRAMES: [&str; 6] = ["[=   ]", "[ =  ]", "[  = ]", "[   =]", "[  = ]", "[ =  ]"];
 const SCROLL_LINES: u32 = 3;
 const FIT_WIDTH_PERCENT: u16 = 100;
-const MIN_ZOOM_PERCENT: u16 = 25;
 const MAX_ZOOM_PERCENT: u16 = 300;
-const ZOOM_STEP_PERCENT: u16 = 25;
+const ZOOM_STEP_PERCENT: u16 = 10;
+const WHEEL_ZOOM_INTERVAL: Duration = Duration::from_millis(150);
 const EMPTY_NOTICE: &str =
     "Your PDF will appear here.\n\nBuild your document to update the preview.\n\nCtrl+B  to build";
 
@@ -49,6 +49,7 @@ pub struct Preview {
     scroll_pixels: u32,
     displayed_scroll: Option<u32>,
     zoom_percent: u16,
+    last_wheel_zoom: Option<Instant>,
     horizontal_pixels: u32,
     displayed_horizontal: Option<u32>,
 }
@@ -84,6 +85,7 @@ impl Default for Preview {
             scroll_pixels: 0,
             displayed_scroll: None,
             zoom_percent: FIT_WIDTH_PERCENT,
+            last_wheel_zoom: None,
             horizontal_pixels: 0,
             displayed_horizontal: None,
         }
@@ -176,6 +178,7 @@ impl Preview {
         self.displayed_scroll = None;
         self.displayed_horizontal = None;
         self.image = None;
+        self.last_wheel_zoom = None;
     }
 
     pub fn scroll(&mut self, up: bool) {
@@ -210,16 +213,47 @@ impl Preview {
                 .saturating_add(ZOOM_STEP_PERCENT)
                 .min(MAX_ZOOM_PERCENT)
         } else {
-            self.zoom_percent
-                .saturating_sub(ZOOM_STEP_PERCENT)
-                .max(MIN_ZOOM_PERCENT)
+            self.zoom_percent.saturating_sub(ZOOM_STEP_PERCENT)
         };
         self.set_zoom(percent, area, position);
     }
 
+    pub fn zoom_from_wheel(&mut self, zoom_in: bool, area: Rect, position: Position) {
+        self.zoom_from_wheel_at(zoom_in, area, position, Instant::now());
+    }
+
+    fn zoom_from_wheel_at(&mut self, zoom_in: bool, area: Rect, position: Position, now: Instant) {
+        // Trackpads send many wheel events per swipe. Ignore the excess events
+        // instead of queuing zoom steps that continue after the gesture stops.
+        if self
+            .last_wheel_zoom
+            .is_some_and(|previous| now.saturating_duration_since(previous) < WHEEL_ZOOM_INTERVAL)
+        {
+            return;
+        }
+
+        let previous = self.zoom_percent;
+        self.zoom_at(zoom_in, area, position);
+
+        if self.zoom_percent != previous {
+            self.last_wheel_zoom = Some(now);
+        }
+    }
+
     pub fn reset_zoom(&mut self, area: Rect) {
+        let Some(source) = &self.source_page else {
+            return;
+        };
+        let content = preview_content(area);
+        let font = self.picker.font_size();
+        let pixels = (
+            u32::from(content.width) * u32::from(font.width),
+            u32::from(content.height) * u32::from(font.height),
+        );
+        let minimum = fit_page_zoom_percent((source.width(), source.height()), pixels);
+
         let center = Position::new(area.x + area.width / 2, area.y + area.height / 2);
-        self.set_zoom(FIT_WIDTH_PERCENT, area, center);
+        self.set_zoom(minimum, area, center);
     }
 
     fn set_zoom(&mut self, percent: u16, area: Rect, position: Position) {
@@ -227,13 +261,19 @@ impl Preview {
             return;
         };
         let content = preview_content(area);
-        if content.is_empty() || percent == self.zoom_percent {
+        if content.is_empty() {
             return;
         }
 
         let font = self.picker.font_size();
         let width = u32::from(content.width) * u32::from(font.width);
         let height = u32::from(content.height) * u32::from(font.height);
+        let minimum = fit_page_zoom_percent((source.width(), source.height()), (width, height));
+        let percent = percent.clamp(minimum, MAX_ZOOM_PERCENT);
+        if percent == self.zoom_percent {
+            return;
+        }
+
         let old_width = zoomed_width(width, self.zoom_percent);
         let new_width = zoomed_width(width, percent);
         let new_height = fit_width_height(source.width(), source.height(), new_width);
@@ -290,6 +330,13 @@ impl Preview {
         );
         if pixels.0 == 0 || pixels.1 == 0 {
             return;
+        }
+
+        let minimum = fit_page_zoom_percent((source.width(), source.height()), pixels);
+        if self.zoom_percent < minimum {
+            self.zoom_percent = minimum;
+            self.viewport_pixels = None;
+            self.scaled_page_size = None;
         }
 
         if let Some(job) = &self.pending {
@@ -544,6 +591,15 @@ fn source_viewport(
 
 fn preview_content(area: Rect) -> Rect {
     area.inner(Margin::new(theme::PANEL_PADDING, 1))
+}
+
+fn fit_page_zoom_percent(source: (u32, u32), viewport: (u32, u32)) -> u16 {
+    let height_at_full_width = fit_width_height(source.0, source.1, viewport.0);
+    let percent =
+        u64::from(viewport.1) * u64::from(FIT_WIDTH_PERCENT) / u64::from(height_at_full_width);
+
+    // Percentages are whole numbers; never request a zero-sized page.
+    percent.clamp(1, u64::from(FIT_WIDTH_PERCENT)) as u16
 }
 
 fn zoomed_width(viewport_width: u32, percent: u16) -> u32 {
