@@ -22,6 +22,7 @@ use crate::{
     assistant::{Assistant, ProposedEdit},
     config::Settings,
     editor::Editor,
+    keybindings::{Prefix, PrefixInput},
     projects::Projects,
     proposal::ProposalReview,
     render_job::RenderJob,
@@ -63,6 +64,7 @@ struct App {
     actions: Option<ActionMenu>,
     settings: Option<SettingsDialog>,
     settings_path: PathBuf,
+    prefix: Prefix,
     export: Option<ExportDialog>,
     assistant: Assistant,
     proposal_review: Option<ProposalReview>,
@@ -78,6 +80,7 @@ struct App {
 
 pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> anyhow::Result<()> {
     let mut app = App::start(editor, Preview::detect(), root)?;
+    app.prefix = Prefix::new(&Settings::load(&app.settings_path)?.keybindings.prefix)?;
 
     let mut repaint = false;
 
@@ -152,6 +155,7 @@ impl App {
             actions: None,
             settings: None,
             settings_path: Settings::path()?,
+            prefix: Prefix::default(),
             export: None,
             assistant: Assistant::new(),
             proposal_review: None,
@@ -475,14 +479,26 @@ impl App {
             return self.handle_overlay(event, area);
         }
 
-        if let Event::Key(key) = &event
-            && key.code == KeyCode::Char('?')
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
-            self.open_settings();
-            return false;
+        if let Event::Key(key) = event {
+            match self.prefix.handle(key) {
+                PrefixInput::Pending => return false,
+                PrefixInput::Action(code) => {
+                    self.handle_prefix_action(code);
+                    return false;
+                }
+                PrefixInput::Pass => {}
+            }
+
+            if key.code == KeyCode::Char('?')
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                self.open_settings();
+                return false;
+            }
+        } else if !matches!(event, Event::Resize(_, _)) {
+            self.prefix.armed = false;
         }
 
         match event {
@@ -573,6 +589,12 @@ impl App {
         false
     }
 
+    fn handle_prefix_action(&mut self, code: KeyCode) {
+        if matches!(code, KeyCode::Char('s' | '?')) {
+            self.open_settings();
+        }
+    }
+
     fn open_settings(&mut self) {
         if self.settings.is_some() {
             return;
@@ -580,10 +602,32 @@ impl App {
 
         self.actions = None;
         self.export = None;
-        self.settings = Some(SettingsDialog::new(self.projects.root()));
+        self.prefix.armed = false;
+        self.settings = Some(SettingsDialog::new(
+            self.projects.root(),
+            &self.settings_path,
+            self.prefix.label(),
+        ));
     }
 
     fn handle_settings_event(&mut self, event: Event) {
+        if let Event::Key(key) = event
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('o' | 'r'))
+        {
+            let result = if key.code == KeyCode::Char('o') {
+                self.open_config_with(|path| open::that_detached(path).map_err(Into::into))
+            } else {
+                self.reload_settings()
+            };
+            if let Err(error) = result
+                && let Some(dialog) = &mut self.settings
+            {
+                dialog.error = error.to_string();
+            }
+            return;
+        }
+
         match event {
             Event::Key(key) if key.code == KeyCode::Esc => self.settings = None,
             Event::Key(key) if key.code == KeyCode::Enter => {
@@ -614,14 +658,41 @@ impl App {
         }
     }
 
+    fn open_config_with(
+        &self,
+        open_file: impl FnOnce(&std::path::Path) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        Settings::ensure_file(&self.settings_path)?;
+        open_file(&self.settings_path)
+    }
+
+    fn reload_settings(&mut self) -> anyhow::Result<()> {
+        let settings = Settings::load(&self.settings_path)?;
+        let folder = settings
+            .resume_folder
+            .as_deref()
+            .unwrap_or(std::path::Path::new("~/resumes"));
+        let root = crate::config::resume_folder(&folder.to_string_lossy())?;
+        self.replace_workspace(root, settings, false)
+    }
+
     fn apply_settings(&mut self) -> anyhow::Result<()> {
         let Some(dialog) = &self.settings else {
             return Ok(());
         };
         let root = crate::config::resume_folder(&dialog.value())?;
-        let settings = Settings {
-            resume_folder: Some(root.clone()),
-        };
+        let mut settings = Settings::load(&self.settings_path)?;
+        settings.resume_folder = Some(root.clone());
+        self.replace_workspace(root, settings, true)
+    }
+
+    fn replace_workspace(
+        &mut self,
+        root: PathBuf,
+        settings: Settings,
+        save: bool,
+    ) -> anyhow::Result<()> {
+        let prefix = Prefix::new(&settings.keybindings.prefix)?;
 
         // Different spellings or symlinks to the current folder are not a switch.
         let unchanged = self
@@ -630,7 +701,10 @@ impl App {
             .canonicalize()
             .is_ok_and(|current| current == root);
         if unchanged {
-            settings.save(&self.settings_path)?;
+            if save {
+                settings.save(&self.settings_path)?;
+            }
+            self.prefix = prefix;
             self.settings = None;
             return Ok(());
         }
@@ -641,7 +715,10 @@ impl App {
         let editor = Editor::open(workspace.document)?;
         let mut replacement = Self::with_workspace(editor, self.preview.empty_like(), root)?;
         replacement.settings_path = self.settings_path.clone();
-        settings.save(&self.settings_path)?;
+        replacement.prefix = prefix;
+        if save {
+            settings.save(&self.settings_path)?;
+        }
 
         // Join cancelled workers before exposing the replacement so old results
         // cannot reach the new workspace or publish over its preview.
@@ -1096,8 +1173,13 @@ impl App {
         self.draw_preview(frame, preview);
         self.draw_diagnostics(frame, &layout);
 
+        let settings_hint = if self.prefix.armed {
+            "Prefix · s Settings · Esc Cancel".to_owned()
+        } else {
+            format!("{} Prefix · {SETTINGS_HINT} ", self.prefix.label())
+        };
         frame.render_widget(
-            Paragraph::new(format!("{SETTINGS_HINT} "))
+            Paragraph::new(settings_hint)
                 .alignment(ratatui::layout::Alignment::Right)
                 .style(theme::muted().bg(theme::ELEVATED)),
             layout.status,
@@ -1394,6 +1476,58 @@ mod tests {
         std::fs::write(&path, "Original document")?;
         let editor = Editor::open(path)?;
         Ok((directory, App::new(editor, Preview::default())?))
+    }
+
+    #[test]
+    fn config_open_reload_and_folder_apply_preserve_prefix_and_reject_invalid_edits()
+    -> anyhow::Result<()> {
+        let (directory, mut app) = application()?;
+        app.settings_path = directory.path().join("config.toml");
+        app.open_settings();
+        app.open_config_with(|path| {
+            assert_eq!(path, app.settings_path);
+            assert!(path.is_file());
+            Ok(())
+        })?;
+
+        let mut settings = Settings::load(&app.settings_path)?;
+        settings.resume_folder = Some(directory.path().to_path_buf());
+        settings.keybindings.prefix = "ctrl+a".into();
+        settings.save(&app.settings_path)?;
+        app.reload_settings()?;
+        assert_eq!(app.prefix.label(), Prefix::new("ctrl+a")?.label());
+
+        let area = Rect::new(0, 0, 160, 45);
+        for (code, modifiers) in [
+            (KeyCode::Char('a'), KeyModifiers::CONTROL),
+            (KeyCode::Char('s'), KeyModifiers::NONE),
+        ] {
+            app.handle_event(Event::Key(KeyEvent::new(code, modifiers)), area);
+        }
+        assert!(app.settings.is_some());
+
+        let target = directory.path().join("new");
+        std::fs::create_dir(&target)?;
+        app.settings.as_mut().unwrap().input =
+            ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
+        app.apply_settings()?;
+        assert_eq!(
+            Settings::load(&app.settings_path)?.keybindings.prefix,
+            "ctrl+a"
+        );
+        assert_eq!(app.prefix.label(), Prefix::new("ctrl+a")?.label());
+
+        app.editor.text.insert_str("unsaved");
+        let source = app.editor.source();
+        app.open_settings();
+        std::fs::write(&app.settings_path, "invalid TOML")?;
+        assert!(app.reload_settings().is_err());
+        assert_eq!(app.editor.source(), source);
+        assert_eq!(app.projects.root(), target.canonicalize()?);
+        assert_eq!(app.prefix.label(), Prefix::new("ctrl+a")?.label());
+        // The Open action must still work so a broken file can be repaired.
+        app.open_config_with(|_| Ok(()))?;
+        Ok(())
     }
 
     #[test]

@@ -139,6 +139,7 @@ mod tests {
         let settings_path = directory.path().join("settings.json");
         crate::config::Settings {
             resume_folder: Some(folder.clone()),
+            ..crate::config::Settings::default()
         }
         .save(&settings_path)?;
 

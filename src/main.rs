@@ -4,6 +4,7 @@ mod assistant;
 mod assistant_job;
 mod config;
 mod editor;
+mod keybindings;
 mod login;
 mod projects;
 mod proposal;

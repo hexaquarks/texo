@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ratatui::{
     Frame,
@@ -9,15 +9,17 @@ use ratatui_textarea::TextArea;
 use texo::theme;
 
 const DIALOG_WIDTH: u16 = 72;
-const DIALOG_HEIGHT: u16 = 12;
+const DIALOG_HEIGHT: u16 = 17;
 
 pub struct SettingsDialog {
     pub input: TextArea<'static>,
     pub error: String,
+    pub config_path: PathBuf,
+    pub prefix_label: String,
 }
 
 impl SettingsDialog {
-    pub fn new(root: &Path) -> Self {
+    pub fn new(root: &Path, config_path: &Path, prefix_label: String) -> Self {
         let mut input = TextArea::new(vec![crate::workspace::display_path(root)]);
         input.set_style(theme::text().bg(theme::ELEVATED));
         input.set_cursor_line_style(theme::text().bg(theme::ELEVATED));
@@ -26,6 +28,8 @@ impl SettingsDialog {
         Self {
             input,
             error: String::new(),
+            config_path: config_path.to_path_buf(),
+            prefix_label,
         }
     }
 
@@ -52,10 +56,13 @@ impl SettingsDialog {
         let content = panel.inner(area);
         frame.render_widget(Clear, area);
         frame.render_widget(panel, area);
-        let [label, input, warning, error, hint] = Layout::vertical([
+        let [label, input, warning, config, prefix, actions, error, hint] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(2),
             Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -67,6 +74,23 @@ impl SettingsDialog {
                 .style(theme::muted())
                 .wrap(Wrap { trim: false }),
             warning,
+        );
+        frame.render_widget(
+            Paragraph::new(format!(
+                "Config: {}",
+                crate::workspace::display_path(&self.config_path)
+            ))
+            .style(theme::muted())
+            .wrap(Wrap { trim: false }),
+            config,
+        );
+        frame.render_widget(
+            Paragraph::new(format!("Prefix: {}", self.prefix_label)),
+            prefix,
+        );
+        frame.render_widget(
+            Paragraph::new("Ctrl+O Open config · Ctrl+R Reload").style(theme::pane_title(true)),
+            actions,
         );
         frame.render_widget(
             Paragraph::new(self.error.as_str())
@@ -88,7 +112,11 @@ mod tests {
 
     #[test]
     fn dialog_is_centered_and_pasting_replaces_the_selected_path() -> anyhow::Result<()> {
-        let mut dialog = SettingsDialog::new(Path::new("/old/resumes"));
+        let mut dialog = SettingsDialog::new(
+            Path::new("/old/resumes"),
+            Path::new("/config/texo/config.toml"),
+            "ctrl-x".into(),
+        );
         dialog.input.insert_str("/new/resumes");
         assert_eq!(dialog.value(), "/new/resumes");
         let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
@@ -104,6 +132,9 @@ mod tests {
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
         assert!(text.contains("/new/resumes"));
         assert!(text.contains("Enter apply"));
+        assert!(text.contains("/config/texo/config.toml"));
+        assert!(text.contains("Prefix: ctrl-x"));
+        assert!(text.contains("Ctrl+O Open config"));
 
         for (width, height) in [(1, 1), (20, 5), (40, 12)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height))?;
