@@ -253,6 +253,10 @@ impl App {
         };
         let zoom = self.active_preview().zoom_percent();
         let mut title = format!(" {state}  {page} · {zoom}%");
+        if self.active_preview().is_preparing() {
+            title.push_str(" · Updating…");
+        }
+
         let zoom_hint = " · Ctrl+wheel / +/- zoom · 0 fit";
         if self.focus == Focus::Preview
             && title.chars().count() + zoom_hint.chars().count() <= usize::from(title_area.width)

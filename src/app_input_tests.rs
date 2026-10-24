@@ -293,6 +293,35 @@ fn pdf_zoom_mouse_and_keyboard_events_leave_editor_and_other_preview_untouched()
     let area = Rect::new(0, 0, 160, 50);
     let preview = app.workspace_layout(area).preview;
     let source = app.session.editor.source();
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    let preparing: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(preparing.contains("Updating…"));
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while app.session.preview.is_preparing() {
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Preview preparation stalled"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        terminal.draw(|frame| app.draw(frame))?;
+    }
+    let prepared: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(!prepared.contains("Updating…"));
+
     let wheel = |kind, modifiers, column| {
         Event::Mouse(event::MouseEvent {
             kind,
