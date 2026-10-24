@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use ratatui::{
     Frame,
-    layout::{Margin, Rect},
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, List, ListItem, ListState, Paragraph},
@@ -13,6 +13,8 @@ use texo::theme;
 use crate::resume_project::{self, Catalog, Project};
 
 const HEADER_HEIGHT: u16 = 4;
+const SECTION_HEADER_GAP: u16 = 1;
+const FILES_LABEL_WIDTH: u16 = 6;
 const CONTENT_INSET: u16 = 1;
 const ITEM_HEIGHT: u16 = 1;
 
@@ -163,25 +165,25 @@ impl Projects {
                 let active = project.document() == active_file;
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        if active { " · " } else { "   " },
-                        Style::default().fg(theme::TEAL),
+                        if active { " ● " } else { " • " },
+                        Style::default().fg(theme::ACCENT),
                     ),
                     Span::raw(project.manifest.name.clone()),
                 ]))
             })
             .collect();
         frame.render_stateful_widget(
-            List::new(items).highlight_style(theme::text().bg(theme::SELECTION)),
+            List::new(items)
+                .style(theme::text())
+                .highlight_style(Style::default().bg(theme::SELECTION)),
             list_area(resumes),
             &mut self.state,
         );
 
         let note = if !self.catalog.warnings.is_empty() {
             format!("{} invalid projects · Actions", self.catalog.warnings.len())
-        } else if !self.catalog.loose_files.is_empty() {
-            format!("{} loose TeX · Import", self.catalog.loose_files.len())
         } else if self.catalog.projects.is_empty() {
-            "No resumes · New + / Import".into()
+            "No resumes yet".into()
         } else {
             String::new()
         };
@@ -197,25 +199,39 @@ impl Projects {
         let name = project
             .map(|project| project.manifest.name.as_str())
             .unwrap_or("");
+        let [label, resume_name] =
+            Layout::horizontal([Constraint::Length(FILES_LABEL_WIDTH), Constraint::Min(0)]).areas(
+                Rect {
+                    height: files_inner.height.min(1),
+                    ..files_inner
+                },
+            );
         frame.render_widget(
-            Paragraph::new(format!("FILES  {name}"))
-                .style(theme::pane_title(focused && self.files_focused)),
-            Rect {
-                height: files_inner.height.min(1),
-                ..files_inner
-            },
+            Paragraph::new("FILES").style(theme::pane_title(focused && self.files_focused)),
+            label,
         );
+        frame.render_widget(
+            Paragraph::new(name)
+                .alignment(Alignment::Right)
+                .style(theme::muted()),
+            resume_name,
+        );
+
+        let entry_offset = 1 + SECTION_HEADER_GAP;
         if let Some(project) = project
-            && files_inner.height > 1
+            && files_inner.height > entry_offset
         {
+            let entry = Line::from(vec![
+                Span::styled(" ● ", Style::default().fg(theme::ACCENT)),
+                Span::raw(project.manifest.entrypoint.display().to_string()),
+            ]);
             frame.render_widget(
-                Paragraph::new(format!(" · {}", project.manifest.entrypoint.display()))
-                    .style(theme::text().bg(theme::SELECTION)),
+                Paragraph::new(entry).style(theme::text().bg(theme::SELECTION)),
                 Rect::new(
                     files_inner.x,
-                    files_inner.y + 1,
+                    files_inner.y + entry_offset,
                     files_inner.width,
-                    ITEM_HEIGHT.min(files_inner.height - 1),
+                    ITEM_HEIGHT.min(files_inner.height - entry_offset),
                 ),
             );
         }
@@ -224,7 +240,7 @@ impl Projects {
 
 fn list_area(area: Rect) -> Rect {
     let inner = area.inner(Margin::new(CONTENT_INSET, 1));
-    let header = HEADER_HEIGHT.min(inner.height);
+    let header = (HEADER_HEIGHT + SECTION_HEADER_GAP).min(inner.height);
     Rect {
         y: inner.y + header,
         height: inner.height.saturating_sub(header + 1),
@@ -246,6 +262,7 @@ mod tests {
         }
         std::fs::write(active.root.join("notes.tex"), "supporting file")?;
         std::fs::write(active.root.join("main.pdf"), "generated PDF")?;
+        std::fs::write(workspace.path().join("legacy.tex"), "legacy")?;
         let mut projects = Projects::new(workspace.path().to_path_buf(), &active.document())?;
         let resumes = Rect::new(0, 0, 24, 18);
         let files = Rect::new(0, 18, 24, 14);
@@ -257,8 +274,27 @@ mod tests {
             .map(|y| (0..24).map(|x| buffer[(x, y)].symbol()).collect())
             .collect();
         let text = rows.join("\n");
-        assert!(text.contains("RESUMES") && text.contains("FILES  AI engineer"));
+        assert!(
+            text.contains("RESUMES")
+                && text.contains("FILES")
+                && rows[usize::from(files.y + 1)].ends_with("AI engineer ")
+        );
         assert!(text.contains("main.tex"));
+        assert!(!text.contains("loose TeX") && !text.contains("Import"));
+        assert!(
+            rows[usize::from(list_area(resumes).y - 1)]
+                .trim()
+                .is_empty()
+        );
+        assert!(rows[usize::from(files.y + 2)].trim().is_empty());
+        assert_eq!(
+            buffer[(CONTENT_INSET + 1, list_area(resumes).y)].symbol(),
+            "●"
+        );
+        assert_eq!(
+            buffer[(CONTENT_INSET + 1, list_area(resumes).y)].fg,
+            theme::ACCENT
+        );
         assert!(!text.contains("notes.tex") && !text.contains("main.pdf"));
         assert_eq!(
             buffer[(CONTENT_INSET, list_area(resumes).y)].bg,
