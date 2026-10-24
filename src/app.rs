@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 #[cfg(test)]
 use anyhow::Context;
@@ -23,9 +23,11 @@ use crate::{
     config::Settings,
     editor::Editor,
     keybindings::{Prefix, PrefixInput},
+    project_dialog::ProjectDialog,
     projects::Projects,
     proposal::ProposalReview,
     render_job::RenderJob,
+    resume_project::{self, ImportPlan},
     settings::SettingsDialog,
 };
 
@@ -55,13 +57,18 @@ enum Focus {
 
 struct App {
     editor: Editor,
+    empty_workspace: bool,
     projects: Projects,
     projects_visible: bool,
     preview: Preview,
     job: Option<RenderJob>,
     rendered_source: Option<String>,
     rendered_pdf: Option<PathBuf>,
+    render_failed: bool,
+    proposed_render_failed: bool,
     actions: Option<ActionMenu>,
+    project_dialog: Option<ProjectDialog>,
+    sessions: HashMap<PathBuf, Box<App>>,
     settings: Option<SettingsDialog>,
     settings_path: PathBuf,
     prefix: Prefix,
@@ -79,8 +86,17 @@ struct App {
     focus: Focus,
 }
 
-pub fn run(terminal: &mut DefaultTerminal, editor: Editor, root: PathBuf) -> anyhow::Result<()> {
-    let mut app = App::start(editor, Preview::detect(), root)?;
+pub fn run(
+    terminal: &mut DefaultTerminal,
+    editor: Editor,
+    root: PathBuf,
+    empty_workspace: bool,
+) -> anyhow::Result<()> {
+    let mut app = App::with_workspace(editor, Preview::detect(), root)?;
+    app.empty_workspace = empty_workspace;
+    if !empty_workspace && !app.editor.is_modified() {
+        app.start_render();
+    }
     app.prefix = Prefix::new(&Settings::load(&app.settings_path)?.keybindings.prefix)?;
 
     let mut repaint = false;
@@ -147,13 +163,18 @@ impl App {
         let proposed_preview = preview.empty_like();
         Ok(Self {
             editor,
+            empty_workspace: false,
             projects,
             projects_visible: true,
             preview,
             job: None,
             rendered_source: None,
             rendered_pdf: None,
+            render_failed: false,
+            proposed_render_failed: false,
             actions: None,
+            project_dialog: None,
+            sessions: HashMap::new(),
             settings: None,
             settings_path: Settings::path()?,
             prefix: Prefix::default(),
@@ -172,6 +193,7 @@ impl App {
         })
     }
 
+    #[cfg(test)]
     fn start(editor: Editor, preview: Preview, root: PathBuf) -> anyhow::Result<Self> {
         let mut app = Self::with_workspace(editor, preview, root)?;
 
@@ -183,13 +205,23 @@ impl App {
     }
 
     fn overlay_open(&self) -> bool {
-        self.actions.is_some() || self.export.is_some() || self.settings.is_some()
+        self.project_dialog.is_some()
+            || self.actions.is_some()
+            || self.export.is_some()
+            || self.settings.is_some()
     }
 
     fn send_message(&mut self) {
         if self.assistant.input.lines().join("\n").trim() == "/settings" {
             self.assistant.clear_input();
             self.open_settings();
+            return;
+        }
+
+        let command = self.assistant.input.lines().join("\n");
+        if self.empty_workspace && !command.trim_start().starts_with('/') {
+            self.assistant
+                .report_edit_result("Create or import a resume first.");
             return;
         }
 
@@ -262,6 +294,7 @@ impl App {
         self.proposed_job = None;
         self.proposed_build = None;
         self.proposed_preview.clear();
+        self.proposed_render_failed = false;
         self.diagnostics = None;
         self.show_proposed = true;
 
@@ -277,7 +310,7 @@ impl App {
 
         match job {
             Ok(job) => self.proposed_job = Some(job),
-            Err(error) => self.report_error(error),
+            Err(error) => self.report_build_error(error, true),
         }
     }
 
@@ -291,14 +324,14 @@ impl App {
         match result {
             Ok(document) => {
                 if let Err(error) = self.proposed_preview.set_pages(document.pages) {
-                    self.report_error(error);
+                    self.report_build_error(error, true);
                     return;
                 }
 
                 self.proposed_build = document.build;
                 self.show_proposed = true;
             }
-            Err(error) => self.report_error(error),
+            Err(error) => self.report_build_error(error, true),
         }
     }
 
@@ -338,6 +371,7 @@ impl App {
         std::mem::swap(&mut self.preview, &mut self.proposed_preview);
         self.rendered_source = Some(edit.source_after);
         self.rendered_pdf = Some(pdf_path);
+        self.render_failed = false;
         self.clear_proposal();
         self.status = "Accepted · PDF updated · Ctrl+S to save TeX".into();
         self.assistant
@@ -402,6 +436,13 @@ impl App {
     }
 
     fn start_render(&mut self) {
+        if self.empty_workspace {
+            return;
+        }
+        if self.projects.project_for(&self.editor.path).is_some() && !self.editor.path.is_file() {
+            self.status = "Source missing · Actions → Restore source".into();
+            return;
+        }
         if self.proposal_review.is_some() {
             self.start_proposed_render();
             return;
@@ -411,13 +452,14 @@ impl App {
             return;
         }
 
-        match RenderJob::start(self.editor.source(), self.editor.path.clone()) {
+        match RenderJob::draft(self.editor.source(), self.editor.path.clone()) {
             Ok(job) => {
                 self.job = Some(job);
+                self.render_failed = false;
                 self.diagnostics = None;
                 self.status = "Building…".into();
             }
-            Err(error) => self.report_error(error),
+            Err(error) => self.report_build_error(error, false),
         }
     }
 
@@ -428,21 +470,42 @@ impl App {
         self.job = None;
 
         match result {
-            Ok(document) => match self.preview.set_pages(document.pages) {
-                Ok(()) => {
-                    self.rendered_source = Some(document.source);
-                    self.rendered_pdf = Some(document.pdf_path);
-                    if self.proposal_review.is_none() {
-                        self.status.clear();
-                        self.diagnostics = None;
+            Ok(document) if document.source != self.editor.source() => {
+                self.status = "Build is outdated; rebuild the current text.".into();
+            }
+            Ok(mut document) => {
+                match texo::compiler::publish_pdf(&document.pdf_path, &self.editor.path) {
+                    Ok(path) => document.pdf_path = path,
+                    Err(error) => {
+                        self.report_build_error(error, false);
+                        return;
                     }
-
-                    self.refresh_projects();
                 }
-                Err(error) => self.report_error(error),
-            },
-            Err(error) => self.report_error(error),
+                match self.preview.set_pages(document.pages) {
+                    Ok(()) => {
+                        self.rendered_source = Some(document.source);
+                        self.rendered_pdf = Some(document.pdf_path);
+                        if self.proposal_review.is_none() {
+                            self.status.clear();
+                            self.diagnostics = None;
+                        }
+
+                        self.refresh_projects();
+                    }
+                    Err(error) => self.report_build_error(error, false),
+                }
+            }
+            Err(error) => self.report_build_error(error, false),
         }
+    }
+
+    fn report_build_error(&mut self, error: anyhow::Error, proposed: bool) {
+        if proposed {
+            self.proposed_render_failed = true;
+        } else {
+            self.render_failed = true;
+        }
+        self.report_error(error);
     }
 
     fn report_error(&mut self, error: anyhow::Error) {
@@ -459,6 +522,11 @@ impl App {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
                 return true;
             }
+        }
+
+        if self.project_dialog.is_some() {
+            self.handle_project_dialog(event);
+            return false;
         }
 
         if self.settings.is_some() {
@@ -503,7 +571,11 @@ impl App {
             Event::Paste(text) if self.focus == Focus::Assistant => {
                 self.assistant.input.insert_str(text);
             }
-            Event::Paste(text) if self.focus == Focus::Editor && self.proposal_review.is_none() => {
+            Event::Paste(text)
+                if self.focus == Focus::Editor
+                    && self.proposal_review.is_none()
+                    && !self.empty_workspace =>
+            {
                 self.editor.text.insert_str(text);
             }
             Event::Mouse(mouse) => {
@@ -521,7 +593,12 @@ impl App {
                         return false;
                     }
 
-                    if layout.projects.contains(position) {
+                    if Projects::new_button(layout.projects).contains(position) {
+                        self.open_project_dialog(Action::NewResume);
+                    } else if layout.files.contains(position) {
+                        self.focus = Focus::Projects;
+                        self.projects.files_focused = true;
+                    } else if layout.projects.contains(position) {
                         self.focus = Focus::Projects;
                         if self.projects.select_at(layout.projects, mouse.row) {
                             self.activate_projects();
@@ -575,12 +652,17 @@ impl App {
                         MouseEventKind::ScrollUp => self.active_preview().scroll(true),
                         _ => {}
                     }
-                } else if layout.projects.contains(position) {
-                    match mouse.kind {
-                        MouseEventKind::ScrollDown => self.projects.move_selection(true),
-                        MouseEventKind::ScrollUp => self.projects.move_selection(false),
-                        _ => {}
-                    }
+                } else if layout.projects.contains(position)
+                    && matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                    )
+                {
+                    self.focus = Focus::Projects;
+                    self.projects.files_focused = false;
+                    self.projects
+                        .move_selection(mouse.kind == MouseEventKind::ScrollDown);
+                    self.activate_projects();
                 }
             }
             _ => {}
@@ -592,6 +674,18 @@ impl App {
         match code {
             KeyCode::Char('u') if self.focus == Focus::Assistant => {
                 self.chat_maximized = !self.chat_maximized;
+            }
+            KeyCode::Char('n') => self.open_project_dialog(Action::NewResume),
+            KeyCode::Char('i') => self.open_project_dialog(Action::ImportResume),
+            KeyCode::Char('r') => {
+                self.projects_visible = true;
+                self.focus = Focus::Projects;
+                self.projects.files_focused = false;
+            }
+            KeyCode::Char('f') => {
+                self.projects_visible = true;
+                self.focus = Focus::Projects;
+                self.projects.files_focused = true;
             }
             KeyCode::Char('s' | '?') => self.open_settings(),
             _ => {}
@@ -735,8 +829,13 @@ impl App {
         // Prepare the replacement before discarding anything. Failed reads or saves
         // leave the current editor, proposals, chat, and workers untouched.
         let workspace = crate::workspace::Workspace::resolve(Some(&root))?;
-        let editor = Editor::open(workspace.document)?;
+        let editor = if workspace.empty {
+            Editor::placeholder(workspace.document)?
+        } else {
+            Editor::open(workspace.document)?
+        };
         let mut replacement = Self::with_workspace(editor, self.preview.empty_like(), root)?;
+        replacement.empty_workspace = workspace.empty;
         replacement.settings_path = self.settings_path.clone();
         replacement.prefix = prefix;
         if save {
@@ -872,6 +971,15 @@ impl App {
                     self.focus = Focus::Editor;
                 }
             }
+            KeyCode::Char('s') if self.empty_workspace => {
+                self.open_project_dialog(Action::NewResume)
+            }
+            KeyCode::Char('s')
+                if self.projects.project_for(&self.editor.path).is_some()
+                    && !self.editor.path.exists() =>
+            {
+                self.open_project_dialog(Action::RecoverSource)
+            }
             KeyCode::Char('s') => match self.editor.save() {
                 Ok(()) => {
                     self.status = "Saved TeX document.".into();
@@ -880,13 +988,24 @@ impl App {
                 }
                 Err(error) => self.report_error(error),
             },
-            KeyCode::Char('z') if self.focus == Focus::Editor && self.proposal_review.is_none() => {
+            KeyCode::Char('z')
+                if self.focus == Focus::Editor
+                    && self.proposal_review.is_none()
+                    && !self.empty_workspace =>
+            {
                 self.editor.text.undo();
             }
-            KeyCode::Char('y') if self.focus == Focus::Editor && self.proposal_review.is_none() => {
+            KeyCode::Char('y')
+                if self.focus == Focus::Editor
+                    && self.proposal_review.is_none()
+                    && !self.empty_workspace =>
+            {
                 self.editor.text.redo();
             }
-            _ if self.focus == Focus::Editor && self.proposal_review.is_none() => {
+            _ if self.focus == Focus::Editor
+                && self.proposal_review.is_none()
+                && !self.empty_workspace =>
+            {
                 self.editor.text.input(key);
             }
             _ if self.focus == Focus::Assistant => {
@@ -913,7 +1032,10 @@ impl App {
                 Ok(())
             }
             _ => {
-                if self.focus == Focus::Editor && self.proposal_review.is_none() {
+                if self.focus == Focus::Editor
+                    && self.proposal_review.is_none()
+                    && !self.empty_workspace
+                {
                     self.editor.text.input(key);
                 }
                 Ok(())
@@ -956,7 +1078,10 @@ impl App {
                 self.assistant.input.input(key);
             }
             _ if self.focus == Focus::Projects => self.handle_projects_key(key),
-            _ if self.focus == Focus::Editor && self.proposal_review.is_none() => {
+            _ if self.focus == Focus::Editor
+                && self.proposal_review.is_none()
+                && !self.empty_workspace =>
+            {
                 self.editor.text.input(key);
             }
             _ => {}
@@ -1032,6 +1157,25 @@ impl App {
 
     fn perform_action(&mut self, action: Action) -> bool {
         let key = match action {
+            Action::NewResume
+            | Action::ImportResume
+            | Action::RenameResume
+            | Action::DuplicateResume
+            | Action::ReloadSource
+            | Action::RecoverSource => {
+                self.open_project_dialog(action);
+                return false;
+            }
+            Action::FocusResumes | Action::FocusFiles => {
+                self.projects_visible = true;
+                self.focus = Focus::Projects;
+                self.projects.files_focused = matches!(action, Action::FocusFiles);
+                return false;
+            }
+            Action::WorkspaceWarnings => {
+                self.diagnostics = Some(self.projects.catalog.warnings.join("\n"));
+                return false;
+            }
             Action::Settings => {
                 self.open_settings();
                 return false;
@@ -1098,26 +1242,163 @@ impl App {
         }
     }
 
+    fn open_project_dialog(&mut self, action: Action) {
+        let active = self.projects.project_for(&self.editor.path);
+        if active.is_none() && !matches!(action, Action::NewResume | Action::ImportResume) {
+            self.status = "Select a recognized resume first.".into();
+            return;
+        }
+
+        self.actions = None;
+        self.prefix.armed = false;
+        self.project_dialog = Some(ProjectDialog::new(
+            action,
+            active,
+            self.projects
+                .catalog
+                .loose_files
+                .first()
+                .map(PathBuf::as_path),
+        ));
+    }
+
+    fn handle_project_dialog(&mut self, event: Event) {
+        let Some(mut dialog) = self.project_dialog.take() else {
+            return;
+        };
+        match event {
+            Event::Key(key) if key.code == KeyCode::Esc => return,
+            Event::Key(key) if key.code == KeyCode::Enter => {
+                match self.finish_project_dialog(&mut dialog) {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(error) => dialog.error = error.to_string(),
+                }
+            }
+            Event::Key(key)
+                if dialog.plan.is_some() && matches!(key.code, KeyCode::Up | KeyCode::Down) =>
+            {
+                let current = dialog.selection.selected().unwrap_or(0);
+                let count = dialog.plan.as_ref().unwrap().candidates.len();
+                let next = if key.code == KeyCode::Up {
+                    current.saturating_sub(1)
+                } else {
+                    (current + 1).min(count - 1)
+                };
+                dialog.selection.select(Some(next));
+            }
+            Event::Key(key)
+                if key.code == KeyCode::Tab && matches!(dialog.action, Action::ImportResume) =>
+            {
+                dialog.source_focused = !dialog.source_focused;
+            }
+            Event::Key(key) if dialog.plan.is_none() => {
+                dialog.input().input(key);
+            }
+            Event::Paste(text) if dialog.plan.is_none() => {
+                dialog.input().insert_str(text.replace(['\n', '\r'], ""));
+            }
+            _ => {}
+        }
+        self.project_dialog = Some(dialog);
+    }
+
+    fn finish_project_dialog(&mut self, dialog: &mut ProjectDialog) -> anyhow::Result<bool> {
+        let name = dialog.name.lines().join("");
+        let root = self.projects.root().to_path_buf();
+        let project = match dialog.action {
+            Action::NewResume => Some(resume_project::create(&root, &name)?),
+            Action::ImportResume => {
+                if dialog.plan.is_none() {
+                    let source = dialog.source.lines().join("");
+                    let path = if let Some(relative) = source.strip_prefix("~/") {
+                        directories::BaseDirs::new()
+                            .ok_or_else(|| anyhow::anyhow!("Could not locate home"))?
+                            .home_dir()
+                            .join(relative)
+                    } else {
+                        PathBuf::from(source.trim())
+                    };
+                    let plan = ImportPlan::inspect(&path)?;
+                    let ambiguous = plan.candidates.len() > 1;
+                    dialog.plan = Some(plan);
+                    if ambiguous {
+                        return Ok(false);
+                    }
+                }
+                let plan = dialog.plan.as_ref().unwrap();
+                let entrypoint = &plan.candidates[dialog.selection.selected().unwrap_or(0)];
+                Some(plan.import(&root, &name, entrypoint)?)
+            }
+            Action::RenameResume => {
+                let mut project = self
+                    .projects
+                    .project_for(&self.editor.path)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("Select a resume"))?;
+                project.rename(&name)?;
+                self.refresh_projects();
+                None
+            }
+            Action::DuplicateResume => {
+                let project = self
+                    .projects
+                    .project_for(&self.editor.path)
+                    .ok_or_else(|| anyhow::anyhow!("Select a resume"))?;
+                Some(resume_project::duplicate(
+                    &root,
+                    project,
+                    &name,
+                    &self.editor.source(),
+                )?)
+            }
+            Action::ReloadSource => {
+                self.editor.reload()?;
+                self.assistant.cancel();
+                self.assistant.take_proposal();
+                self.clear_proposal();
+                self.job = None;
+                self.preview.clear();
+                self.rendered_source = None;
+                self.rendered_pdf = None;
+                self.start_render();
+                None
+            }
+            Action::RecoverSource => {
+                self.editor.recover_missing()?;
+                self.start_render();
+                None
+            }
+            _ => None,
+        };
+
+        if let Some(project) = project {
+            self.refresh_projects();
+            self.open_document(project.document());
+            self.projects.select_path(&self.editor.path);
+        }
+        Ok(true)
+    }
+
     fn handle_projects_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.projects.move_selection(false),
-            KeyCode::Down | KeyCode::Char('j') => self.projects.move_selection(true),
+            KeyCode::Tab => self.projects.files_focused = !self.projects.files_focused,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.projects.move_selection(false);
+                self.activate_projects();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.projects.move_selection(true);
+                self.activate_projects();
+            }
+            KeyCode::Enter if self.projects.files_focused => self.focus = Focus::Editor,
             KeyCode::Enter => self.activate_projects(),
             _ => {}
         }
     }
 
     fn activate_projects(&mut self) {
-        let Some(path) = self.projects.selected_path() else {
-            return;
-        };
-        if path.is_dir() {
-            match crate::workspace::project_document(&path) {
-                Ok(Some(document)) => self.open_document(document),
-                Ok(None) => self.status = format!("No TeX document found in {}.", path.display()),
-                Err(error) => self.report_error(error),
-            }
-        } else {
+        if let Some(path) = self.projects.selected_path() {
             self.open_document(path);
         }
     }
@@ -1130,36 +1411,50 @@ impl App {
 
     fn open_document(&mut self, path: PathBuf) {
         if path == self.editor.path {
-            self.focus = Focus::Editor;
             return;
         }
-        if self.editor.is_modified() {
-            self.status = "Save your changes with Ctrl+S before opening another document.".into();
-            return;
-        }
-        if path.extension().is_none_or(|extension| extension != "tex") {
-            self.status =
-                "Select a .tex document to edit. Other files are shown for context.".into();
-            return;
-        }
-        match Editor::open(path) {
-            Ok(editor) => {
-                // Drop joins the cancelled worker before a new document can receive a result.
-                self.job = None;
-                self.assistant.reset();
-                self.clear_proposal();
-                self.editor = editor;
-                self.preview.clear();
-                self.rendered_source = None;
-                self.rendered_pdf = None;
-                self.diagnostics = None;
-                self.focus = Focus::Editor;
-                self.status.clear();
-                if !self.editor.is_modified() {
-                    self.start_render();
-                }
+
+        let root = self.projects.root().to_path_buf();
+        let projects = match Projects::new(root.clone(), &path) {
+            Ok(projects) => projects,
+            Err(error) => {
+                self.report_error(error);
+                return;
             }
-            Err(error) => self.report_error(error),
+        };
+
+        let target = if let Some(session) = self.sessions.remove(&path) {
+            Ok(*session)
+        } else {
+            Editor::open(path.clone()).and_then(|editor| {
+                Self::with_workspace(editor, self.preview.empty_like(), root.clone())
+            })
+        };
+        let mut target = match target {
+            Ok(target) => target,
+            Err(error) => {
+                self.report_error(error);
+                return;
+            }
+        };
+
+        target.settings_path = self.settings_path.clone();
+        target.prefix = self.prefix.clone();
+        target.prefix.armed = false;
+        target.projects_visible = self.projects_visible;
+        target.focus = self.focus;
+        target.projects = projects;
+        target.projects.files_focused = self.projects.files_focused;
+        target.sessions = std::mem::take(&mut self.sessions);
+
+        // Each session owns its editor, undo stack, chat, proposals, and worker channels.
+        // Late results are only polled when their originating session is active again.
+        let previous = std::mem::replace(self, target);
+        self.sessions
+            .insert(previous.editor.path.clone(), Box::new(previous));
+
+        if self.job.is_none() && self.rendered_source.is_none() && !self.editor.is_modified() {
+            self.start_render();
         }
     }
 
@@ -1198,6 +1493,7 @@ impl App {
             self.projects.draw(
                 frame,
                 layout.projects,
+                layout.files,
                 &self.editor.path,
                 self.focus == Focus::Projects,
             );
@@ -1206,16 +1502,19 @@ impl App {
         let assistant = draw_pane_border(frame, layout.assistant, self.focus == Focus::Assistant);
         let preview = draw_pane_border(frame, layout.preview, self.focus == Focus::Preview);
 
-        self.draw_editor(frame, editor);
+        let source_state = self.editor.disk_state();
+        self.draw_editor(frame, editor, &source_state);
         self.draw_assistant(frame, assistant);
-        self.draw_preview(frame, preview);
+        self.draw_preview(frame, preview, &source_state);
         self.draw_diagnostics(frame, &layout);
 
         let settings_hint = if self.prefix.armed {
             if self.focus == Focus::Assistant {
-                "Prefix · u Maximize/restore chat · s Settings · Esc Cancel".to_owned()
+                "Prefix · u Maximize/restore · n New · i Import · r Resumes · f Files · s Settings"
+                    .to_owned()
             } else {
-                "Prefix · s Settings · Esc Cancel".to_owned()
+                "Prefix · n New · i Import · r Resumes · f Files · s Settings · Esc Cancel"
+                    .to_owned()
             }
         } else {
             format!("{} Prefix · {SETTINGS_HINT} ", self.prefix.label())
@@ -1236,9 +1535,27 @@ impl App {
         if let Some(settings) = &self.settings {
             settings.draw(frame);
         }
+        if let Some(dialog) = &mut self.project_dialog {
+            dialog.draw(frame);
+        }
     }
 
-    fn draw_editor(&mut self, frame: &mut Frame, area: Rect) {
+    fn draw_editor(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        source_state: &anyhow::Result<crate::editor::DiskState>,
+    ) {
+        if self.empty_workspace {
+            let prompt = "Create a resume with +, or Import from Actions (Ctrl+P).\nExisting loose TeX files stay untouched.";
+            frame.render_widget(
+                Paragraph::new(prompt)
+                    .style(theme::muted())
+                    .wrap(Wrap { trim: false }),
+                area.inner(ratatui::layout::Margin::new(theme::PANEL_PADDING, 1)),
+            );
+            return;
+        }
         if let Some(review) = &self.proposal_review {
             review.draw(frame, area);
         } else {
@@ -1250,7 +1567,13 @@ impl App {
             } else {
                 ""
             };
-            let label = if self.proposal_review.is_some() {
+            let label = if !self.editor.path.is_file() {
+                "Source missing · Actions → Restore source".into()
+            } else if matches!(source_state, Ok(crate::editor::DiskState::Changed)) {
+                "Source changed externally · Actions → Reload source".into()
+            } else if source_state.is_err() {
+                "Source unreadable · Your editor text is preserved".into()
+            } else if self.proposal_review.is_some() {
                 format!(
                     "Unapproved changes · {}",
                     crate::workspace::display_path(&self.editor.path)
@@ -1306,7 +1629,12 @@ impl App {
         }
     }
 
-    fn draw_preview(&mut self, frame: &mut Frame, area: Rect) {
+    fn draw_preview(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        source_state: &anyhow::Result<crate::editor::DiskState>,
+    ) {
         if area.is_empty() {
             return;
         }
@@ -1319,21 +1647,28 @@ impl App {
             self.job.as_ref()
         };
 
+        let is_loading = loading.is_some();
         if let Some(job) = loading {
             Preview::draw_loading(frame, body, job.elapsed());
         } else {
             self.active_preview().draw(frame, body);
         }
 
-        let state = if !proposed
-            && self
-                .rendered_source
-                .as_ref()
-                .is_some_and(|source| *source != self.editor.source())
+        let state = if self.empty_workspace {
+            "PDF missing"
+        } else if is_loading {
+            "PDF building"
+        } else if (proposed && self.proposed_render_failed) || (!proposed && self.render_failed) {
+            "PDF failed"
+        } else if self.rendered_pdf.is_none() && !proposed {
+            "PDF missing"
+        } else if !proposed
+            && (self.rendered_source.as_deref() != Some(self.editor.source().as_str())
+                || !matches!(source_state, Ok(crate::editor::DiskState::Unchanged)))
         {
-            "PDF out of date"
+            "PDF outdated"
         } else {
-            "PDF"
+            "PDF current"
         };
         let page = self.active_preview().page_status().unwrap_or_default();
         let [label, current_tab, proposed_tab] = preview_header(area);
@@ -1434,6 +1769,7 @@ fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
 #[derive(Default)]
 struct WorkspaceLayout {
     projects: Rect,
+    files: Rect,
     editor: Rect,
     assistant: Rect,
     preview: Rect,
@@ -1470,7 +1806,13 @@ impl WorkspaceLayout {
             };
             match focus {
                 Focus::Preview => layout.preview = upper,
-                Focus::Projects => layout.projects = upper,
+                Focus::Projects => {
+                    let [resumes, files] =
+                        Layout::vertical([Constraint::Percentage(50), Constraint::Min(1)])
+                            .areas(upper);
+                    layout.projects = resumes;
+                    layout.files = files;
+                }
                 Focus::Editor | Focus::Assistant => layout.editor = upper,
             }
             return layout;
@@ -1490,7 +1832,7 @@ impl WorkspaceLayout {
             return layout;
         }
         let sidebar_width = if show_projects { SIDEBAR_WIDTH } else { 0 };
-        let [projects, center, preview] = Layout::horizontal([
+        let [sidebar, center, preview] = Layout::horizontal([
             Constraint::Length(sidebar_width),
             Constraint::Min(1),
             Constraint::Percentage(PREVIEW_PERCENT),
@@ -1501,8 +1843,14 @@ impl WorkspaceLayout {
             Constraint::Min(MIN_CHAT_HEIGHT),
         ])
         .areas(center);
+        let [projects, files] = Layout::vertical([
+            Constraint::Percentage(EDITOR_PERCENT),
+            Constraint::Min(MIN_CHAT_HEIGHT),
+        ])
+        .areas(sidebar);
         Self {
             projects,
+            files,
             editor,
             assistant,
             preview,
@@ -1936,7 +2284,8 @@ mod tests {
         let target = directory.path().join("new");
         std::fs::create_dir(&target)?;
         let source = r"\documentclass{article}\begin{document}New workspace\end{document}";
-        std::fs::write(target.join("main.tex"), source)?;
+        let project = resume_project::create(&target, "General")?;
+        std::fs::write(project.document(), source)?;
         app.open_settings();
         app.settings.as_mut().unwrap().input =
             ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
@@ -1946,7 +2295,7 @@ mod tests {
         assert_eq!(app.editor.source(), source);
         let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
         wait_for_visible_pdf(&mut app, &mut terminal)?;
-        assert!(target.join("main.pdf").is_file());
+        assert!(project.document().with_extension("pdf").is_file());
         assert!(!directory.path().join("resume.pdf").exists());
         Ok(())
     }
@@ -2297,7 +2646,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(text.contains("Revised resume"));
-        assert!(text.contains("PDF out of date"));
+        assert!(text.contains("PDF outdated") || text.contains("PDF missing"));
         app.editor.text.undo();
         app.editor.text.undo();
         assert_eq!(app.editor.source(), original);
@@ -2354,49 +2703,53 @@ mod tests {
     }
 
     #[test]
-    fn switching_files_requires_saving_and_clears_the_previous_preview() -> anyhow::Result<()> {
-        let (directory, mut app) = application()?;
-        let original_path = app.editor.path.clone();
-        let second = directory.path().join("second.tex");
-        std::fs::write(&second, "Second document")?;
+    fn switching_projects_preserves_unsaved_undo_chat_and_pending_review() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let first = resume_project::create(directory.path(), "General")?;
+        let second = resume_project::create(directory.path(), "Backend")?;
+        let mut app = App::with_workspace(
+            Editor::open(first.document())?,
+            Preview::default(),
+            directory.path().to_path_buf(),
+        )?;
         app.editor.text.insert_str("Unsaved edit ");
-        app.open_document(second.clone());
-        assert_eq!(app.editor.path, original_path);
-        assert!(app.editor.source().contains("Unsaved edit"));
+        let source = app.editor.source();
+        app.assistant.input.insert_str("First project's draft");
+        app.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+            source_before: source.clone(),
+            source_after: "Proposed first project".into(),
+        }));
+        app.rendered_source = Some("First build".into());
 
-        app.editor.save()?;
-        app.rendered_source = Some(app.editor.source());
-        app.open_document(second.clone());
-        assert_eq!(app.editor.path, second);
-        assert_eq!(app.editor.source(), "Second document");
+        app.projects.select_path(&second.document());
+        app.activate_projects();
+        assert_eq!(app.editor.path, second.document());
+        assert!(app.proposal_review.is_none());
+        assert_eq!(app.assistant.input.lines(), &[""]);
         assert!(app.rendered_source.is_none());
+        app.job = None;
+        app.editor.text.insert_str("Second edit ");
+
+        app.open_document(first.document());
+        assert_eq!(app.editor.source(), source);
+        assert!(app.proposal_review.is_some());
+        assert_eq!(app.assistant.input.lines(), &["First project's draft"]);
+        app.editor.text.undo();
+        assert_eq!(app.editor.source(), crate::editor::STARTER_DOCUMENT);
+        app.open_document(second.document());
+        assert!(app.editor.source().starts_with("Second edit"));
         Ok(())
     }
 
     #[test]
-    fn project_selection_preserves_unsaved_and_missing_documents() -> anyhow::Result<()> {
+    fn unrecognized_directories_and_loose_files_are_not_resume_projects() -> anyhow::Result<()> {
         let (directory, mut app) = application()?;
-        let project = directory.path().join("Backend");
-        std::fs::create_dir(&project)?;
-        std::fs::write(project.join("main.tex"), "Backend resume")?;
+        std::fs::create_dir(directory.path().join("Empty"))?;
         app.refresh_projects();
-        app.editor.text.insert_str("Unsaved ");
-        let original_path = app.editor.path.clone();
-        let original_source = app.editor.source();
-        app.projects.select_path(&project);
+        assert!(app.projects.catalog.projects.is_empty());
+        assert_eq!(app.projects.catalog.loose_files.len(), 1);
         app.activate_projects();
-        assert_eq!(app.editor.path, original_path);
-        assert_eq!(app.editor.source(), original_source);
-        assert!(app.status.contains("Save your changes"));
-
-        let empty = directory.path().join("Empty");
-        std::fs::create_dir(&empty)?;
-        app.refresh_projects();
-        app.projects.select_path(&empty);
-        app.activate_projects();
-        assert_eq!(app.editor.path, original_path);
-        assert!(app.status.contains("No TeX document"));
-        assert!(!empty.join("main.tex").exists());
+        assert!(app.editor.source().contains("Original document"));
         Ok(())
     }
 
@@ -2404,10 +2757,8 @@ mod tests {
     #[ignore = "requires Tectonic and Poppler"]
     fn project_selection_replaces_editor_and_preview_during_a_build() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
-        let first_project = directory.path().join("AI engineering");
-        let second_project = directory.path().join("Backend");
-        std::fs::create_dir(&first_project)?;
-        std::fs::create_dir(&second_project)?;
+        let first_project = resume_project::create(directory.path(), "AI engineering")?.root;
+        let second_project = resume_project::create(directory.path(), "Backend")?.root;
         let first = first_project.join("main.tex");
         let second = second_project.join("main.tex");
         std::fs::write(
@@ -2416,7 +2767,7 @@ mod tests {
         )?;
         let second_source = include_str!("../tests/fixtures/two-pages.tex");
         std::fs::write(&second, second_source)?;
-        let editor = Editor::open(first)?;
+        let editor = Editor::open(first.clone())?;
         let mut app =
             App::with_workspace(editor, Preview::default(), directory.path().to_path_buf())?;
         app.start_render();
@@ -2426,7 +2777,7 @@ mod tests {
         app.assistant.input.insert_str("Old project question");
         app.start_render();
         assert!(app.job.is_some());
-        app.projects.select_path(&second_project);
+        app.projects.select_path(&second);
         app.activate_projects();
         assert_eq!(app.editor.path, second);
         assert_eq!(app.editor.source(), second_source);
@@ -2438,6 +2789,187 @@ mod tests {
         assert_eq!(app.preview.page_status().as_deref(), Some("1 / 2"));
         assert_eq!(app.rendered_source.as_deref(), Some(second_source));
         assert_eq!(app.rendered_pdf, Some(second.with_extension("pdf")));
+
+        app.open_document(first.clone());
+        finish_test_render(&mut app)?;
+        assert_eq!(app.preview.page_status().as_deref(), Some("1 / 1"));
+        assert_eq!(app.rendered_pdf, Some(first.with_extension("pdf")));
+        assert_eq!(app.assistant.input.lines(), &["Old project question"]);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires Tectonic and Poppler"]
+    fn stale_build_never_publishes_over_a_newer_editor_revision() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let source = r"\documentclass{article}\begin{document}First\end{document}";
+        app.editor.replace_source(source);
+        app.editor.save()?;
+        app.start_render();
+        app.editor.replace_source("Newer unsaved text");
+
+        finish_test_render(&mut app)?;
+        assert!(!app.editor.path.with_extension("pdf").exists());
+        assert!(app.rendered_source.is_none());
+        assert!(app.preview.page_status().is_none());
+        assert_eq!(app.editor.source(), "Newer unsaved text");
+        assert!(app.status.contains("outdated"));
+        Ok(())
+    }
+
+    #[test]
+    fn late_assistant_reply_stays_with_its_resume_and_rejects_newer_edits() -> anyhow::Result<()> {
+        use crate::assistant_job::{AssistantReply, CompletedTask};
+
+        let directory = tempfile::tempdir()?;
+        let first = resume_project::create(directory.path(), "First")?;
+        let second = resume_project::create(directory.path(), "Second")?;
+        let mut app = App::with_workspace(
+            Editor::open(first.document())?,
+            Preview::default(),
+            directory.path().to_path_buf(),
+        )?;
+        let sender = app.assistant.pending_request(app.editor.source());
+        app.editor.replace_source("Newer local edit");
+        app.open_document(second.document());
+        app.job = None;
+        sender.send(Ok(CompletedTask {
+            reply: AssistantReply {
+                reply: "First resume revised".into(),
+                proposed_tex: Some("Old response".into()),
+            },
+            build: None,
+        }))?;
+
+        app.receive_assistant();
+        assert!(app.proposal_review.is_none());
+        assert_eq!(app.editor.source(), crate::editor::STARTER_DOCUMENT);
+
+        app.open_document(first.document());
+        app.receive_assistant();
+        assert!(app.proposal_review.is_none());
+        assert_eq!(app.editor.source(), "Newer local edit");
+        assert!(app.status.contains("stale"));
+        Ok(())
+    }
+
+    #[test]
+    fn empty_workspaces_require_project_creation_and_missing_sources_require_confirmation()
+    -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let loose = directory.path().join("main.tex");
+        std::fs::write(&loose, "Untouched legacy source")?;
+        let mut app = App::with_workspace(
+            Editor::placeholder(loose.clone())?,
+            Preview::default(),
+            directory.path().to_path_buf(),
+        )?;
+        app.empty_workspace = true;
+        let area = Rect::new(0, 0, 160, 45);
+        app.handle_event(Event::Paste("Invisible text".into()), area);
+        assert_eq!(app.editor.source(), crate::editor::STARTER_DOCUMENT);
+
+        app.handle_control_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            app.project_dialog.as_ref().unwrap().action,
+            Action::NewResume
+        ));
+        app.handle_project_dialog(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        app.job = None;
+        assert!(!app.empty_workspace);
+        assert_ne!(app.editor.path, loose);
+        assert_eq!(std::fs::read_to_string(&loose)?, "Untouched legacy source");
+
+        app.editor.text.insert_str("Unsaved ");
+        let source = app.editor.source();
+        std::fs::remove_file(&app.editor.path)?;
+        app.handle_control_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            app.project_dialog.as_ref().unwrap().action,
+            Action::RecoverSource
+        ));
+        assert!(!app.editor.path.exists());
+
+        app.handle_project_dialog(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(app.editor.source(), source);
+        assert!(!app.editor.path.exists());
+        app.open_project_dialog(Action::RecoverSource);
+        app.handle_project_dialog(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        app.job = None;
+        assert_eq!(std::fs::read_to_string(&app.editor.path)?, source);
+        Ok(())
+    }
+
+    #[test]
+    fn ambiguous_import_requires_selection_and_preserves_originals() -> anyhow::Result<()> {
+        let (_directory, mut app) = application()?;
+        let source = tempfile::tempdir()?;
+        for name in ["first.tex", "second.tex"] {
+            std::fs::write(source.path().join(name), crate::editor::STARTER_DOCUMENT)?;
+        }
+        let mut dialog = ProjectDialog::new(Action::ImportResume, None, None);
+        dialog.source.insert_str(source.path().to_string_lossy());
+        assert!(!app.finish_project_dialog(&mut dialog)?);
+        assert!(app.projects.catalog.projects.is_empty());
+        assert_eq!(dialog.plan.as_ref().unwrap().candidates.len(), 2);
+
+        dialog.selection.select(Some(1));
+        assert!(app.finish_project_dialog(&mut dialog)?);
+        app.job = None;
+        assert_eq!(app.editor.path.file_name().unwrap(), "second.tex");
+        assert_eq!(
+            std::fs::read_to_string(source.path().join("second.tex"))?,
+            crate::editor::STARTER_DOCUMENT
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sidebar_navigation_and_dividers_match_the_visible_panes() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let first = resume_project::create(directory.path(), "AI engineer")?;
+        let second = resume_project::create(directory.path(), "Backend")?;
+        let mut app = App::with_workspace(
+            Editor::open(first.document())?,
+            Preview::default(),
+            directory.path().to_path_buf(),
+        )?;
+        let area = Rect::new(0, 0, 160, 45);
+        let layout = app.workspace_layout(area);
+        assert_eq!(layout.projects.bottom(), layout.editor.bottom());
+        assert_eq!(layout.files.y, layout.assistant.y);
+
+        app.focus = Focus::Projects;
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            area,
+        );
+        app.job = None;
+        assert_eq!(app.editor.path, second.document());
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            area,
+        );
+        assert!(app.projects.files_focused);
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            area,
+        );
+        assert!(app.focus == Focus::Editor);
+
+        let before = app.editor.source();
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            area,
+        );
+        assert!(app.project_dialog.is_none());
+        assert_ne!(app.editor.source(), before);
         Ok(())
     }
 
@@ -2627,7 +3159,7 @@ mod tests {
                 let layout = WorkspaceLayout::new(area, false, true, focus);
                 let upper = match focus {
                     Focus::Preview => layout.preview,
-                    Focus::Projects => layout.projects,
+                    Focus::Projects => layout.projects.union(layout.files),
                     _ => layout.editor,
                 };
                 assert_eq!(upper.bottom(), layout.assistant.y);
@@ -2659,7 +3191,7 @@ mod tests {
         terminal.draw(|frame| app.draw(frame))?;
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-        assert!(text.contains(app.projects.root().file_name().unwrap().to_str().unwrap()));
+        assert!(text.contains("RESUMES") && text.contains("FILES"));
         assert!(text.contains("texo / chat"));
         assert!(text.contains("Original document"));
 
