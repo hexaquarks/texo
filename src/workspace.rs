@@ -29,7 +29,7 @@ impl Workspace {
         let settings = crate::config::Settings::load(settings_path)?;
         if let Some(root) = settings.resume_folder {
             let root = crate::config::resume_folder(&root.to_string_lossy())
-                .context("Resume folder unavailable. Run texo with another folder and use F2 to update settings")?;
+                .context("Resume folder unavailable. Run texo with another folder and use ? to update settings")?;
             return Self::resolve_folder(Some(&root));
         }
         Self::resolve_folder(None)

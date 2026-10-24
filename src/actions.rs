@@ -35,7 +35,7 @@ pub enum Action {
 }
 
 const ACTIONS: [(Action, &str); 13] = [
-    (Action::Settings, "Settings                          F2"),
+    (Action::Settings, "Settings                          ?"),
     (Action::Build, "Build PDF                         Ctrl+B"),
     (Action::Export, "Export PDF                        Ctrl+E"),
     (Action::Save, "Save TeX                          Ctrl+S"),

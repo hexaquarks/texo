@@ -28,7 +28,7 @@ use crate::{
     settings::SettingsDialog,
 };
 
-const SETTINGS_HINT: &str = "F2 Settings";
+const SETTINGS_HINT: &str = "? Settings";
 
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MULTIPANE_WIDTH: u16 = 100;
@@ -36,6 +36,8 @@ const MULTIPANE_HEIGHT: u16 = 20;
 const SIDEBAR_WIDTH: u16 = 24;
 const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 55;
+// Borders, padding, header, and composer must fit even with the status row visible.
+const MIN_CHAT_HEIGHT: u16 = 11;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
 const REVIEW_CONTROLS_HEIGHT: u16 = 2;
@@ -451,10 +453,6 @@ impl App {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
                 return true;
             }
-            if key.code == KeyCode::F(2) {
-                self.open_settings();
-                return false;
-            }
         }
 
         if self.settings.is_some() {
@@ -476,6 +474,17 @@ impl App {
         if self.overlay_open() {
             return self.handle_overlay(event, area);
         }
+
+        if let Event::Key(key) = &event
+            && key.code == KeyCode::Char('?')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            self.open_settings();
+            return false;
+        }
+
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => return self.handle_key(key),
             Event::Paste(text) if self.focus == Focus::Assistant => {
@@ -1086,14 +1095,14 @@ impl App {
         self.draw_assistant(frame, assistant);
         self.draw_preview(frame, preview);
         self.draw_diagnostics(frame, &layout);
-        let hint_width = (SETTINGS_HINT.len() as u16).min(area.width.saturating_sub(2));
-        let footer = Rect::new(
-            area.right().saturating_sub(hint_width + 1).max(area.x),
-            area.bottom().saturating_sub(1).max(area.y),
-            hint_width,
-            area.height.min(1),
+
+        frame.render_widget(
+            Paragraph::new(format!("{SETTINGS_HINT} "))
+                .alignment(ratatui::layout::Alignment::Right)
+                .style(theme::muted().bg(theme::ELEVATED)),
+            layout.status,
         );
-        frame.render_widget(Paragraph::new(SETTINGS_HINT).style(theme::muted()), footer);
+
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
         }
@@ -1300,10 +1309,14 @@ struct WorkspaceLayout {
     assistant: Rect,
     preview: Rect,
     diagnostics: Rect,
+    status: Rect,
 }
 
 impl WorkspaceLayout {
     fn new(area: Rect, show_diagnostics: bool, show_projects: bool, focus: Focus) -> Self {
+        let [area, status] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+
         let diagnostics_height = if show_diagnostics {
             DIAGNOSTICS_HEIGHT.min(area.height / 2)
         } else {
@@ -1315,12 +1328,15 @@ impl WorkspaceLayout {
         // A narrow terminal can still fit a vertical workspace. Keep chat visible and
         // use the upper pane for the editor, preview, or projects as focus changes.
         if area.width < MULTIPANE_WIDTH && body.height >= MULTIPANE_HEIGHT {
-            let [upper, assistant] =
-                Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
-                    .areas(body);
+            let [upper, assistant] = Layout::vertical([
+                Constraint::Percentage(EDITOR_PERCENT),
+                Constraint::Min(MIN_CHAT_HEIGHT),
+            ])
+            .areas(body);
             let mut layout = Self {
                 assistant,
                 diagnostics,
+                status,
                 ..Self::default()
             };
             match focus {
@@ -1333,6 +1349,7 @@ impl WorkspaceLayout {
         if area.width < MULTIPANE_WIDTH || body.height < MULTIPANE_HEIGHT {
             let mut layout = Self {
                 diagnostics,
+                status,
                 ..Self::default()
             };
             match focus {
@@ -1350,15 +1367,18 @@ impl WorkspaceLayout {
             Constraint::Percentage(PREVIEW_PERCENT),
         ])
         .areas(body);
-        let [editor, assistant] =
-            Layout::vertical([Constraint::Percentage(EDITOR_PERCENT), Constraint::Min(1)])
-                .areas(center);
+        let [editor, assistant] = Layout::vertical([
+            Constraint::Percentage(EDITOR_PERCENT),
+            Constraint::Min(MIN_CHAT_HEIGHT),
+        ])
+        .areas(center);
         Self {
             projects,
             editor,
             assistant,
             preview,
             diagnostics,
+            status,
         }
     }
 }
@@ -1475,7 +1495,7 @@ mod tests {
         let (_directory, mut app) = application()?;
         let area = Rect::new(0, 0, 160, 45);
         app.handle_event(
-            Event::Key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
             area,
         );
         assert!(app.settings.is_some());
@@ -1505,6 +1525,15 @@ mod tests {
             .map(|x| terminal.backend().buffer()[(x, area.height - 1)].symbol())
             .collect();
         assert!(footer.contains(SETTINGS_HINT));
+        assert_eq!(
+            terminal.backend().buffer()[(0, area.height - 1)].bg,
+            theme::ELEVATED
+        );
+
+        let layout = WorkspaceLayout::new(area, false, true, app.focus);
+        assert_eq!(layout.preview.bottom(), layout.status.y);
+        assert_eq!(layout.assistant.bottom(), layout.status.y);
+        assert_eq!(layout.status.height, 1);
         Ok(())
     }
 
@@ -2176,7 +2205,8 @@ mod tests {
                     Focus::Projects => layout.projects,
                     Focus::Preview => layout.preview,
                 };
-                assert_eq!(visible, area);
+                assert_eq!(visible.height, area.height.saturating_sub(1));
+                assert_eq!(visible.width, area.width);
                 let mut terminal = Terminal::new(TestBackend::new(width, height))?;
                 terminal.draw(|frame| app.draw(frame))?;
             }
@@ -2213,7 +2243,7 @@ mod tests {
                     _ => layout.editor,
                 };
                 assert_eq!(upper.bottom(), layout.assistant.y);
-                assert_eq!(layout.assistant.bottom(), area.bottom());
+                assert_eq!(layout.assistant.bottom(), layout.status.y);
                 assert_eq!(layout.assistant.width, area.width);
                 let mut terminal = Terminal::new(TestBackend::new(width, height))?;
                 terminal.draw(|frame| app.draw(frame))?;
