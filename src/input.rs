@@ -8,7 +8,7 @@ use ratatui::{
 
 use super::{
     App, Focus,
-    workspace_view::{WorkspaceLayout, pane_content, preview_header, review_buttons},
+    workspace_view::{WorkspaceLayout, below_header, pane_content, preview_header, review_buttons},
 };
 use crate::{
     actions::{Action, ActionMenu},
@@ -74,6 +74,22 @@ impl App {
         }
 
         match event {
+            Event::Key(key)
+                if self.focus == Focus::Preview
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && matches!(key.code, KeyCode::Char('+' | '=' | '-' | '0')) =>
+            {
+                let body = below_header(pane_content(self.preview_area(area)), 1);
+                if key.code == KeyCode::Char('0') {
+                    self.active_preview().reset_zoom(body);
+                } else {
+                    let center = Position::new(body.x + body.width / 2, body.y + body.height / 2);
+                    self.active_preview()
+                        .zoom_at(key.code != KeyCode::Char('-'), body, center);
+                }
+            }
             Event::Key(key) if key.kind != KeyEventKind::Release => return self.handle_key(key),
             Event::Paste(text) if self.focus == Focus::Assistant => {
                 self.session.assistant.input.insert_str(text);
@@ -159,9 +175,21 @@ impl App {
                 _ => {}
             }
         } else if layout.preview.contains(position) {
+            let body = below_header(pane_content(layout.preview), 1);
             match mouse.kind {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    if mouse.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.active_preview().zoom_from_wheel(
+                        mouse.kind == MouseEventKind::ScrollUp,
+                        body,
+                        position,
+                    );
+                }
                 MouseEventKind::ScrollDown => self.active_preview().scroll(false),
                 MouseEventKind::ScrollUp => self.active_preview().scroll(true),
+                MouseEventKind::ScrollLeft => self.active_preview().pan_horizontal(true),
+                MouseEventKind::ScrollRight => self.active_preview().pan_horizontal(false),
                 _ => {}
             }
         } else if layout.projects.contains(position)
@@ -400,6 +428,12 @@ impl App {
 
     pub(super) fn handle_navigation_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Left if self.focus == Focus::Preview => {
+                self.active_preview().pan_horizontal(true)
+            }
+            KeyCode::Right if self.focus == Focus::Preview => {
+                self.active_preview().pan_horizontal(false)
+            }
             KeyCode::F(5) => self.refresh_projects(),
             KeyCode::F(6) => {
                 self.focus = match self.focus {

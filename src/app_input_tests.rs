@@ -281,3 +281,97 @@ fn narrow_workspace_keeps_chat_below_the_upper_pane() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires Poppler"]
+fn pdf_zoom_mouse_and_keyboard_events_leave_editor_and_other_preview_untouched()
+-> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let pdf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/two-pages.pdf");
+    let pages = texo::pdf::PdfPages::render(&pdf, &std::sync::atomic::AtomicBool::new(false))?;
+    app.session.preview.set_pages(pages)?;
+    let area = Rect::new(0, 0, 160, 50);
+    let preview = app.workspace_layout(area).preview;
+    let source = app.session.editor.source();
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    let preparing: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(preparing.contains("Updating…"));
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while app.session.preview.is_preparing() {
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Preview preparation stalled"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        terminal.draw(|frame| app.draw(frame))?;
+    }
+    let prepared: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(!prepared.contains("Updating…"));
+
+    let wheel = |kind, modifiers, column| {
+        Event::Mouse(event::MouseEvent {
+            kind,
+            column,
+            row: preview.y + 5,
+            modifiers,
+        })
+    };
+
+    app.handle_event(
+        wheel(
+            MouseEventKind::ScrollUp,
+            KeyModifiers::CONTROL,
+            preview.x + 5,
+        ),
+        area,
+    );
+    assert_eq!(app.session.preview.zoom_percent(), 110);
+    assert_eq!(app.session.proposed_preview.zoom_percent(), 100);
+    app.handle_event(
+        wheel(
+            MouseEventKind::ScrollDown,
+            KeyModifiers::NONE,
+            preview.x + 5,
+        ),
+        area,
+    );
+    assert_eq!(app.session.preview.zoom_percent(), 110);
+    app.handle_event(
+        wheel(MouseEventKind::ScrollUp, KeyModifiers::CONTROL, 0),
+        area,
+    );
+    assert_eq!(app.session.preview.zoom_percent(), 110);
+
+    app.focus = Focus::Preview;
+    for (key, expected) in [('+', 120), ('-', 110), ('0', 100)] {
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+            area,
+        );
+        assert_eq!(app.session.preview.zoom_percent(), expected);
+    }
+    assert_eq!(app.session.editor.source(), source);
+
+    app.focus = Focus::Assistant;
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE)),
+        area,
+    );
+    assert_eq!(app.session.assistant.input.lines().join(""), "+");
+    assert_eq!(app.session.preview.zoom_percent(), 100);
+    Ok(())
+}

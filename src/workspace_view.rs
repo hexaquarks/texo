@@ -251,9 +251,20 @@ impl App {
         } else {
             Rect { height: 1, ..area }
         };
+        let zoom = self.active_preview().zoom_percent();
+        let mut title = format!(" {state}  {page} · {zoom}%");
+        if self.active_preview().is_preparing() {
+            title.push_str(" · Updating…");
+        }
+
+        let zoom_hint = " · Ctrl+wheel / +/- zoom · 0 fit";
+        if self.focus == Focus::Preview
+            && title.chars().count() + zoom_hint.chars().count() <= usize::from(title_area.width)
+        {
+            title.push_str(zoom_hint);
+        }
         frame.render_widget(
-            Paragraph::new(format!(" {state}  {page}"))
-                .style(theme::pane_title(self.focus == Focus::Preview)),
+            Paragraph::new(title).style(theme::pane_title(self.focus == Focus::Preview)),
             title_area,
         );
 

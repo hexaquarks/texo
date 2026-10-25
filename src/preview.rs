@@ -4,14 +4,14 @@ use std::{
         mpsc::{self, Receiver, TryRecvError},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow};
 use image::{DynamicImage, imageops::FilterType};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Margin, Rect},
+    layout::{Constraint, Layout, Margin, Position, Rect},
     style::Style,
     widgets::{Block, Clear, Paragraph, Wrap},
 };
@@ -29,6 +29,10 @@ const LOADING_STATE_HEIGHT: u16 = 3;
 const LOADING_FRAME_MS: u128 = 150;
 const LOADING_FRAMES: [&str; 6] = ["[=   ]", "[ =  ]", "[  = ]", "[   =]", "[  = ]", "[ =  ]"];
 const SCROLL_LINES: u32 = 3;
+const FIT_WIDTH_PERCENT: u16 = 100;
+const MAX_ZOOM_PERCENT: u16 = 300;
+const ZOOM_STEP_PERCENT: u16 = 10;
+const WHEEL_ZOOM_INTERVAL: Duration = Duration::from_millis(150);
 const EMPTY_NOTICE: &str =
     "Your PDF will appear here.\n\nBuild your document to update the preview.\n\nCtrl+B  to build";
 
@@ -39,17 +43,22 @@ pub struct Preview {
     page_index: usize,
     image: Option<StatefulProtocol>,
     source_page: Option<Arc<DynamicImage>>,
-    fitted_page: Option<Arc<DynamicImage>>,
+    scaled_page_size: Option<(u32, u32)>,
     pending: Option<ViewportJob>,
     viewport_pixels: Option<(u32, u32)>,
     scroll_pixels: u32,
     displayed_scroll: Option<u32>,
+    zoom_percent: u16,
+    last_wheel_zoom: Option<Instant>,
+    horizontal_pixels: u32,
+    displayed_horizontal: Option<u32>,
 }
 
 struct PreparedViewport {
     image: StatefulProtocol,
-    fitted: Arc<DynamicImage>,
+    page_size: (u32, u32),
     scroll: u32,
+    horizontal: u32,
 }
 
 struct ViewportJob {
@@ -57,6 +66,8 @@ struct ViewportJob {
     pixels: (u32, u32),
     scroll: u32,
     result: Receiver<Result<PreparedViewport>>,
+    zoom_percent: u16,
+    horizontal: u32,
 }
 
 impl Default for Preview {
@@ -68,11 +79,15 @@ impl Default for Preview {
             page_index: 0,
             image: None,
             source_page: None,
-            fitted_page: None,
+            scaled_page_size: None,
             pending: None,
             viewport_pixels: None,
             scroll_pixels: 0,
             displayed_scroll: None,
+            zoom_percent: FIT_WIDTH_PERCENT,
+            last_wheel_zoom: None,
+            horizontal_pixels: 0,
+            displayed_horizontal: None,
         }
     }
 }
@@ -115,6 +130,8 @@ impl Preview {
         self.set_source(None);
         self.scroll_pixels = 0;
         self.page_index = 0;
+        self.zoom_percent = FIT_WIDTH_PERCENT;
+        self.horizontal_pixels = 0;
         self.notice = EMPTY_NOTICE.into();
     }
 
@@ -148,6 +165,7 @@ impl Preview {
             let image = pages.load_page(index)?;
             self.set_source(Some(image));
             self.scroll_pixels = 0;
+            self.horizontal_pixels = 0;
             self.page_index = index;
         }
         Ok(())
@@ -155,14 +173,16 @@ impl Preview {
 
     fn set_source(&mut self, source: Option<DynamicImage>) {
         self.source_page = source.map(Arc::new);
-        self.fitted_page = None;
+        self.scaled_page_size = None;
         self.viewport_pixels = None;
         self.displayed_scroll = None;
+        self.displayed_horizontal = None;
         self.image = None;
+        self.last_wheel_zoom = None;
     }
 
     pub fn scroll(&mut self, up: bool) {
-        let Some(page) = &self.fitted_page else {
+        let Some((_, page_height)) = self.scaled_page_size else {
             return;
         };
         let Some((_, viewport_height)) = self.viewport_pixels else {
@@ -170,11 +190,130 @@ impl Preview {
         };
 
         let step = SCROLL_LINES * u32::from(self.picker.font_size().height);
-        let maximum_scroll = page.height().saturating_sub(viewport_height);
+        let maximum_scroll = page_height.saturating_sub(viewport_height);
         self.scroll_pixels = if up {
             self.scroll_pixels.saturating_sub(step)
         } else {
             self.scroll_pixels.saturating_add(step).min(maximum_scroll)
+        };
+    }
+
+    pub fn zoom_percent(&self) -> u16 {
+        self.zoom_percent
+    }
+
+    pub fn is_preparing(&self) -> bool {
+        self.source_page.is_some() && self.pending.is_some()
+    }
+
+    /// The page point under the cursor stays in place unless an edge clamps the viewport.
+    pub fn zoom_at(&mut self, zoom_in: bool, area: Rect, position: Position) {
+        let percent = if zoom_in {
+            self.zoom_percent
+                .saturating_add(ZOOM_STEP_PERCENT)
+                .min(MAX_ZOOM_PERCENT)
+        } else {
+            self.zoom_percent.saturating_sub(ZOOM_STEP_PERCENT)
+        };
+        self.set_zoom(percent, area, position);
+    }
+
+    pub fn zoom_from_wheel(&mut self, zoom_in: bool, area: Rect, position: Position) {
+        self.zoom_from_wheel_at(zoom_in, area, position, Instant::now());
+    }
+
+    fn zoom_from_wheel_at(&mut self, zoom_in: bool, area: Rect, position: Position, now: Instant) {
+        // Trackpads send many wheel events per swipe. Ignore the excess events
+        // instead of queuing zoom steps that continue after the gesture stops.
+        if self
+            .last_wheel_zoom
+            .is_some_and(|previous| now.saturating_duration_since(previous) < WHEEL_ZOOM_INTERVAL)
+        {
+            return;
+        }
+
+        let previous = self.zoom_percent;
+        self.zoom_at(zoom_in, area, position);
+
+        if self.zoom_percent != previous {
+            self.last_wheel_zoom = Some(now);
+        }
+    }
+
+    pub fn reset_zoom(&mut self, area: Rect) {
+        let Some(source) = &self.source_page else {
+            return;
+        };
+        let content = preview_content(area);
+        let font = self.picker.font_size();
+        let pixels = (
+            u32::from(content.width) * u32::from(font.width),
+            u32::from(content.height) * u32::from(font.height),
+        );
+        let minimum = fit_page_zoom_percent((source.width(), source.height()), pixels);
+
+        let center = Position::new(area.x + area.width / 2, area.y + area.height / 2);
+        self.set_zoom(minimum, area, center);
+    }
+
+    fn set_zoom(&mut self, percent: u16, area: Rect, position: Position) {
+        let Some(source) = &self.source_page else {
+            return;
+        };
+        let content = preview_content(area);
+        if content.is_empty() {
+            return;
+        }
+
+        let font = self.picker.font_size();
+        let width = u32::from(content.width) * u32::from(font.width);
+        let height = u32::from(content.height) * u32::from(font.height);
+        let minimum = fit_page_zoom_percent((source.width(), source.height()), (width, height));
+        let percent = percent.clamp(minimum, MAX_ZOOM_PERCENT);
+        if percent == self.zoom_percent {
+            return;
+        }
+
+        let old_width = zoomed_width(width, self.zoom_percent);
+        let new_width = zoomed_width(width, percent);
+        let new_height = fit_width_height(source.width(), source.height(), new_width);
+        let cursor_x = u32::from(position.x.saturating_sub(content.x)) * u32::from(font.width);
+        let cursor_y = u32::from(position.y.saturating_sub(content.y)) * u32::from(font.height);
+
+        // Below fit-width the page is centered; account for that gutter when anchoring.
+        let old_gutter = width.saturating_sub(old_width) / 2;
+        let new_gutter = width.saturating_sub(new_width) / 2;
+        self.horizontal_pixels = anchored_offset(
+            self.horizontal_pixels,
+            cursor_x.saturating_sub(old_gutter),
+            cursor_x.saturating_sub(new_gutter),
+            old_width,
+            new_width,
+        )
+        .min(new_width.saturating_sub(width));
+        self.scroll_pixels =
+            anchored_offset(self.scroll_pixels, cursor_y, cursor_y, old_width, new_width)
+                .min(new_height.saturating_sub(height));
+
+        self.zoom_percent = percent;
+        self.viewport_pixels = None;
+        self.scaled_page_size = None;
+    }
+
+    pub fn pan_horizontal(&mut self, left: bool) {
+        let Some((page_width, _)) = self.scaled_page_size else {
+            return;
+        };
+        let Some((viewport_width, _)) = self.viewport_pixels else {
+            return;
+        };
+
+        let step = SCROLL_LINES * u32::from(self.picker.font_size().width);
+        let maximum = page_width.saturating_sub(viewport_width);
+        self.horizontal_pixels = if left {
+            self.horizontal_pixels.saturating_sub(step)
+        } else {
+            self.horizontal_pixels.saturating_add(step).min(maximum)
         };
     }
 
@@ -193,6 +332,13 @@ impl Preview {
             return;
         }
 
+        let minimum = fit_page_zoom_percent((source.width(), source.height()), pixels);
+        if self.zoom_percent < minimum {
+            self.zoom_percent = minimum;
+            self.viewport_pixels = None;
+            self.scaled_page_size = None;
+        }
+
         if let Some(job) = &self.pending {
             let result = match job.result.try_recv() {
                 Ok(result) => result,
@@ -201,16 +347,20 @@ impl Preview {
             };
             let current = Arc::ptr_eq(&job.source, &source)
                 && job.pixels == pixels
-                && job.scroll == self.scroll_pixels;
+                && job.scroll == self.scroll_pixels
+                && job.horizontal == self.horizontal_pixels
+                && job.zoom_percent == self.zoom_percent;
             self.pending = None;
 
             if current {
                 match result {
                     Ok(prepared) => {
                         self.image = Some(prepared.image);
-                        self.fitted_page = Some(prepared.fitted);
+                        self.scaled_page_size = Some(prepared.page_size);
                         self.scroll_pixels = prepared.scroll;
                         self.displayed_scroll = Some(prepared.scroll);
+                        self.horizontal_pixels = prepared.horizontal;
+                        self.displayed_horizontal = Some(prepared.horizontal);
                         self.viewport_pixels = Some(pixels);
                     }
                     Err(error) => {
@@ -218,12 +368,13 @@ impl Preview {
                         self.image = None;
                         if !self.uses_basic_rendering() {
                             self.picker = Picker::halfblocks();
-                            self.fitted_page = None;
+                            self.scaled_page_size = None;
                         } else {
                             // Keep the error visible instead of spawning another failed worker
                             // every frame. A new page or viewport can try again.
                             self.viewport_pixels = Some(pixels);
                             self.displayed_scroll = Some(self.scroll_pixels);
+                            self.displayed_horizontal = Some(self.horizontal_pixels);
                             return;
                         }
                     }
@@ -231,20 +382,30 @@ impl Preview {
             }
         }
 
-        if self.viewport_pixels == Some(pixels) && self.displayed_scroll == Some(self.scroll_pixels)
+        if self.viewport_pixels == Some(pixels)
+            && self.displayed_scroll == Some(self.scroll_pixels)
+            && self.displayed_horizontal == Some(self.horizontal_pixels)
         {
             return;
         }
 
         let picker = self.picker.clone();
         let worker_source = Arc::clone(&source);
-        let fitted = self.fitted_page.clone();
         let scroll = self.scroll_pixels;
+        let horizontal = self.horizontal_pixels;
+        let zoom_percent = self.zoom_percent;
         let (sender, result) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("texo-preview".into())
             .spawn(move || {
-                let prepared = prepare_image(picker, worker_source, fitted, area, scroll);
+                let prepared = prepare_image(
+                    picker,
+                    worker_source,
+                    area,
+                    scroll,
+                    horizontal,
+                    zoom_percent,
+                );
                 let _ = sender.send(prepared);
             });
 
@@ -255,12 +416,15 @@ impl Preview {
                     pixels,
                     scroll,
                     result,
+                    zoom_percent,
+                    horizontal,
                 });
             }
             Err(error) => {
                 self.notice = format!("Could not prepare the preview: {error}");
                 self.viewport_pixels = Some(pixels);
                 self.displayed_scroll = Some(self.scroll_pixels);
+                self.displayed_horizontal = Some(self.horizontal_pixels);
             }
         }
     }
@@ -299,7 +463,7 @@ impl Preview {
             Block::default().style(Style::default().bg(theme::PREVIEW)),
             area,
         );
-        let content = area.inner(Margin::new(theme::PANEL_PADDING, 1));
+        let content = preview_content(area);
         self.prepare_viewport(content);
 
         match &mut self.image {
@@ -342,22 +506,47 @@ impl Preview {
 fn prepare_image(
     picker: Picker,
     source: Arc<DynamicImage>,
-    fitted: Option<Arc<DynamicImage>>,
     area: Rect,
     scroll: u32,
+    horizontal: u32,
+    zoom_percent: u16,
 ) -> Result<PreparedViewport> {
     let font = picker.font_size();
     let width = u32::from(area.width) * u32::from(font.width);
     let height = u32::from(area.height) * u32::from(font.height);
-    let fitted = fitted
-        .filter(|page| page.width() == width)
-        .unwrap_or_else(|| {
-            let fitted_height = fit_width_height(source.width(), source.height(), width);
-            Arc::new(source.resize_exact(width, fitted_height, FilterType::Lanczos3))
-        });
+    let page_width = zoomed_width(width, zoom_percent);
+    let page_height = fit_width_height(source.width(), source.height(), page_width);
+    let (scroll, visible_height) = viewport_crop(page_height, height, scroll);
+    let horizontal = horizontal.min(page_width.saturating_sub(width));
+    let visible_width = width.min(page_width);
 
-    let (scroll, visible_height) = viewport_crop(fitted.height(), height, scroll);
-    let visible = fitted.crop_imm(0, scroll, width, visible_height);
+    // Crop the original page first. Enlarging the entire page makes zoom cost grow
+    // with off-screen pixels, leaving the previous image visible for seconds.
+    let source_region = source_viewport(
+        (source.width(), source.height()),
+        (page_width, page_height),
+        image::math::Rect {
+            x: horizontal,
+            y: scroll,
+            width: visible_width,
+            height: visible_height,
+        },
+    );
+    let crop = source.crop_imm(
+        source_region.x,
+        source_region.y,
+        source_region.width,
+        source_region.height,
+    );
+    let crop = crop.resize_exact(visible_width, visible_height, FilterType::Lanczos3);
+    let visible = if crop.width() == width {
+        crop
+    } else {
+        let mut canvas = DynamicImage::new_rgb8(width, visible_height);
+        let gutter = (width - crop.width()) / 2;
+        image::imageops::overlay(&mut canvas, &crop, i64::from(gutter), 0);
+        canvas
+    };
     let mut image = picker.new_resize_protocol(visible);
     let resize = Resize::Crop(None);
 
@@ -373,9 +562,63 @@ fn prepare_image(
 
     Ok(PreparedViewport {
         image,
-        fitted,
+        page_size: (page_width, page_height),
         scroll,
+        horizontal,
     })
+}
+
+// Round outward so fractional source pixels at the viewport edge are retained.
+fn source_viewport(
+    source: (u32, u32),
+    scaled: (u32, u32),
+    viewport: image::math::Rect,
+) -> image::math::Rect {
+    let left = u64::from(viewport.x) * u64::from(source.0) / u64::from(scaled.0);
+    let top = u64::from(viewport.y) * u64::from(source.1) / u64::from(scaled.1);
+    let right = (u64::from(viewport.x + viewport.width) * u64::from(source.0))
+        .div_ceil(u64::from(scaled.0));
+    let bottom = (u64::from(viewport.y + viewport.height) * u64::from(source.1))
+        .div_ceil(u64::from(scaled.1));
+
+    image::math::Rect {
+        x: left as u32,
+        y: top as u32,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
+    }
+}
+
+fn preview_content(area: Rect) -> Rect {
+    area.inner(Margin::new(theme::PANEL_PADDING, 1))
+}
+
+fn fit_page_zoom_percent(source: (u32, u32), viewport: (u32, u32)) -> u16 {
+    let height_at_full_width = fit_width_height(source.0, source.1, viewport.0);
+    let percent =
+        u64::from(viewport.1) * u64::from(FIT_WIDTH_PERCENT) / u64::from(height_at_full_width);
+
+    // Percentages are whole numbers; never request a zero-sized page.
+    percent.clamp(1, u64::from(FIT_WIDTH_PERCENT)) as u16
+}
+
+fn zoomed_width(viewport_width: u32, percent: u16) -> u32 {
+    (u64::from(viewport_width) * u64::from(percent) / u64::from(FIT_WIDTH_PERCENT))
+        .clamp(1, u64::from(u32::MAX)) as u32
+}
+
+fn anchored_offset(
+    offset: u32,
+    old_anchor: u32,
+    new_anchor: u32,
+    old_width: u32,
+    new_width: u32,
+) -> u32 {
+    let scaled = (u64::from(offset) + u64::from(old_anchor)) * u64::from(new_width)
+        / u64::from(old_width.max(1));
+    scaled
+        .saturating_sub(u64::from(new_anchor))
+        .min(u64::from(u32::MAX)) as u32
 }
 
 // Compute the proportional paper height without losing precision for narrow panes.
@@ -392,211 +635,5 @@ fn viewport_crop(page_height: u32, viewport_height: u32, scroll: u32) -> (u32, u
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const WORKER_TEST_TIMEOUT: Duration = Duration::from_secs(5);
-    const WORKER_TEST_POLL_INTERVAL: Duration = Duration::from_millis(5);
-
-    fn finish_viewport(preview: &mut Preview, area: Rect) {
-        let deadline = std::time::Instant::now() + WORKER_TEST_TIMEOUT;
-        loop {
-            preview.prepare_viewport(area);
-            if preview.pending.is_none() {
-                assert!(preview.image.is_some());
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Preview worker timed out"
-            );
-            thread::sleep(WORKER_TEST_POLL_INTERVAL);
-        }
-    }
-
-    #[test]
-    fn failed_preview_does_not_retry_until_the_viewport_changes() {
-        let mut preview = Preview::default();
-        preview.set_source(Some(DynamicImage::new_rgb8(120, 200)));
-        let area = Rect::new(0, 0, 10, 5);
-        let font = preview.picker.font_size();
-        let (sender, result) = mpsc::channel();
-
-        preview.pending = Some(ViewportJob {
-            source: preview.source_page.clone().unwrap(),
-            pixels: (
-                u32::from(area.width) * u32::from(font.width),
-                u32::from(area.height) * u32::from(font.height),
-            ),
-            scroll: 0,
-            result,
-        });
-        sender
-            .send(Err(anyhow!("Synthetic encoding failure")))
-            .unwrap();
-
-        preview.prepare_viewport(area);
-        preview.prepare_viewport(area);
-        assert!(preview.pending.is_none());
-        assert!(preview.image.is_none());
-        assert!(preview.notice.contains("Synthetic encoding failure"));
-
-        finish_viewport(&mut preview, Rect::new(0, 0, 12, 5));
-        assert!(preview.image.is_some());
-    }
-
-    #[test]
-    fn pending_image_work_does_not_block_or_replace_a_new_page() {
-        let mut preview = Preview::default();
-        preview.set_source(Some(DynamicImage::new_rgb8(120, 200)));
-        let area = Rect::new(0, 0, 10, 5);
-        let source = preview.source_page.clone().unwrap();
-        let (sender, result) = mpsc::channel();
-        preview.pending = Some(ViewportJob {
-            source: source.clone(),
-            pixels: (100, 100),
-            scroll: 0,
-            result,
-        });
-
-        // The worker has not sent anything: drawing must still return immediately.
-        preview.prepare_viewport(area);
-        assert!(preview.pending.is_some());
-        assert!(preview.image.is_none());
-
-        preview.clear();
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
-        terminal
-            .draw(|frame| preview.draw(frame, frame.area()))
-            .unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains("Your PDF will appear here."));
-        assert!(!text.contains("Preparing PDF"));
-
-        preview.set_source(Some(DynamicImage::new_rgb8(60, 60)));
-        sender
-            .send(prepare_image(Picker::halfblocks(), source, None, area, 0))
-            .unwrap();
-        preview.prepare_viewport(area);
-        assert!(
-            preview.image.is_none(),
-            "The previous page must not reappear"
-        );
-
-        finish_viewport(&mut preview, area);
-        assert_eq!(preview.fitted_page.as_ref().unwrap().height(), 100);
-        preview.prepare_viewport(area);
-        assert!(
-            preview.pending.is_none(),
-            "An unchanged viewport must use its cache"
-        );
-    }
-
-    #[test]
-    fn kitty_preview_transmits_image_on_first_draw_after_background_preparation()
-    -> anyhow::Result<()> {
-        let mut preview = Preview::default();
-        preview.picker.set_protocol_type(ProtocolType::Kitty);
-        preview.set_source(Some(DynamicImage::new_rgb8(120, 60)));
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 12))?;
-        let content = Rect::new(0, 0, 20, 12).inner(Margin::new(theme::PANEL_PADDING, 1));
-        finish_viewport(&mut preview, content);
-
-        terminal.draw(|frame| preview.draw(frame, frame.area()))?;
-        let first: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(
-            first.contains("a=T"),
-            "The first frame must transmit the image, not only its placeholders"
-        );
-
-        terminal.draw(|frame| preview.draw(frame, frame.area()))?;
-        let next: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(
-            !next.contains("a=T"),
-            "Unchanged frames must reuse the transmitted image"
-        );
-        assert!(preview.pending.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn loading_state_replaces_previous_content_and_animates() -> anyhow::Result<()> {
-        use ratatui::{Terminal, backend::TestBackend};
-        let mut terminal = Terminal::new(TestBackend::new(60, 20))?;
-        let mut captures = Vec::new();
-        for elapsed in [Duration::ZERO, Duration::from_millis(150)] {
-            terminal.draw(|frame| {
-                frame.render_widget(Paragraph::new("Previous PDF"), frame.area());
-                Preview::draw_loading(frame, frame.area(), elapsed);
-            })?;
-            let text: String = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect();
-            assert!(text.contains("Building PDF"));
-            assert!(!text.contains("Previous PDF"));
-            captures.push(text);
-        }
-        assert_ne!(captures[0], captures[1]);
-        Ok(())
-    }
-
-    #[test]
-    fn fitting_width_preserves_portrait_and_landscape_proportions() {
-        assert_eq!(fit_width_height(600, 900, 800), 1200);
-        assert_eq!(fit_width_height(900, 600, 450), 300);
-        assert_eq!(fit_width_height(1000, 1, 1), 1);
-    }
-
-    #[test]
-    fn preview_scrolls_in_lines_and_clamps_after_viewport_resize() {
-        let mut preview = Preview::default();
-        preview.set_source(Some(DynamicImage::new_rgb8(120, 200)));
-        finish_viewport(&mut preview, Rect::new(0, 0, 10, 5));
-        assert_eq!(preview.fitted_page.as_ref().unwrap().width(), 100);
-
-        preview.scroll(false);
-        assert_eq!(preview.scroll_pixels, 60);
-        preview.scroll(false);
-        assert_eq!(preview.scroll_pixels, 66);
-        finish_viewport(&mut preview, Rect::new(0, 0, 10, 5));
-        assert_eq!(preview.displayed_scroll, Some(66));
-
-        finish_viewport(&mut preview, Rect::new(0, 0, 10, 20));
-        assert_eq!(preview.scroll_pixels, 0);
-        preview.scroll(true);
-        assert_eq!(preview.scroll_pixels, 0);
-        preview.clear();
-        assert!(preview.source_page.is_none());
-        assert!(preview.image.is_none());
-    }
-
-    #[test]
-    fn viewport_scroll_reaches_bottom_without_reading_past_paper() {
-        assert_eq!(viewport_crop(1200, 800, 150), (150, 800));
-        assert_eq!(viewport_crop(1200, 800, 1000), (400, 800));
-        assert_eq!(viewport_crop(1200, 1500, 400), (0, 1200));
-    }
-}
+#[path = "preview_tests.rs"]
+mod tests;

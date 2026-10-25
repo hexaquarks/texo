@@ -31,3 +31,7 @@ uuid = { version = "1.29.0", features = ["v4", "serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
+
+# Keep image resampling responsive with `cargo run`, including on Retina displays.
+[profile.dev.package.image]
+opt-level = 3
