@@ -125,7 +125,11 @@ fn chat_header_click_toggles_and_editor_focus_restores_split() -> anyhow::Result
 
     for expected in [true, false, true] {
         let layout = app.workspace_layout(area);
-        let button = Assistant::maximize_button(pane_content(layout.assistant));
+        let button = Assistant::maximize_button(
+            pane_content(layout.assistant),
+            app.session.chat_maximized,
+            &app.prefix.label(),
+        );
         app.handle_event(
             Event::Mouse(event::MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -491,5 +495,53 @@ fn pdf_drag_captures_motion_until_release_and_excludes_header_and_dialogs() -> a
     );
     assert!(app.settings.is_some());
     assert!(!app.session.preview.drag_to(pointer));
+    Ok(())
+}
+
+#[test]
+fn only_the_visible_chat_maximize_control_handles_clicks() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+
+    for prefix in ["ctrl+x", "alt+a"] {
+        app.prefix = crate::keybindings::Prefix::new(prefix)?;
+
+        for maximized in [false, true] {
+            app.focus = Focus::Assistant;
+            app.session.chat_maximized = maximized;
+            let layout = app.workspace_layout(area);
+            let body = app.assistant_body(pane_content(layout.assistant));
+            let button = Assistant::maximize_button(body, maximized, &app.prefix.label());
+
+            // The title, the gap before the shortcut, and pane padding must not toggle.
+            for column in [body.x, button.x - 1, button.right(), body.right() - 1] {
+                app.handle_event(
+                    Event::Mouse(event::MouseEvent {
+                        kind: MouseEventKind::Down(MouseButton::Left),
+                        column,
+                        row: button.y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    area,
+                );
+                assert_eq!(app.session.chat_maximized, maximized);
+            }
+
+            // Both the shortcut keycap and the trailing action text are clickable.
+            for column in [button.x, button.right() - 1] {
+                app.session.chat_maximized = maximized;
+                app.handle_event(
+                    Event::Mouse(event::MouseEvent {
+                        kind: MouseEventKind::Down(MouseButton::Left),
+                        column,
+                        row: button.y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    area,
+                );
+                assert_eq!(app.session.chat_maximized, !maximized);
+            }
+        }
+    }
     Ok(())
 }

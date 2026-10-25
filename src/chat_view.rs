@@ -32,6 +32,13 @@ const THINKING_FRAME_MS: u128 = 100;
 
 const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+fn maximize_hint(maximized: bool, prefix: &str) -> Line<'static> {
+    let shortcut = format!("{prefix} u");
+    let action = if maximized { "Restore" } else { "Maximize" };
+
+    theme::shortcuts(&[(&shortcut, action)])
+}
+
 impl Assistant {
     pub fn input_area(&self, area: Rect) -> Rect {
         self.composer_layout(area)
@@ -63,13 +70,19 @@ impl Assistant {
         true
     }
 
-    pub fn maximize_button(area: Rect) -> Rect {
+    pub fn maximize_button(area: Rect, maximized: bool, prefix: &str) -> Rect {
+        if area.is_empty() || area.height < MIN_INPUT_HEIGHT + 2 {
+            return Rect::default();
+        }
+
         let inner = area.inner(Margin::new(theme::PANEL_PADDING, 1));
         let [_, button] =
             Layout::horizontal([Constraint::Length(CHAT_TITLE_WIDTH), Constraint::Min(0)]).areas(
                 Rect::new(inner.x, inner.y, inner.width, inner.height.min(1)),
             );
-        button
+
+        let width = (maximize_hint(maximized, prefix).width() as u16).min(button.width);
+        Rect::new(button.right() - width, button.y, width, button.height)
     }
 
     pub fn draw(
@@ -111,10 +124,8 @@ impl Assistant {
             Constraint::Length(composer_height),
         ])
         .areas(inner);
-        let shortcut = format!("{prefix} u");
-        let action = if maximized { "Restore" } else { "Maximize" };
-        let hint = theme::shortcuts(&[(&shortcut, action)]);
-        let [label, hint_area] =
+        let hint = maximize_hint(maximized, prefix);
+        let [label, _] =
             Layout::horizontal([Constraint::Length(CHAT_TITLE_WIDTH), Constraint::Min(0)])
                 .areas(header);
         frame.render_widget(
@@ -125,7 +136,7 @@ impl Assistant {
             Paragraph::new(hint)
                 .alignment(Alignment::Right)
                 .style(theme::muted()),
-            hint_area,
+            Self::maximize_button(area, maximized, prefix),
         );
         self.draw_history(frame, history);
 

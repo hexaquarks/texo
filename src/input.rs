@@ -123,7 +123,13 @@ impl App {
 
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             let chat_body = self.assistant_body(pane_content(layout.assistant));
-            if Assistant::maximize_button(chat_body).contains(position) {
+            if Assistant::maximize_button(
+                chat_body,
+                self.session.chat_maximized,
+                &self.prefix.label(),
+            )
+            .contains(position)
+            {
                 self.focus = Focus::Assistant;
                 self.session.chat_maximized = !self.session.chat_maximized;
                 return;

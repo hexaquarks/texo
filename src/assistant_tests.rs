@@ -384,3 +384,35 @@ fn composer_preserves_explicit_newlines_and_shrinks_after_clear() {
         ratatui_textarea::WrapMode::WordOrGlyph
     );
 }
+
+#[test]
+fn maximize_hitbox_matches_the_rendered_shortcut_and_action() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    for width in [40, 70] {
+        for prefix in ["Ctrl+x", "Alt+a"] {
+            for maximized in [false, true] {
+                let mut assistant = Assistant::new();
+                let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+                let area = Rect::new(0, 0, width, 20);
+                terminal
+                    .draw(|frame| assistant.draw(frame, area, true, maximized, prefix))
+                    .unwrap();
+
+                let button = Assistant::maximize_button(area, maximized, prefix);
+                let buffer = terminal.backend().buffer();
+                let action = if maximized { "Restore" } else { "Maximize" };
+                let hint = theme::shortcuts(&[(&format!("{prefix} u"), action)]);
+                let rendered: String = (button.x..button.right())
+                    .map(|x| buffer[(x, button.y)].symbol())
+                    .collect();
+
+                assert_eq!(rendered, hint.to_string());
+                assert_eq!(buffer[(button.x, button.y)].bg, theme::KEYCAP);
+                assert_eq!(buffer[(button.x - 1, button.y)].symbol(), " ");
+                assert_eq!(buffer[(button.right(), button.y)].symbol(), " ");
+            }
+        }
+    }
+    assert!(Assistant::maximize_button(Rect::new(0, 0, 40, 2), false, "Ctrl+x").is_empty());
+}
