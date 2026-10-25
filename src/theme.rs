@@ -18,6 +18,7 @@ pub const SYNTAX_ARGUMENT: Color = LAVENDER;
 pub const BUTTON: Color = Color::Rgb(32, 32, 32);
 pub const KEYCAP: Color = Color::Rgb(40, 42, 48);
 pub const LAVENDER: Color = Color::Rgb(203, 166, 247);
+pub const GREEN: Color = Color::Rgb(166, 227, 161);
 pub const TEAL: Color = Color::Rgb(148, 226, 213);
 pub const ERROR: Color = Color::Rgb(243, 139, 168);
 pub const PANEL_PADDING: u16 = 2;

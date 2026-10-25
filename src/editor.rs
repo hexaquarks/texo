@@ -9,6 +9,7 @@ use ratatui::{
     },
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Style},
+    text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
 };
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
@@ -378,11 +379,17 @@ impl Editor {
         };
         let position = format!("{}:{}{}", cursor.0 + 1, cursor.1 + 1, modified);
         let status = match &self.vim {
-            Some(vim) => format!("VIM {} {position}", vim.label()),
-            None => position,
+            Some(vim) => Line::from(vec![
+                Span::styled(
+                    format!("VIM {} ", vim.label()),
+                    Style::default().fg(theme::GREEN),
+                ),
+                Span::raw(position),
+            ]),
+            None => Line::from(position),
         };
         let [position, controls] = Layout::horizontal([
-            Constraint::Length(status.chars().count() as u16 + 2),
+            Constraint::Length(status.width() as u16 + 2),
             Constraint::Min(0),
         ])
         .areas(footer);
