@@ -231,9 +231,16 @@ impl App {
         let is_loading = loading.is_some();
         if let Some(job) = loading {
             Preview::draw_loading(frame, body, job.elapsed());
-        } else if !self.overlay_open() {
-            // Kitty uploads only on its first draw. A modal must not overwrite that
-            // upload in Ratatui's buffer before it reaches the terminal.
+        } else if self.overlay_open() {
+            // A finished proposal may switch versions while a dialog covers the upload cell.
+            // Keep this resume's current image visible until the new version can be presented.
+            let preview = if proposed && !self.session.proposed_preview.has_presented_image() {
+                &mut self.session.preview
+            } else {
+                self.active_preview()
+            };
+            preview.draw_cached(frame, body);
+        } else {
             self.active_preview().draw(frame, body);
         }
 

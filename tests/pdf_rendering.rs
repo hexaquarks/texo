@@ -89,12 +89,13 @@ fn draw_ready_preview(
     let deadline = std::time::Instant::now() + PREVIEW_TEST_TIMEOUT;
     loop {
         terminal.draw(|frame| preview.draw(frame, frame.area()))?;
-        if terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .any(|cell| cell.symbol() == "▀")
+        if !preview.is_preparing()
+            && terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| cell.symbol() == "▀")
         {
             return Ok(());
         }

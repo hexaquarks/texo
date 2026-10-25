@@ -40,16 +40,19 @@ impl SettingsDialog {
         self.input.lines().join("\n")
     }
 
-    pub fn draw(&self, frame: &mut Frame) {
-        let screen = frame.area();
+    pub fn area(screen: Rect) -> Rect {
         let width = DIALOG_WIDTH.min(screen.width);
         let height = DIALOG_HEIGHT.min(screen.height);
-        let area = Rect::new(
+        Rect::new(
             screen.x + (screen.width - width) / 2,
             screen.y + (screen.height - height) / 2,
             width,
             height,
-        );
+        )
+    }
+
+    pub fn draw(&self, frame: &mut Frame) {
+        let area = Self::area(frame.area());
         let panel = Block::default()
             .title(" Settings ")
             .borders(Borders::ALL)

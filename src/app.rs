@@ -98,7 +98,7 @@ pub fn run(
                 || proposed_was_loading != app.session.proposed_job.is_some()
                 || previous_preview_area != app.preview_area(area)
                 || projects_was_visible != app.projects_visible
-                || overlay_was_open != app.overlay_open()
+                || app.overlays_require_clear(overlay_was_open)
                 || previous_document != app.session.editor.path
                 || preview_was_loading != app.session.job.is_some()
             {
@@ -155,6 +155,12 @@ impl App {
             || self.export.is_some()
             || self.settings.is_some()
     }
+
+    fn overlays_require_clear(&mut self, was_open: bool) -> bool {
+        // Inline image protocols cannot restore covered pixels from text-cell diffs.
+        // Kitty placeholders and basic rendering need only the ordinary modal redraw.
+        was_open && !self.overlay_open() && self.active_preview().uses_inline_graphics()
+    }
 }
 
 #[path = "input.rs"]
@@ -169,6 +175,9 @@ mod workspace_view;
 #[cfg(test)]
 #[path = "app_input_tests.rs"]
 mod app_input_tests;
+#[cfg(test)]
+#[path = "modal_preview_tests.rs"]
+mod modal_preview_tests;
 #[cfg(test)]
 #[path = "resume_review_tests.rs"]
 mod resume_review_tests;
