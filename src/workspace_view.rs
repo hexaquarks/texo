@@ -77,9 +77,10 @@ impl App {
 
         let prefix = self.prefix.label();
         let settings_hint = if self.prefix.armed {
+            let resize_hint = format!("Resize {} cells", super::pane_navigation::PANE_RESIZE_CELLS);
             let mut bindings = vec![
                 ("h/j/k/l", "Select pane"),
-                ("H/J/K/L", "Grow pane ~15px"),
+                ("H/J/K/L", resize_hint.as_str()),
                 ("n", "New"),
                 ("i", "Import"),
                 ("r", "Resumes"),

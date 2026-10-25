@@ -138,11 +138,6 @@ impl Preview {
         }
     }
 
-    pub fn cell_size_pixels(&self) -> (u16, u16) {
-        let font = self.picker.font_size();
-        (font.width, font.height)
-    }
-
     pub fn empty_like(&self) -> Self {
         Self {
             picker: self.picker.clone(),

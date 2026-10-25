@@ -76,7 +76,7 @@ impl App {
                 return false;
             }
         } else if !matches!(event, Event::Resize(_, _)) {
-            self.prefix.armed = false;
+            self.prefix.cancel();
         }
 
         match event {

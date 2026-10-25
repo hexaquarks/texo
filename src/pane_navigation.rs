@@ -5,7 +5,7 @@ use super::{
     workspace_view::{MIN_CHAT_HEIGHT, MIN_EDITOR_HEIGHT, MIN_PANE_WIDTH, WorkspaceLayout},
 };
 
-pub(super) const PANE_RESIZE_PIXELS: u16 = 15;
+pub(super) const PANE_RESIZE_CELLS: u16 = 10;
 
 impl App {
     pub(super) fn select_directional_pane(&mut self, direction: char, area: Rect) {
@@ -27,51 +27,84 @@ impl App {
 
     pub(super) fn resize_directional_pane(&mut self, direction: char, area: Rect) {
         let layout = self.workspace_layout(area);
-        let direction = direction.to_ascii_lowercase();
-        let Some((neighbor, neighbor_area)) = neighboring_pane(&layout, self.focus, direction)
-        else {
-            return;
-        };
 
-        let (cell_width, cell_height) = self.session.preview.cell_size_pixels();
-        let horizontal = matches!(direction, 'h' | 'l');
-        let cell_pixels = if horizontal { cell_width } else { cell_height };
-        let requested_cells = PANE_RESIZE_PIXELS.div_ceil(cell_pixels.max(1));
-
-        if horizontal {
-            let step = requested_cells.min(neighbor_area.width.saturating_sub(MIN_PANE_WIDTH));
-            match (self.focus, neighbor) {
-                (Focus::Projects, _) => {
-                    self.pane_sizes.sidebar = Some(layout.projects.width + step);
-                }
-                (_, Focus::Projects) => {
-                    self.pane_sizes.sidebar = Some(layout.projects.width - step);
-                }
-                (Focus::Preview, _) => {
-                    self.pane_sizes.preview = Some(layout.preview.width + step);
-                }
-                (_, Focus::Preview) => {
-                    self.pane_sizes.preview = Some(layout.preview.width - step);
-                }
-                _ => {}
-            }
-        } else {
-            let minimum = if neighbor == Focus::Assistant {
-                MIN_CHAT_HEIGHT
-            } else {
-                MIN_EDITOR_HEIGHT
-            };
-            let step = requested_cells.min(neighbor_area.height.saturating_sub(minimum));
-            match (self.focus, neighbor) {
-                (Focus::Editor, Focus::Assistant) => {
-                    self.pane_sizes.editor = Some(layout.editor.height + step);
-                }
-                (Focus::Assistant, Focus::Editor) => {
-                    self.pane_sizes.editor = Some(layout.editor.height - step);
-                }
-                _ => {}
-            }
+        match direction {
+            'H' | 'L' => self.move_horizontal_divider(&layout, direction == 'L'),
+            'J' | 'K' => self.move_vertical_divider(&layout, direction == 'J'),
+            _ => {}
         }
+    }
+
+    fn move_horizontal_divider(&mut self, layout: &WorkspaceLayout, right: bool) {
+        // Like tmux, use the pane's right divider, falling back to its left divider
+        // at the outer edge. The direction moves the divider, rather than growing the pane.
+        let center = if !layout.editor.is_empty() {
+            layout.editor
+        } else {
+            layout.assistant
+        };
+        if center.is_empty() {
+            return;
+        }
+
+        if self.focus == Focus::Projects && layout.projects.right() == center.x {
+            self.pane_sizes.sidebar = Some(moved_divider_size(
+                layout.projects.width,
+                center.width,
+                MIN_PANE_WIDTH,
+                MIN_PANE_WIDTH,
+                right,
+            ));
+        } else if !layout.preview.is_empty() && center.right() == layout.preview.x {
+            let center_width = moved_divider_size(
+                center.width,
+                layout.preview.width,
+                MIN_PANE_WIDTH,
+                MIN_PANE_WIDTH,
+                right,
+            );
+            self.pane_sizes.preview = Some(center.width + layout.preview.width - center_width);
+        } else if !layout.projects.is_empty() && layout.projects.right() == center.x {
+            self.pane_sizes.sidebar = Some(moved_divider_size(
+                layout.projects.width,
+                center.width,
+                MIN_PANE_WIDTH,
+                MIN_PANE_WIDTH,
+                right,
+            ));
+        }
+    }
+
+    fn move_vertical_divider(&mut self, layout: &WorkspaceLayout, down: bool) {
+        if !matches!(self.focus, Focus::Editor | Focus::Assistant)
+            || layout.editor.is_empty()
+            || layout.assistant.is_empty()
+        {
+            return;
+        }
+
+        self.pane_sizes.editor = Some(moved_divider_size(
+            layout.editor.height,
+            layout.assistant.height,
+            MIN_EDITOR_HEIGHT,
+            MIN_CHAT_HEIGHT,
+            down,
+        ));
+    }
+}
+
+// Return the new size before the divider, preserving space for both panes.
+fn moved_divider_size(
+    before: u16,
+    after: u16,
+    minimum_before: u16,
+    minimum_after: u16,
+    forward: bool,
+) -> u16 {
+    if forward {
+        before + PANE_RESIZE_CELLS.min(after.saturating_sub(minimum_after))
+    } else {
+        before - PANE_RESIZE_CELLS.min(before.saturating_sub(minimum_before))
     }
 }
 

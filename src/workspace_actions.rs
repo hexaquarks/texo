@@ -27,7 +27,7 @@ impl App {
 
         self.actions = None;
         self.export = None;
-        self.prefix.armed = false;
+        self.prefix.cancel();
         self.settings = Some(SettingsDialog::new(
             self.projects.root(),
             &self.settings_path,
@@ -346,7 +346,7 @@ impl App {
         }
 
         self.actions = None;
-        self.prefix.armed = false;
+        self.prefix.cancel();
         self.project_dialog = Some(ProjectDialog::new(
             action,
             active,
@@ -522,7 +522,7 @@ impl App {
         let files_focused = self.projects.files_focused;
         self.projects = projects;
         self.projects.files_focused = files_focused;
-        self.prefix.armed = false;
+        self.prefix.cancel();
 
         // Late results stay with the editor, undo stack, chat, and preview that requested them.
         let previous = std::mem::replace(&mut self.session, target);
