@@ -11,12 +11,8 @@ fn page(terminal: TerminalImages) -> RetainedImage {
 
 fn view() -> ImageView {
     ImageView {
-        source: image::math::Rect {
-            x: 0,
-            y: 0,
-            width: 120,
-            height: 200,
-        },
+        page_size: Size::new(20, 12),
+        offset: Position::default(),
         area: Rect::new(0, 0, 20, 12),
     }
 }
@@ -48,18 +44,14 @@ fn zoom_and_pan_change_only_the_placement_command() {
     page.render(view, &mut buffer).unwrap();
 
     for offset in 1..=20 {
-        view.source = image::math::Rect {
-            x: offset,
-            y: offset,
-            width: 60,
-            height: 100,
-        };
+        view.page_size = Size::new(40, 24);
+        view.offset = Position::new(offset, offset);
         page.render(view, &mut buffer).unwrap();
         let symbol = buffer[view.area.as_position()].symbol();
 
         assert!(symbol.contains("a=p"));
         assert!(!symbol.contains("a=T"));
-        assert!(symbol.contains("w=60,h=100"));
+        assert!(symbol.contains("c=40,r=24"));
         assert!(
             symbol.len() < 256,
             "Interaction must not retransmit pixel data"

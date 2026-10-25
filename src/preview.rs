@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow};
 use image::{DynamicImage, imageops::FilterType};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Margin, Position, Rect},
+    layout::{Constraint, Layout, Margin, Position, Rect, Size},
     style::Style,
     text::{Line, Text},
     widgets::{Block, Clear, Paragraph, Wrap},
@@ -387,7 +387,14 @@ impl Preview {
             return;
         }
 
-        let retained_ready = matches!(self.image, Some(PreparedImage::Retained(_)))
+        // Beyond the protocol's coordinate table, keep the existing raster backend.
+        let retain_page = self.picker.protocol_type() == ProtocolType::Kitty
+            && self
+                .retained_viewport(&source, area)
+                .view
+                .supports_placeholders();
+        let retained_ready = retain_page
+            && matches!(self.image, Some(PreparedImage::Retained(_)))
             && self
                 .image_source
                 .as_ref()
@@ -403,14 +410,15 @@ impl Preview {
             return;
         }
 
-        if self.viewport_pixels == Some(pixels)
+        if !retain_page
+            && self.viewport_pixels == Some(pixels)
             && self.displayed_scroll == Some(self.scroll_pixels)
             && self.displayed_horizontal == Some(self.horizontal_pixels)
         {
             return;
         }
 
-        self.start_viewport(source, area, pixels);
+        self.start_viewport(source, area, pixels, retain_page);
     }
 
     // A result must belong to this source; raster results must also match the view.
@@ -477,7 +485,13 @@ impl Preview {
         true
     }
 
-    fn start_viewport(&mut self, source: Arc<DynamicImage>, area: Rect, pixels: (u32, u32)) {
+    fn start_viewport(
+        &mut self,
+        source: Arc<DynamicImage>,
+        area: Rect,
+        pixels: (u32, u32),
+        retain_page: bool,
+    ) {
         let picker = self.picker.clone();
         let worker_source = Arc::clone(&source);
         let scroll = self.scroll_pixels;
@@ -489,7 +503,7 @@ impl Preview {
         let worker = thread::Builder::new()
             .name("texo-preview".into())
             .spawn(move || {
-                let prepared = if picker.protocol_type() == ProtocolType::Kitty {
+                let prepared = if retain_page {
                     RetainedImage::new(&picker, worker_source.as_ref().clone(), terminal_images)
                         .map(PreparedImage::Retained)
                 } else {
@@ -543,15 +557,17 @@ impl Preview {
         let gutter = pixels.0.saturating_sub(visible_width) / 2;
 
         let view = ImageView {
-            source: source_viewport(
-                (source.width(), source.height()),
-                (page_width, page_height),
-                image::math::Rect {
-                    x: horizontal,
-                    y: scroll,
-                    width: visible_width,
-                    height: visible_height,
-                },
+            page_size: Size::new(
+                page_width
+                    .div_ceil(u32::from(font.width))
+                    .min(u32::from(u16::MAX)) as u16,
+                page_height
+                    .div_ceil(u32::from(font.height))
+                    .min(u32::from(u16::MAX)) as u16,
+            ),
+            offset: Position::new(
+                (horizontal / u32::from(font.width)).min(u32::from(u16::MAX)) as u16,
+                (scroll / u32::from(font.height)).min(u32::from(u16::MAX)) as u16,
             ),
             area: Rect::new(
                 area.x + (gutter / u32::from(font.width)) as u16,
@@ -627,7 +643,11 @@ impl Preview {
 
         match &mut self.image {
             Some(PreparedImage::Retained(image)) if !cached_only || self.image_presented => {
-                if let Some(view) = retained_view {
+                let view = retained_view
+                    .filter(|view| view.supports_placeholders())
+                    .or_else(|| image.last_view());
+                if let Some(mut view) = view {
+                    view.area = view.area.intersection(content);
                     match image.render(view, frame.buffer_mut()) {
                         Ok(()) => self.image_presented = true,
                         Err(error) => {

@@ -645,8 +645,10 @@ fn native_zoom_pan_and_resize_do_not_start_another_worker() -> anyhow::Result<()
         assert!(Arc::ptr_eq(preview.image_source.as_ref().unwrap(), &source));
         let viewport = preview.retained_viewport(&source, preview_content(area));
         assert_eq!(viewport.view.area.width, preview_content(area).width);
-        assert!(viewport.view.source.x + viewport.view.source.width <= source.width());
-        assert!(viewport.view.source.y + viewport.view.source.height <= source.height());
+        assert!(viewport.view.offset.x + viewport.view.area.width <= viewport.view.page_size.width);
+        assert!(
+            viewport.view.offset.y + viewport.view.area.height <= viewport.view.page_size.height
+        );
     }
 
     preview.prepare_viewport(Rect::new(2, 2, 8, 5));
@@ -730,4 +732,94 @@ fn high_resolution_native_zoom_draws_without_reuploading_pixels() -> anyhow::Res
         );
     }
     Ok(())
+}
+
+#[test]
+#[ignore = "requires the Kitty executable for headless terminal rendering"]
+fn terminal_renderer_actually_zooms_and_pans_the_page() -> anyhow::Result<()> {
+    // Kitty uses foreground colors as image IDs, even when the test runner sets NO_COLOR.
+    ratatui::crossterm::style::force_color_output(true);
+
+    use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
+    use std::{
+        io::{Read, Seek, SeekFrom},
+        process::Command,
+    };
+
+    let directory = tempfile::tempdir()?;
+    let area = Rect::new(0, 0, 40, 20);
+    let content = preview_content(area);
+    let mut preview = Preview::default();
+    preview.picker.set_protocol_type(ProtocolType::Kitty);
+    preview.set_source(Some(patterned_page(120, 200)));
+    let mut wire = tempfile::tempfile()?;
+    let mut terminal = Terminal::with_options(
+        CrosstermBackend::new(wire.try_clone()?),
+        TerminalOptions {
+            viewport: Viewport::Fixed(area),
+        },
+    )?;
+
+    for phase in ["initial", "zoom", "pan", "fit"] {
+        match phase {
+            "zoom" => preview.set_zoom(200, area, content.as_position()),
+            "pan" => {
+                preview.pan_horizontal(false);
+                preview.scroll(false);
+            }
+            "fit" => preview.reset_zoom(area),
+            _ => {}
+        }
+        finish_viewport(&mut preview, content);
+        let start = wire.metadata()?.len();
+        terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+        wire.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        wire.read_to_end(&mut bytes)?;
+        std::fs::write(directory.path().join(format!("{phase}.bin")), bytes)?;
+    }
+
+    let kitty = if cfg!(target_os = "macos") {
+        "/Applications/kitty.app/Contents/MacOS/kitty"
+    } else {
+        "kitty"
+    };
+    let result = Command::new(kitty)
+        .args([
+            "+runpy",
+            concat!(
+                "exec(compile(open('tests/kitty_geometry.py').read(), ",
+                "'tests/kitty_geometry.py', 'exec', optimize=0), {'__name__': '__main__'})",
+            ),
+        ])
+        .arg(directory.path())
+        .output()?;
+    anyhow::ensure!(
+        result.status.success(),
+        "Terminal renderer regression: {}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    eprintln!("{}", String::from_utf8_lossy(&result.stdout));
+    Ok(())
+}
+
+#[test]
+fn scrolling_beyond_native_coordinates_uses_raster_and_can_return_to_native() {
+    let mut preview = Preview::default();
+    preview.picker.set_protocol_type(ProtocolType::Kitty);
+    preview.set_source(Some(patterned_page(120, 2400)));
+    let content = preview_content(Rect::new(0, 0, 40, 20));
+    finish_viewport(&mut preview, content);
+    assert!(matches!(preview.image, Some(PreparedImage::Retained(_))));
+
+    preview.scroll_pixels = u32::MAX;
+    finish_viewport(&mut preview, content);
+    assert!(matches!(preview.image, Some(PreparedImage::Raster(_))));
+    assert_eq!(preview.picker.protocol_type(), ProtocolType::Kitty);
+
+    preview.scroll_pixels = 0;
+    finish_viewport(&mut preview, content);
+    assert!(matches!(preview.image, Some(PreparedImage::Retained(_))));
+    assert_eq!(preview.displayed_scroll, Some(0));
 }
