@@ -380,11 +380,8 @@ impl Editor {
         let position = format!("{}:{}{}", cursor.0 + 1, cursor.1 + 1, modified);
         let status = match &self.vim {
             Some(vim) => Line::from(vec![
-                Span::styled(
-                    format!("VIM {} ", vim.label()),
-                    Style::default().fg(theme::GREEN),
-                ),
-                Span::raw(position),
+                Span::styled("VIM", Style::default().fg(theme::GREEN)),
+                Span::raw(format!(" {} {position}", vim.label())),
             ]),
             None => Line::from(position),
         };
