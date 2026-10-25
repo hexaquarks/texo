@@ -545,3 +545,193 @@ fn only_the_visible_chat_maximize_control_handles_clicks() -> anyhow::Result<()>
     }
     Ok(())
 }
+
+fn pane_prefix(app: &mut App, character: char, modifiers: KeyModifiers, area: Rect) {
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+        area,
+    );
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char(character), modifiers)),
+        area,
+    );
+}
+
+#[test]
+fn directional_prefix_selects_neighbors_without_editing_chat() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    app.focus = Focus::Assistant;
+    app.session.assistant.input.insert_str("Keep this prompt");
+    let source = app.session.editor.source();
+
+    for (character, expected) in [
+        ('k', Focus::Editor),
+        ('j', Focus::Assistant),
+        ('l', Focus::Preview),
+        ('l', Focus::Preview),
+        ('h', Focus::Editor),
+        ('h', Focus::Projects),
+        ('h', Focus::Projects),
+        ('l', Focus::Editor),
+        ('j', Focus::Assistant),
+    ] {
+        pane_prefix(&mut app, character, KeyModifiers::NONE, area);
+        assert!(app.focus == expected, "prefix {character}");
+    }
+
+    assert_eq!(app.session.assistant.input.lines(), &["Keep this prompt"]);
+    assert_eq!(app.session.editor.source(), source);
+
+    app.session.chat_maximized = true;
+    pane_prefix(&mut app, 'k', KeyModifiers::NONE, area);
+    assert!(app.focus == Focus::Editor);
+    assert!(!app.session.chat_maximized);
+    Ok(())
+}
+
+#[test]
+fn resize_moves_dividers_like_tmux_from_either_side() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 80);
+    let step = super::pane_navigation::PANE_RESIZE_CELLS;
+    app.session.assistant.input.insert_str("Keep this prompt");
+
+    for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+        for focus in [Focus::Editor, Focus::Assistant, Focus::Preview] {
+            app.focus = focus;
+            app.pane_sizes = workspace_view::PaneSizes::default();
+            let before = app.workspace_layout(area);
+
+            pane_prefix(&mut app, 'L', modifiers, area);
+            let after = app.workspace_layout(area);
+            assert_eq!(after.preview.x, before.preview.x + step);
+            assert_eq!(after.preview.width, before.preview.width - step);
+            assert_eq!(after.projects, before.projects);
+
+            pane_prefix(&mut app, 'H', modifiers, area);
+            assert_eq!(app.workspace_layout(area).preview, before.preview);
+            assert!(app.focus == focus);
+        }
+
+        for focus in [Focus::Editor, Focus::Assistant] {
+            app.focus = focus;
+            app.pane_sizes = workspace_view::PaneSizes::default();
+            let before = app.workspace_layout(area);
+
+            pane_prefix(&mut app, 'J', modifiers, area);
+            let after = app.workspace_layout(area);
+            assert_eq!(after.editor.height, before.editor.height + step);
+            assert_eq!(after.assistant.height, before.assistant.height - step);
+
+            pane_prefix(&mut app, 'K', modifiers, area);
+            assert_eq!(app.workspace_layout(area).assistant, before.assistant);
+            assert!(app.focus == focus);
+        }
+
+        app.focus = Focus::Projects;
+        app.pane_sizes = workspace_view::PaneSizes::default();
+        let before = app.workspace_layout(area);
+        pane_prefix(&mut app, 'H', modifiers, area);
+        assert_eq!(
+            app.workspace_layout(area).projects.width,
+            before.projects.width - step
+        );
+        pane_prefix(&mut app, 'L', modifiers, area);
+        assert_eq!(app.workspace_layout(area).projects, before.projects);
+    }
+
+    assert_eq!(app.session.assistant.input.lines(), &["Keep this prompt"]);
+    Ok(())
+}
+
+#[test]
+fn resize_can_repeat_without_prefix_and_typing_ends_the_repeat_sequence() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    app.focus = Focus::Assistant;
+    let before = app.workspace_layout(area);
+    pane_prefix(&mut app, 'L', KeyModifiers::SHIFT, area);
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT)),
+        area,
+    );
+    assert_eq!(
+        app.workspace_layout(area).preview.width,
+        before.preview.width - 2 * super::pane_navigation::PANE_RESIZE_CELLS
+    );
+    assert_eq!(app.session.assistant.input.lines(), &[""]);
+
+    for character in ['a', 'L'] {
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+            area,
+        );
+    }
+    assert_eq!(app.session.assistant.input.lines(), &["aL"]);
+    Ok(())
+}
+
+#[test]
+fn pane_bindings_respect_hidden_panes_and_small_terminal_limits() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    app.projects_visible = false;
+    app.focus = Focus::Editor;
+    pane_prefix(&mut app, 'h', KeyModifiers::NONE, area);
+    assert!(app.focus == Focus::Editor);
+
+    app.focus = Focus::Assistant;
+    for _ in 0..100 {
+        pane_prefix(&mut app, 'L', KeyModifiers::SHIFT, area);
+        pane_prefix(&mut app, 'K', KeyModifiers::SHIFT, area);
+    }
+    let layout = app.workspace_layout(area);
+    assert_eq!(layout.preview.width, workspace_view::MIN_PANE_WIDTH);
+    assert_eq!(layout.editor.height, workspace_view::MIN_EDITOR_HEIGHT);
+
+    for (width, height) in [(80, 30), (100, 21), (1, 1), (160, 45)] {
+        let area = Rect::new(0, 0, width, height);
+        for character in ['h', 'j', 'k', 'l', 'H', 'J', 'K', 'L'] {
+            pane_prefix(&mut app, character, KeyModifiers::NONE, area);
+            let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+            terminal.draw(|frame| app.draw(frame))?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn custom_prefix_controls_panes_from_chat_in_a_narrow_layout() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 80, 30);
+    app.prefix = crate::keybindings::Prefix::new("alt+a")?;
+    app.focus = Focus::Assistant;
+    app.session.assistant.input.insert_str("Keep this prompt");
+    let before = app.workspace_layout(area);
+
+    for character in ['K', 'k', 'j'] {
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT)),
+            area,
+        );
+        let modifiers = if character.is_ascii_uppercase() {
+            KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::NONE
+        };
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(character), modifiers)),
+            area,
+        );
+        if character == 'k' {
+            assert!(app.focus == Focus::Editor);
+        } else {
+            assert!(app.focus == Focus::Assistant);
+        }
+    }
+
+    assert!(app.workspace_layout(area).assistant.height > before.assistant.height);
+    assert_eq!(app.session.assistant.input.lines(), &["Keep this prompt"]);
+    Ok(())
+}

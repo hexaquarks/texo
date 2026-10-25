@@ -61,7 +61,7 @@ impl App {
             match self.prefix.handle(key) {
                 PrefixInput::Pending => return false,
                 PrefixInput::Action(code) => {
-                    self.handle_prefix_action(code);
+                    self.handle_prefix_action(code, area);
                     return false;
                 }
                 PrefixInput::Pass => {}
@@ -76,7 +76,7 @@ impl App {
                 return false;
             }
         } else if !matches!(event, Event::Resize(_, _)) {
-            self.prefix.armed = false;
+            self.prefix.cancel();
         }
 
         match event {
@@ -216,8 +216,14 @@ impl App {
         }
     }
 
-    pub(super) fn handle_prefix_action(&mut self, code: KeyCode) {
+    pub(super) fn handle_prefix_action(&mut self, code: KeyCode, area: Rect) {
         match code {
+            KeyCode::Char(character @ ('h' | 'j' | 'k' | 'l')) => {
+                self.select_directional_pane(character, area);
+            }
+            KeyCode::Char(character @ ('H' | 'J' | 'K' | 'L')) => {
+                self.resize_directional_pane(character, area);
+            }
             KeyCode::Char('u') if self.focus == Focus::Assistant => {
                 self.session.chat_maximized = !self.session.chat_maximized;
             }
