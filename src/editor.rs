@@ -27,7 +27,7 @@ mod vim;
 
 use clipboard::{ClipboardAccess, ClipboardAction, SystemClipboard};
 use search::Search;
-use vim::Vim;
+use vim::{Vim, VimInput};
 
 const TAB_WIDTH: u8 = 4;
 const HORIZONTAL_SCROLL_COLUMNS: i16 = 4;
@@ -151,14 +151,43 @@ impl Editor {
         if key.modifiers == (KeyModifiers::ALT | KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Left | KeyCode::Right)
         {
+            self.cancel_pending_commands();
             self.scroll_horizontal(key.code == KeyCode::Left);
             return;
         }
 
-        if let Some(vim) = &mut self.vim
-            && vim.handle_key(key, &mut self.text)
-        {
+        let insert_clipboard_shortcut = key.code == KeyCode::Insert
+            && [
+                KeyModifiers::CONTROL,
+                KeyModifiers::SHIFT,
+                KeyModifiers::ALT,
+            ]
+            .contains(&key.modifiers);
+        let shifted_clipboard_shortcut = (key.code == KeyCode::Delete
+            && key.modifiers == KeyModifiers::SHIFT)
+            || (key.modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                && matches!(key.code, KeyCode::Char('c' | 'x' | 'v')));
+        let clipboard_shortcut = insert_clipboard_shortcut || shifted_clipboard_shortcut;
+        if clipboard_shortcut {
+            self.cancel_pending_commands();
+            if let Some(vim) = &mut self.vim
+                && vim.mode == vim::Mode::Visual
+            {
+                vim.mode = vim::Mode::Normal;
+            }
+            self.handle_editor_command(key);
             return;
+        }
+
+        if let Some(vim) = &mut self.vim {
+            match vim.handle_key(key, &mut self.text) {
+                VimInput::Consumed => return,
+                VimInput::Clipboard(action) => {
+                    self.clipboard_action(action);
+                    return;
+                }
+                VimInput::Insert => {}
+            }
         }
 
         if self.handle_editor_command(key) {
@@ -278,7 +307,7 @@ impl Editor {
 
     pub fn cancel_pending_commands(&mut self) {
         if let Some(vim) = &mut self.vim {
-            vim.cancel_pending();
+            vim.cancel_pending(&mut self.text);
         }
     }
 
@@ -364,7 +393,7 @@ impl Editor {
             } else {
                 theme::shortcuts(&[
                     ("Ctrl+Shift+F", "Find"),
-                    ("Ctrl+Z/Y", "Undo/redo"),
+                    ("Ctrl+Shift+U/R", "Undo/redo"),
                     ("Ctrl+Shift+A", "All"),
                     ("Ctrl+Insert", "Copy"),
                     ("Shift+Del/Ins", "Cut/paste"),
@@ -438,7 +467,7 @@ impl Editor {
             self.text.cancel_selection();
         }
         if was_dragging && let Some(vim) = &mut self.vim {
-            vim.finish_mouse_selection(self.text.is_selecting());
+            vim.finish_mouse_selection(&mut self.text);
         }
     }
 
@@ -1142,6 +1171,130 @@ mod vim_navigation_tests {
         editor.apply_preferences(EditorPreferences::default());
         editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
         assert_eq!(editor.source(), source);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod vim_editing_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    struct UnavailableClipboard;
+
+    impl ClipboardAccess for UnavailableClipboard {
+        fn read(&mut self) -> Result<String> {
+            anyhow::bail!("Clipboard unavailable in this test")
+        }
+
+        fn write(&mut self, _text: String) -> Result<()> {
+            anyhow::bail!("Clipboard unavailable in this test")
+        }
+    }
+
+    fn vim_editor(path: PathBuf) -> Result<Editor> {
+        let mut editor = Editor::open(path)?;
+        editor.apply_preferences(EditorPreferences {
+            mode: EditingMode::Vim,
+            ..EditorPreferences::default()
+        });
+        editor.clipboard = Box::new(UnavailableClipboard);
+        Ok(editor)
+    }
+
+    fn commands(editor: &mut Editor, keys: &str) {
+        for character in keys.chars() {
+            editor.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+    }
+
+    #[test]
+    fn wrapped_line_operators_share_standard_history_and_preserve_saved_newlines() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        let first_line = "\\section{Résumé 李 and a very long description of experience}";
+        let source = format!("{first_line}\nSecond\n\n");
+        fs::write(&path, &source)?;
+        let mut editor = vim_editor(path.clone())?;
+        let mut terminal = Terminal::new(TestBackend::new(24, 12))?;
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+
+        editor.text.move_cursor(CursorMove::Jump(0, 12));
+        commands(&mut editor, "dd");
+        assert_eq!(editor.source(), "Second\n\n");
+        assert_eq!(editor.text.yank_text(), format!("{first_line}\n"));
+        assert!(editor.notice.contains("System copy failed"));
+        commands(&mut editor, "u");
+        assert_eq!(editor.source(), source);
+        editor.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(editor.source(), "Second\n\n");
+        editor.apply_preferences(EditorPreferences::default());
+        editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(editor.source(), source);
+
+        editor.apply_preferences(EditorPreferences {
+            mode: EditingMode::Vim,
+            ..EditorPreferences::default()
+        });
+        editor.text.move_cursor(CursorMove::Jump(0, 0));
+        commands(&mut editor, "yyp");
+        assert_eq!(editor.source(), format!("{first_line}\n{source}"));
+        commands(&mut editor, "u");
+        editor.text.move_cursor(CursorMove::Jump(0, 0));
+        commands(&mut editor, "cc");
+        assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Insert);
+        editor.paste_text("Replacement\n");
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        editor.save()?;
+        assert_eq!(fs::read_to_string(path)?, "Replacement\nSecond\n\n");
+        Ok(())
+    }
+
+    #[test]
+    fn unicode_word_changes_and_reversed_visual_yanks_use_native_character_ranges() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        fs::write(&path, "李 résumé words\n")?;
+        let mut editor = vim_editor(path)?;
+        editor.text.move_cursor(CursorMove::Jump(0, 2));
+        commands(&mut editor, "cw");
+        editor.paste_text("CV ");
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(editor.source(), "李 CV words\n");
+
+        editor.text.move_cursor(CursorMove::Jump(0, 3));
+        commands(&mut editor, "vhy");
+        assert_eq!(editor.text.yank_text(), "CV");
+        assert!(!editor.text.is_selecting());
+        editor.text.move_cursor(CursorMove::End);
+        commands(&mut editor, "p");
+        assert_eq!(editor.source(), "李 CV wordsCV\n");
+        commands(&mut editor, "u");
+        editor.text.move_cursor(CursorMove::Jump(0, 2));
+        commands(&mut editor, "de");
+        assert_eq!(editor.source(), "李  words\n");
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_and_cancelled_operators_never_turn_commands_into_source_text() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        fs::write(&path, "Résumé 李\n")?;
+        let mut editor = vim_editor(path)?;
+        let source = editor.source();
+        commands(&mut editor, "dgi");
+        assert_eq!(editor.source(), source);
+        assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Normal);
+        assert!(!editor.text.is_selecting());
+        commands(&mut editor, "d");
+        editor.cancel_pending_commands();
+        commands(&mut editor, "w");
+        assert_eq!(editor.source(), source);
+        commands(&mut editor, "c");
+        editor.paste_text("?\n");
+        assert!(editor.source().contains("?\n"));
+        assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Normal);
         Ok(())
     }
 }

@@ -1040,3 +1040,53 @@ fn vim_pending_navigation_clears_on_focus_prefix_document_and_review_changes() -
     assert_eq!(app.session.editor.text.cursor().0, 2);
     Ok(())
 }
+
+#[test]
+fn vim_operators_clear_across_resume_switches_and_pending_ai_reviews() -> anyhow::Result<()> {
+    use crate::config::{EditingMode, EditorPreferences};
+    use ratatui_textarea::CursorMove;
+
+    let (directory, mut app) = application()?;
+    app.apply_editor_preferences(EditorPreferences {
+        mode: EditingMode::Vim,
+        ..EditorPreferences::default()
+    });
+    let first = app.session.editor.path.clone();
+    let original = app.session.editor.source();
+    let area = Rect::new(0, 0, 160, 45);
+    let key = |app: &mut App, character| {
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+            area,
+        );
+    };
+    key(&mut app, 'd');
+    app.open_document(directory.path().join("second.tex"));
+    app.open_document(first);
+    key(&mut app, 'w');
+    assert_eq!(app.session.editor.source(), original);
+    assert!(!app.session.editor.text.is_selecting());
+
+    app.session.editor.text.move_cursor(CursorMove::Jump(0, 0));
+    key(&mut app, 'c');
+    assert!(app.apply_edit(&ProposedEdit {
+        source_before: original.clone(),
+        source_after: "Accepted résumé\n".into(),
+    }));
+    key(&mut app, 'w');
+    assert_eq!(app.session.editor.source(), "Accepted résumé\n");
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: app.session.editor.source(),
+        source_after: "Pending revision\n".into(),
+    }));
+    for character in ['d', 'd', 'u', 'p', 'i'] {
+        key(&mut app, character);
+    }
+    assert_eq!(app.session.editor.source(), "Accepted résumé\n");
+    pane_prefix(&mut app, 'd', KeyModifiers::NONE, area);
+    assert!(app.session.proposal_review.is_none());
+    key(&mut app, 'u');
+    key(&mut app, 'u');
+    assert_eq!(app.session.editor.source(), original);
+    Ok(())
+}
