@@ -260,3 +260,70 @@ fn ambiguous_import_requires_selection_and_preserves_originals() -> anyhow::Resu
     );
     Ok(())
 }
+
+#[test]
+fn switching_resumes_keeps_search_selection_cursor_and_undo() -> anyhow::Result<()> {
+    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui_textarea::CursorMove;
+
+    let (directory, mut app) = application()?;
+    let first = app.session.editor.path.clone();
+    app.session
+        .editor
+        .replace_source("Résumé 李\nSecond line\n");
+    app.session.editor.text.move_cursor(CursorMove::Jump(0, 0));
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    let area = Rect::new(0, 0, 160, 45);
+    app.handle_event(Event::Paste("李".into()), area);
+    let cursor = app.session.editor.text.cursor();
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    app.open_document(directory.path().join("second.tex"));
+    app.session.editor.text.insert_str("Second draft");
+    app.open_document(first.clone());
+    assert_eq!(app.session.editor.text.cursor(), cursor);
+    assert!(
+        app.session
+            .editor
+            .text
+            .search_pattern()
+            .unwrap()
+            .is_match("李")
+    );
+    terminal.draw(|frame| app.draw(frame))?;
+    let visible: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(visible.contains("Find:"));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.session.editor.text.start_selection();
+    app.session.editor.text.move_cursor(CursorMove::End);
+    let selection = app.session.editor.text.selection_range();
+    app.open_document(directory.path().join("second.tex"));
+    app.open_document(first);
+    assert_eq!(app.session.editor.text.selection_range(), selection);
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    assert_eq!(app.session.editor.source(), "Original document");
+    Ok(())
+}
+
+#[test]
+fn bracketed_paste_inserts_shortcut_characters_as_one_literal_multiline_edit() -> anyhow::Result<()>
+{
+    let (_directory, mut app) = application()?;
+    app.session.editor.text.select_all();
+    let pasted = "?\nctrl+x s\n\\section{Résumé 李}\n\n";
+    app.handle_event(Event::Paste(pasted.into()), Rect::new(0, 0, 160, 45));
+    assert_eq!(app.session.editor.source(), pasted);
+    assert!(app.settings.is_none());
+    assert!(!app.prefix.armed);
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    assert_eq!(app.session.editor.source(), "Original document");
+    Ok(())
+}

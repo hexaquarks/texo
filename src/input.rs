@@ -112,7 +112,7 @@ impl App {
                     && self.session.proposal_review.is_none()
                     && !self.session.empty_workspace =>
             {
-                self.session.editor.text.insert_str(text);
+                self.session.editor.paste_text(&text);
             }
             Event::Mouse(mouse) => self.handle_mouse(mouse, area),
             _ => {}
