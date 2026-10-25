@@ -318,18 +318,6 @@ impl Editor {
                 Paragraph::new(self.notice.as_str()).style(theme::muted()),
                 controls,
             );
-        } else if focused {
-            let mut hints = theme::shortcuts(&[
-                ("Ctrl+Shift+F", "Find"),
-                ("Ctrl+Z/Y", "Undo/redo"),
-                ("Ctrl+Shift+A", "All"),
-                ("Ctrl+Insert", "Copy"),
-                ("Shift+Del/Ins", "Cut/paste"),
-            ]);
-            if self.text.wrap_mode() == WrapMode::None {
-                hints.extend(theme::shortcuts(&[("Ctrl+Alt+←/→", "Pan")]).spans);
-            }
-            frame.render_widget(Paragraph::new(hints).style(theme::muted()), controls);
         }
     }
 
@@ -953,6 +941,40 @@ mod editing_polish_tests {
         assert_eq!(editor.source(), "");
         editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
         assert_eq!(editor.source(), "Résumé 李\n\n");
+        Ok(())
+    }
+
+    #[test]
+    fn search_matches_before_wrapped_continuations_survive_redraw_and_resize() -> Result<()> {
+        let source = format!("% Résumé 李 {}\n", "experience ".repeat(20));
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        editor.replace_source(&source);
+        editor.text.move_cursor(CursorMove::Jump(0, 0));
+        editor.handle_key(KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        editor.paste_text("Résumé");
+
+        for width in [40, 24, 60, 16] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 8))?;
+            terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+            let buffer = terminal.backend().buffer();
+            let highlighted = (1..7).any(|row| {
+                (0..width).any(|column| {
+                    let cell = &buffer[(column, row)];
+                    cell.bg == theme::KEYCAP && cell.fg == theme::MUTED
+                })
+            });
+            assert!(
+                highlighted,
+                "The leading match should remain highlighted at width {width}"
+            );
+            assert_eq!(editor.source(), source);
+        }
+
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(editor.text.search_pattern().is_none());
         Ok(())
     }
 
