@@ -17,7 +17,7 @@ use ratatui::{
 };
 use ratatui_image::{
     Resize, ResizeEncodeRender, StatefulImage,
-    picker::{Picker, ProtocolType},
+    picker::{Picker, ProtocolType, cap_parser::QueryStdioOptions},
     protocol::StatefulProtocol,
 };
 
@@ -80,8 +80,21 @@ impl Default for Preview {
 impl Preview {
     /// Query graphics support after entering the alternate screen, before reading input events.
     pub fn detect() -> Self {
+        // Resume pages compress well. Raw RGBA uploads can be several megabytes,
+        // overwhelming a multiplexer's passthrough before the first page is visible.
+        let options = QueryStdioOptions {
+            kitty_compression: true,
+            ..QueryStdioOptions::default()
+        };
+
+        let picker =
+            Picker::from_query_stdio_with_options(options).unwrap_or_else(|_| Picker::halfblocks());
+        Self::with_picker(picker)
+    }
+
+    pub fn with_picker(picker: Picker) -> Self {
         Self {
-            picker: Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks()),
+            picker,
             ..Self::default()
         }
     }
