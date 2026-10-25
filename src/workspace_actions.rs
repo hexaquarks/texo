@@ -28,11 +28,13 @@ impl App {
         self.actions = None;
         self.export = None;
         self.prefix.cancel();
-        self.settings = Some(SettingsDialog::new(
+        let mut dialog = SettingsDialog::new(
             self.projects.root(),
             &self.settings_path,
             self.prefix.label(),
-        ));
+        );
+        dialog.editor_preferences = self.editor_preferences;
+        self.settings = Some(dialog);
     }
 
     pub(super) fn handle_settings_event(&mut self, event: Event) {
@@ -150,6 +152,7 @@ impl App {
                 settings.save(&self.settings_path)?;
             }
             self.prefix = prefix;
+            self.apply_editor_preferences(settings.editor);
             self.settings = None;
             return Ok(());
         }
@@ -169,6 +172,7 @@ impl App {
         replacement.pane_sizes = self.pane_sizes;
         replacement.layout_state_path = self.layout_state_path.clone();
         replacement.prefix = prefix;
+        replacement.apply_editor_preferences(settings.editor);
         if save {
             settings.save(&self.settings_path)?;
         }
@@ -519,13 +523,15 @@ impl App {
             Editor::open(path.clone())
                 .map(|editor| ResumeSession::new(editor, self.session.preview.empty_like()))
         };
-        let target = match target {
+        let mut target = match target {
             Ok(target) => target,
             Err(error) => {
                 self.report_error(error);
                 return;
             }
         };
+
+        target.editor.apply_preferences(self.editor_preferences);
 
         let files_focused = self.projects.files_focused;
         self.projects = projects;

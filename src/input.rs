@@ -27,6 +27,12 @@ impl App {
             self.session.proposed_preview.end_drag();
         }
 
+        if !matches!(&event, Event::Mouse(mouse) if matches!(mouse.kind,
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)))
+        {
+            self.session.editor.end_drag();
+        }
+
         if let Event::Key(key) = &event {
             if key.kind == KeyEventKind::Release {
                 return false;
@@ -122,6 +128,20 @@ impl App {
             return;
         }
 
+        if self.focus == Focus::Editor
+            && self.session.editor.is_dragging()
+            && self.session.proposal_review.is_none()
+            && matches!(
+                mouse.kind,
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            )
+        {
+            self.session
+                .editor
+                .handle_mouse(pane_content(layout.editor), mouse);
+            return;
+        }
+
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             let chat_body = self.assistant_body(pane_content(layout.assistant));
             if Assistant::maximize_button(
@@ -163,10 +183,10 @@ impl App {
                 self.active_preview().begin_drag(body, position);
             } else if layout.editor.contains(position) {
                 self.focus = Focus::Editor;
-                if self.session.proposal_review.is_none() {
+                if self.session.proposal_review.is_none() && !self.session.empty_workspace {
                     self.session
                         .editor
-                        .click(pane_content(layout.editor), mouse.column, mouse.row);
+                        .handle_mouse(pane_content(layout.editor), mouse);
                 }
             }
         } else if layout.editor.contains(position) {
@@ -176,8 +196,10 @@ impl App {
                     MouseEventKind::ScrollDown => review.scroll(false),
                     _ => {}
                 }
-            } else {
-                self.session.editor.text.input(mouse);
+            } else if self.focus == Focus::Editor && !self.session.empty_workspace {
+                self.session
+                    .editor
+                    .handle_mouse(pane_content(layout.editor), mouse);
             }
         } else if layout.assistant.contains(position) {
             match mouse.kind {

@@ -42,6 +42,7 @@ struct App {
     settings: Option<SettingsDialog>,
     settings_path: PathBuf,
     prefix: Prefix,
+    editor_preferences: crate::config::EditorPreferences,
     pane_sizes: PaneSizes,
     layout_state_path: Option<PathBuf>,
     export: Option<ExportDialog>,
@@ -60,7 +61,9 @@ pub fn run(
     if !empty_workspace && !app.session.editor.is_modified() {
         app.start_render();
     }
-    app.prefix = Prefix::new(&Settings::load(&app.settings_path)?.keybindings.prefix)?;
+    let settings = Settings::load(&app.settings_path)?;
+    app.prefix = Prefix::new(&settings.keybindings.prefix)?;
+    app.apply_editor_preferences(settings.editor);
 
     let result = app.run_event_loop(terminal);
     let cleanup = app.release_terminal_images(terminal.backend_mut());
@@ -91,6 +94,7 @@ impl App {
             settings: None,
             settings_path: Settings::path()?,
             prefix: Prefix::default(),
+            editor_preferences: crate::config::EditorPreferences::default(),
             pane_sizes: PaneSizes::default(),
             layout_state_path: None,
             export: None,
@@ -107,6 +111,14 @@ impl App {
         }
 
         Ok(app)
+    }
+
+    fn apply_editor_preferences(&mut self, preferences: crate::config::EditorPreferences) {
+        self.editor_preferences = preferences;
+        self.session.editor.apply_preferences(preferences);
+        for session in self.sessions.values_mut() {
+            session.editor.apply_preferences(preferences);
+        }
     }
 
     fn overlay_open(&self) -> bool {

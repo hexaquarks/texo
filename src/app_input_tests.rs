@@ -73,6 +73,7 @@ fn chat_toggle_uses_reloaded_prefix_and_cancels_without_typing_action_keys() -> 
         keybindings: crate::config::Keybindings {
             prefix: "ctrl+a".into(),
         },
+        ..Settings::default()
     }
     .save(&app.settings_path)?;
     app.reload_settings()?;
@@ -859,7 +860,7 @@ fn focused_editor_owns_typing_selection_navigation_and_history() -> anyhow::Resu
     key(
         &mut app,
         KeyCode::Left,
-        KeyModifiers::ALT | KeyModifiers::SHIFT,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     );
     assert!(app.session.editor.text.is_selecting());
     assert!(app.focus == Focus::Editor);
@@ -934,5 +935,56 @@ fn proposal_review_blocks_editor_commands_and_paste() -> anyhow::Result<()> {
     app.handle_prefix_action(KeyCode::Char('d'), area);
     assert!(app.session.proposal_review.is_none());
     assert_eq!(app.session.editor.source(), source);
+    Ok(())
+}
+
+#[test]
+fn editor_mouse_drag_requires_an_editor_press_and_releases_outside_the_pane() -> anyhow::Result<()>
+{
+    let (_directory, mut app) = application()?;
+    app.session
+        .editor
+        .replace_source(&"Résumé 李\ttext\n".repeat(30));
+    app.session
+        .editor
+        .text
+        .move_cursor(ratatui_textarea::CursorMove::Top);
+    let area = Rect::new(0, 0, 160, 45);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    let editor = pane_content(app.workspace_layout(area).editor);
+    let mouse = |kind, column, row| {
+        Event::Mouse(event::MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    let column = editor.x + theme::PANEL_PADDING + app.session.editor.text.line_number_width();
+    let row = editor.y + 1;
+    app.focus = Focus::Assistant;
+    let cursor = app.session.editor.text.cursor();
+    app.handle_event(mouse(MouseEventKind::ScrollDown, column, row), area);
+    app.handle_event(
+        mouse(MouseEventKind::Drag(MouseButton::Left), column + 6, row),
+        area,
+    );
+    assert_eq!(app.session.editor.text.cursor(), cursor);
+    assert!(!app.session.editor.text.is_selecting());
+
+    app.handle_event(
+        mouse(MouseEventKind::Down(MouseButton::Left), column, row),
+        area,
+    );
+    app.handle_event(
+        mouse(MouseEventKind::Drag(MouseButton::Left), column + 6, row),
+        area,
+    );
+    assert!(app.session.editor.is_dragging());
+    app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 0, 0), area);
+    assert!(!app.session.editor.is_dragging());
+    app.session.editor.text.copy();
+    assert_eq!(app.session.editor.text.yank_text(), "Résumé");
     Ok(())
 }

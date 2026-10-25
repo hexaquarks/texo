@@ -3,12 +3,14 @@ use std::{fs, io::ErrorKind, path::PathBuf, sync::OnceLock};
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
-    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
     layout::{Position, Rect},
     style::{Color, Style},
     widgets::{Block, Padding},
 };
-use ratatui_textarea::{CursorMove, TextArea};
+use ratatui_textarea::{CursorMove, TextArea, WrapMode};
+
+use crate::config::EditorPreferences;
 use syntect::{
     easy::HighlightLines,
     highlighting::{StyleModifier, Theme, ThemeItem},
@@ -17,6 +19,7 @@ use syntect::{
 use texo::theme;
 
 const TAB_WIDTH: u8 = 4;
+const HORIZONTAL_SCROLL_COLUMNS: i16 = 4;
 pub const STARTER_DOCUMENT: &str =
     "\\documentclass{article}\n\\begin{document}\nYour resume starts here.\n\\end{document}\n";
 
@@ -32,6 +35,7 @@ pub struct Editor {
     pub text: TextArea<'static>,
     saved_source: Option<String>,
     highlighting: Highlighting,
+    dragging: bool,
 }
 
 impl Editor {
@@ -59,6 +63,7 @@ impl Editor {
         // Keep the final empty line so opening and saving preserves a trailing newline.
         let mut text = TextArea::new(source.split('\n').map(String::from).collect());
         text.set_tab_length(TAB_WIDTH);
+        text.set_wrap_mode(WrapMode::WordOrGlyph);
         text.set_style(Style::default().fg(theme::TEXT).bg(theme::EDITOR));
         text.set_line_number_style(theme::muted().bg(theme::EDITOR));
         text.set_cursor_line_style(Style::default());
@@ -70,6 +75,7 @@ impl Editor {
             text,
             saved_source,
             highlighting: Highlighting::new()?,
+            dragging: false,
         })
     }
 
@@ -81,7 +87,22 @@ impl Editor {
         self.saved_source.as_deref() != Some(self.source().as_str())
     }
 
+    pub fn apply_preferences(&mut self, preferences: EditorPreferences) {
+        self.text.set_wrap_mode(if preferences.soft_wrap {
+            WrapMode::WordOrGlyph
+        } else {
+            WrapMode::None
+        });
+    }
+
     pub fn handle_key(&mut self, mut key: KeyEvent) {
+        if key.modifiers == (KeyModifiers::ALT | KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            self.scroll_horizontal(key.code == KeyCode::Left);
+            return;
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             if let KeyCode::Char(character) = key.code {
                 key.code = KeyCode::Char(character.to_ascii_lowercase());
@@ -130,27 +151,78 @@ impl Editor {
         }
     }
 
-    pub fn click(&mut self, area: Rect, column: u16, row: u16) {
-        if !area.contains(Position::new(column, row)) {
-            return;
-        }
-
+    // Adapted from ratatui-textarea 0.9.3 examples/minimal.rs (MIT).
+    // See THIRD_PARTY_LICENSES/ratatui-textarea.txt for attribution.
+    fn clicked_cursor(&self, area: Rect, column: u16, row: u16) -> Option<CursorMove> {
         let content = self.text.block().map_or(area, |block| block.inner(area));
         if !content.contains(Position::new(column, row)) {
-            return;
+            return None;
         }
+
         let (scroll_row, scroll_column) = self.text.scroll_offset();
-        let display_row = usize::from(row.saturating_sub(content.y)) + usize::from(scroll_row);
-        let display_column =
-            usize::from(column.saturating_sub(content.x)) + usize::from(scroll_column);
+        let display_row = usize::from(row - content.y) + usize::from(scroll_row);
+        // Horizontal scrolling also moves the gutter, so subtract it after the offset.
+        let display_column = usize::from(column - content.x) + usize::from(scroll_column);
         let text_column = display_column.saturating_sub(usize::from(self.text.line_number_width()));
         let position = self.text.screen_to_data(display_row, text_column);
 
-        self.text.cancel_selection();
-        self.text.move_cursor(CursorMove::Jump(
+        Some(CursorMove::Jump(
             u16::try_from(position.0).unwrap_or(u16::MAX),
             u16::try_from(position.1).unwrap_or(u16::MAX),
-        ));
+        ))
+    }
+
+    pub fn handle_mouse(&mut self, area: Rect, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(cursor) = self.clicked_cursor(area, mouse.column, mouse.row) {
+                    self.text.cancel_selection();
+                    self.text.move_cursor(cursor);
+                    self.text.start_selection();
+                    self.dragging = true;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
+                if let Some(cursor) = self.clicked_cursor(area, mouse.column, mouse.row) {
+                    self.text.move_cursor(cursor);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.end_drag(),
+            MouseEventKind::ScrollLeft => self.scroll_horizontal(true),
+            MouseEventKind::ScrollRight => self.scroll_horizontal(false),
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.text.input(mouse);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
+    pub fn end_drag(&mut self) {
+        self.dragging = false;
+        if self
+            .text
+            .selection_range()
+            .is_some_and(|(from, to)| from == to)
+        {
+            self.text.cancel_selection();
+        }
+    }
+
+    fn scroll_horizontal(&mut self, left: bool) {
+        if self.text.wrap_mode() != WrapMode::None {
+            return;
+        }
+
+        let columns = if left {
+            -HORIZONTAL_SCROLL_COLUMNS
+        } else {
+            HORIZONTAL_SCROLL_COLUMNS
+        };
+        self.text.scroll((0, columns));
     }
 
     pub fn replace_source(&mut self, source: &str) -> bool {
@@ -253,11 +325,7 @@ impl Editor {
         // Let the editor own glyphs, scrolling, tabs, selection, and cursor backgrounds.
         // Only recolor the text cells, using its screen mapping for wide Unicode characters.
         for y in 0..content.height {
-            let row = usize::from(scroll_row + y);
-            if row >= self.text.lines().len() {
-                break;
-            }
-
+            let row = usize::from(scroll_row) + usize::from(y);
             for x in 0..content.width {
                 let display_column = usize::from(scroll_column) + usize::from(x);
                 let Some(column) = display_column.checked_sub(usize::from(number_width)) else {
@@ -268,7 +336,12 @@ impl Editor {
                     continue;
                 }
 
-                if let Some(color) = self.highlighting.colors[row].get(position.1) {
+                if let Some(color) = self
+                    .highlighting
+                    .colors
+                    .get(position.0)
+                    .and_then(|colors| colors.get(position.1))
+                {
                     frame.buffer_mut()[(content.x + x, content.y + y)].set_fg(*color);
                 }
             }
@@ -409,7 +482,15 @@ mod tests {
         assert!(scroll_row > 0);
 
         let text_start = theme::PANEL_PADDING + editor.text.line_number_width();
-        editor.click(Rect::new(0, 0, 40, 4), text_start + u16::from(TAB_WIDTH), 1);
+        editor.handle_mouse(
+            Rect::new(0, 0, 40, 4),
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: text_start + u16::from(TAB_WIDTH),
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
         assert_eq!(editor.text.cursor(), (usize::from(scroll_row), 2));
         editor.text.insert_str("CLICK");
         assert!(editor.text.lines()[usize::from(scroll_row)].starts_with("李\tCLICK\\section"));
@@ -438,6 +519,7 @@ mod tests {
         let path = directory.path().join("resume.tex");
         fs::write(&path, "李\t\\section{Résumé} % Notes")?;
         let mut editor = Editor::open(path)?;
+        editor.apply_preferences(EditorPreferences { soft_wrap: false });
         editor.text.select_all();
         editor.text.move_cursor(CursorMove::End);
         let mut terminal = Terminal::new(TestBackend::new(18, 4))?;
@@ -527,6 +609,128 @@ mod external_change_tests {
         editor.recover_missing()?;
         assert_eq!(fs::read_to_string(&path)?, "External");
         assert!(editor.recover_missing().is_err());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn wrapped_highlighting_and_unicode_drag_follow_the_rendered_text_after_resize() -> Result<()> {
+        let source = "\\section{Résumé} 李\t% Notes on experience\n";
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        editor.replace_source(source);
+
+        for width in [26, 22, 24] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 14))?;
+            editor.text.move_cursor(CursorMove::Jump(0, 0));
+            let area = Rect::new(0, 0, width, 14);
+            terminal.draw(|frame| editor.draw(frame, area, true))?;
+            let buffer = terminal.backend().buffer();
+            let find = |symbol: &str| {
+                buffer
+                    .content()
+                    .iter()
+                    .position(|cell| cell.symbol() == symbol)
+                    .map(|index| (index as u16 % width, index as u16 / width))
+                    .expect("Expected visible source character")
+            };
+            let (wide_x, wide_y) = find("李");
+            let (comment_x, comment_y) = find("%");
+            let (note_x, note_y) = find("N");
+            assert!(comment_y > 1, "Comment should be on a continuation row");
+            assert_eq!(buffer[(comment_x, comment_y)].fg, theme::MUTED);
+            assert_eq!(buffer[(note_x, note_y)].fg, theme::MUTED);
+
+            editor.handle_mouse(
+                area,
+                mouse(MouseEventKind::Down(MouseButton::Left), wide_x + 1, wide_y),
+            );
+            assert_eq!(editor.text.cursor(), (0, 17));
+            editor.handle_mouse(
+                area,
+                mouse(MouseEventKind::Up(MouseButton::Left), wide_x + 1, wide_y),
+            );
+            assert!(!editor.text.is_selecting());
+
+            editor.handle_mouse(
+                area,
+                mouse(
+                    MouseEventKind::Down(MouseButton::Left),
+                    comment_x,
+                    comment_y,
+                ),
+            );
+            editor.handle_mouse(
+                area,
+                mouse(MouseEventKind::Drag(MouseButton::Left), note_x, note_y),
+            );
+            editor.handle_mouse(
+                area,
+                mouse(MouseEventKind::Up(MouseButton::Left), note_x, note_y),
+            );
+            editor.text.copy();
+            assert_eq!(editor.text.yank_text(), "% ");
+            assert_eq!(editor.source(), source);
+            editor.text.cancel_selection();
+        }
+
+        assert!(editor.text.undo());
+        assert!(editor.text.undo());
+        assert_eq!(editor.source(), STARTER_DOCUMENT);
+        Ok(())
+    }
+
+    #[test]
+    fn horizontal_pan_and_click_use_scrolled_gutter_coordinates() -> Result<()> {
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        editor.replace_source("\\section{Experience} % Notes about work");
+        editor.apply_preferences(EditorPreferences { soft_wrap: false });
+        editor.text.move_cursor(CursorMove::Top);
+        editor.text.move_cursor(CursorMove::End);
+        let area = Rect::new(0, 0, 22, 6);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        terminal.draw(|frame| editor.draw(frame, area, true))?;
+        assert!(editor.text.scroll_offset().1 > 0);
+        let buffer = terminal.backend().buffer();
+        let index = buffer
+            .content()
+            .iter()
+            .position(|cell| cell.symbol() == "N")
+            .unwrap();
+        let column = index as u16 % area.width;
+        let row = index as u16 / area.width;
+        assert_eq!(buffer[(column, row)].fg, theme::MUTED);
+        editor.handle_mouse(
+            area,
+            mouse(MouseEventKind::Down(MouseButton::Left), column, row),
+        );
+        assert_eq!(editor.text.cursor(), (0, 23));
+        editor.end_drag();
+
+        let before = editor.text.scroll_offset().1;
+        editor.handle_key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+        terminal.draw(|frame| editor.draw(frame, area, true))?;
+        assert!(editor.text.scroll_offset().1 < before);
+        editor.apply_preferences(EditorPreferences::default());
+        terminal.draw(|frame| editor.draw(frame, area, true))?;
+        assert_eq!(editor.text.scroll_offset().1, 0);
+        assert_eq!(editor.source(), "\\section{Experience} % Notes about work");
         Ok(())
     }
 }

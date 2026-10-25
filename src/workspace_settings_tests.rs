@@ -325,3 +325,37 @@ fn switching_folders_cancels_old_builds_and_displays_the_new_pdf() -> anyhow::Re
     assert!(!directory.path().join("resume.pdf").exists());
     Ok(())
 }
+
+#[test]
+fn wrap_reload_updates_cached_editors_without_resetting_history_or_proposals() -> anyhow::Result<()>
+{
+    use ratatui_textarea::WrapMode;
+
+    let (directory, mut app) = application()?;
+    let first = app.session.editor.path.clone();
+    app.session.editor.text.insert_str("unsaved ");
+    let source = app.session.editor.source();
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: source.clone(),
+        source_after: "Pending proposal".into(),
+    }));
+    app.open_document(directory.path().join("second.tex"));
+    app.settings_path = directory.path().join("config.toml");
+    let mut settings = Settings {
+        resume_folder: Some(directory.path().to_path_buf()),
+        ..Settings::default()
+    };
+    assert!(settings.editor.soft_wrap);
+    settings.editor.soft_wrap = false;
+    settings.save(&app.settings_path)?;
+    app.reload_settings()?;
+    assert_eq!(app.session.editor.text.wrap_mode(), WrapMode::None);
+
+    app.open_document(first);
+    assert_eq!(app.session.editor.text.wrap_mode(), WrapMode::None);
+    assert_eq!(app.session.editor.source(), source);
+    assert!(app.session.proposal_review.is_some());
+    assert!(app.session.editor.text.undo());
+    assert_eq!(app.session.editor.source(), "Original document");
+    Ok(())
+}

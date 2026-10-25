@@ -18,6 +18,7 @@ pub struct SettingsDialog {
     pub notice: String,
     pub config_path: PathBuf,
     pub prefix_label: String,
+    pub editor_preferences: crate::config::EditorPreferences,
 }
 
 impl SettingsDialog {
@@ -33,6 +34,7 @@ impl SettingsDialog {
             notice: String::new(),
             config_path: config_path.to_path_buf(),
             prefix_label,
+            editor_preferences: crate::config::EditorPreferences::default(),
         }
     }
 
@@ -94,6 +96,11 @@ impl SettingsDialog {
             Paragraph::new(Line::from(vec![
                 Span::raw("Prefix: "),
                 theme::keycap(&self.prefix_label),
+                Span::raw(if self.editor_preferences.soft_wrap {
+                    " · Soft wrap: on"
+                } else {
+                    " · Soft wrap: off"
+                }),
             ])),
             prefix,
         );
