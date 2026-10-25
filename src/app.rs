@@ -3,10 +3,7 @@ use std::{collections::HashMap, path::PathBuf, time::Duration};
 #[cfg(test)]
 use anyhow::Context;
 
-use ratatui::{
-    DefaultTerminal,
-    crossterm::{SynchronizedUpdate, event},
-};
+use ratatui::DefaultTerminal;
 use texo::preview::Preview;
 
 use crate::{
@@ -61,52 +58,9 @@ pub fn run(
     }
     app.prefix = Prefix::new(&Settings::load(&app.settings_path)?.keybindings.prefix)?;
 
-    let mut repaint = false;
-
-    loop {
-        let was_proposed_loading = app.session.proposed_job.is_some();
-        app.receive_render();
-        app.receive_assistant();
-        app.receive_proposed_render();
-        repaint |= was_proposed_loading != app.session.proposed_job.is_some();
-
-        // Keep graphics cleanup and the replacement frame invisible until both are complete.
-        std::io::stdout().sync_update(|_| -> std::io::Result<()> {
-            if repaint {
-                terminal.clear()?;
-            }
-            terminal.draw(|frame| app.draw(frame))?;
-            Ok(())
-        })??;
-        repaint = false;
-
-        if event::poll(EVENT_POLL_INTERVAL)? {
-            let area = terminal.get_frame().area();
-            let preview_was_loading = app.session.job.is_some();
-            let previous_preview_area = app.preview_area(area);
-            let previous_version = app.session.show_proposed;
-            let review_was_open = app.session.proposal_review.is_some();
-            let proposed_was_loading = app.session.proposed_job.is_some();
-            let previous_document = app.session.editor.path.clone();
-            let projects_was_visible = app.projects_visible;
-            let overlay_was_open = app.overlay_open();
-            if app.handle_event(event::read()?, area) {
-                return Ok(());
-            }
-            if previous_version != app.session.show_proposed
-                || review_was_open != app.session.proposal_review.is_some()
-                || proposed_was_loading != app.session.proposed_job.is_some()
-                || previous_preview_area != app.preview_area(area)
-                || projects_was_visible != app.projects_visible
-                || app.overlays_require_clear(overlay_was_open)
-                || previous_document != app.session.editor.path
-                || preview_was_loading != app.session.job.is_some()
-            {
-                // Repaint cells formerly occupied by the terminal's PDF image placement.
-                repaint = true;
-            }
-        }
-    }
+    let result = app.run_event_loop(terminal);
+    let cleanup = app.release_terminal_images(terminal.backend_mut());
+    result.and(cleanup)
 }
 
 impl App {
@@ -163,6 +117,8 @@ impl App {
     }
 }
 
+#[path = "event_loop.rs"]
+mod event_loop;
 #[path = "input.rs"]
 mod input;
 #[path = "resume_review.rs"]
@@ -198,7 +154,9 @@ mod workspace_view_tests;
 use {
     crate::{actions::Action, assistant::ProposedEdit, proposal::ProposalReview, resume_project},
     ratatui::{
-        crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind},
+        crossterm::event::{
+            self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
+        },
         layout::Rect,
     },
     texo::theme,
