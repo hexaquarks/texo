@@ -41,6 +41,7 @@ struct App {
     settings: Option<SettingsDialog>,
     settings_path: PathBuf,
     prefix: Prefix,
+    pane_sizes: workspace_view::PaneSizes,
     export: Option<ExportDialog>,
     focus: Focus,
 }
@@ -87,6 +88,7 @@ impl App {
             settings: None,
             settings_path: Settings::path()?,
             prefix: Prefix::default(),
+            pane_sizes: workspace_view::PaneSizes::default(),
             export: None,
             focus: Focus::Editor,
         })
@@ -121,6 +123,8 @@ impl App {
 mod event_loop;
 #[path = "input.rs"]
 mod input;
+#[path = "pane_navigation.rs"]
+mod pane_navigation;
 #[path = "resume_review.rs"]
 mod resume_review;
 #[path = "workspace_actions.rs"]

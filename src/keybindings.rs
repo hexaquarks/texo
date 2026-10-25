@@ -54,7 +54,11 @@ impl Prefix {
                 return PrefixInput::Pending;
             }
             self.armed = false;
-            return if event.modifiers.is_empty() && event.code != KeyCode::Esc {
+            let action_modifiers = event.modifiers.is_empty()
+                || (event.modifiers == KeyModifiers::SHIFT
+                    && matches!(event.code, KeyCode::Char(character) if character.is_ascii_uppercase()));
+
+            return if action_modifiers && event.code != KeyCode::Esc {
                 PrefixInput::Action(event.code)
             } else {
                 PrefixInput::Pending

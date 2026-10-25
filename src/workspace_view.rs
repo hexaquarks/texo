@@ -10,12 +10,14 @@ use texo::{preview::Preview, theme};
 use super::{App, Focus};
 
 const MULTIPANE_WIDTH: u16 = 100;
+pub(super) const MIN_PANE_WIDTH: u16 = 8;
+pub(super) const MIN_EDITOR_HEIGHT: u16 = 3;
 const MULTIPANE_HEIGHT: u16 = 20;
 const SIDEBAR_WIDTH: u16 = 24;
 const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 55;
 // Borders, padding, header, and composer must fit even with the status row visible.
-const MIN_CHAT_HEIGHT: u16 = 11;
+pub(super) const MIN_CHAT_HEIGHT: u16 = 11;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const REVIEW_CONTROLS_HEIGHT: u16 = 2;
 const REVIEW_BUTTON_WIDTH: u16 = 13;
@@ -23,11 +25,12 @@ const PREVIEW_TAB_WIDTH: u16 = 13;
 
 impl App {
     pub(super) fn workspace_layout(&self, area: Rect) -> WorkspaceLayout {
-        let mut layout = WorkspaceLayout::new(
+        let mut layout = WorkspaceLayout::with_sizes(
             area,
             self.session.diagnostics.is_some(),
             self.projects_visible,
             self.focus,
+            &self.pane_sizes,
         );
 
         // Keep the PDF and sidebar in place; chat only takes over the editor's space.
@@ -75,6 +78,8 @@ impl App {
         let prefix = self.prefix.label();
         let settings_hint = if self.prefix.armed {
             let mut bindings = vec![
+                ("h/j/k/l", "Select pane"),
+                ("H/J/K/L", "Grow pane ~15px"),
                 ("n", "New"),
                 ("i", "Import"),
                 ("r", "Resumes"),
@@ -414,6 +419,13 @@ fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
 }
 
 #[derive(Default)]
+pub(super) struct PaneSizes {
+    pub(super) sidebar: Option<u16>,
+    pub(super) preview: Option<u16>,
+    pub(super) editor: Option<u16>,
+}
+
+#[derive(Default)]
 pub(super) struct WorkspaceLayout {
     pub(super) projects: Rect,
     pub(super) files: Rect,
@@ -425,11 +437,28 @@ pub(super) struct WorkspaceLayout {
 }
 
 impl WorkspaceLayout {
+    #[cfg(test)]
     pub(super) fn new(
         area: Rect,
         show_diagnostics: bool,
         show_projects: bool,
         focus: Focus,
+    ) -> Self {
+        Self::with_sizes(
+            area,
+            show_diagnostics,
+            show_projects,
+            focus,
+            &PaneSizes::default(),
+        )
+    }
+
+    pub(super) fn with_sizes(
+        area: Rect,
+        show_diagnostics: bool,
+        show_projects: bool,
+        focus: Focus,
+        sizes: &PaneSizes,
     ) -> Self {
         let [area, status] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
@@ -447,7 +476,7 @@ impl WorkspaceLayout {
         // use the upper pane for the editor, preview, or projects as focus changes.
         if area.width < MULTIPANE_WIDTH && body.height >= MULTIPANE_HEIGHT {
             let [upper, assistant] = Layout::vertical([
-                Constraint::Percentage(EDITOR_PERCENT),
+                editor_constraint(sizes, body.height),
                 Constraint::Min(MIN_CHAT_HEIGHT),
             ])
             .areas(body);
@@ -486,15 +515,28 @@ impl WorkspaceLayout {
             return layout;
         }
 
-        let sidebar_width = if show_projects { SIDEBAR_WIDTH } else { 0 };
+        let sidebar_width = if show_projects {
+            sizes
+                .sidebar
+                .unwrap_or(SIDEBAR_WIDTH)
+                .clamp(MIN_PANE_WIDTH, body.width - 2 * MIN_PANE_WIDTH)
+        } else {
+            0
+        };
+        let preview_constraint = match sizes.preview {
+            Some(width) => Constraint::Length(
+                width.clamp(MIN_PANE_WIDTH, body.width - sidebar_width - MIN_PANE_WIDTH),
+            ),
+            None => Constraint::Percentage(PREVIEW_PERCENT),
+        };
         let [sidebar, center, preview] = Layout::horizontal([
             Constraint::Length(sidebar_width),
-            Constraint::Min(1),
-            Constraint::Percentage(PREVIEW_PERCENT),
+            Constraint::Min(MIN_PANE_WIDTH),
+            preview_constraint,
         ])
         .areas(body);
         let [editor, assistant] = Layout::vertical([
-            Constraint::Percentage(EDITOR_PERCENT),
+            editor_constraint(sizes, center.height),
             Constraint::Min(MIN_CHAT_HEIGHT),
         ])
         .areas(center);
@@ -512,5 +554,13 @@ impl WorkspaceLayout {
             diagnostics,
             status,
         }
+    }
+}
+
+// Retain the default ratio until resized, then clamp saved dimensions on terminal resize.
+fn editor_constraint(sizes: &PaneSizes, height: u16) -> Constraint {
+    match sizes.editor {
+        Some(rows) => Constraint::Length(rows.clamp(MIN_EDITOR_HEIGHT, height - MIN_CHAT_HEIGHT)),
+        None => Constraint::Percentage(EDITOR_PERCENT),
     }
 }
