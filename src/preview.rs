@@ -43,6 +43,7 @@ pub struct Preview {
     pages: Option<PdfPages>,
     page_index: usize,
     image: Option<StatefulProtocol>,
+    image_presented: bool,
     source_page: Option<Arc<DynamicImage>>,
     scaled_page_size: Option<(u32, u32)>,
     pending: Option<ViewportJob>,
@@ -79,6 +80,7 @@ impl Default for Preview {
             pages: None,
             page_index: 0,
             image: None,
+            image_presented: false,
             source_page: None,
             scaled_page_size: None,
             pending: None,
@@ -124,6 +126,17 @@ impl Preview {
 
     pub fn uses_basic_rendering(&self) -> bool {
         self.picker.protocol_type() == ProtocolType::Halfblocks
+    }
+
+    pub fn uses_inline_graphics(&self) -> bool {
+        matches!(
+            self.picker.protocol_type(),
+            ProtocolType::Sixel | ProtocolType::Iterm2
+        )
+    }
+
+    pub fn has_presented_image(&self) -> bool {
+        self.image_presented
     }
 
     pub fn clear(&mut self) {
@@ -178,8 +191,13 @@ impl Preview {
         self.viewport_pixels = None;
         self.displayed_scroll = None;
         self.displayed_horizontal = None;
-        self.image = None;
         self.last_wheel_zoom = None;
+
+        // Keep the visible page until its replacement is ready. Clearing removes it immediately.
+        if self.source_page.is_none() {
+            self.image = None;
+            self.image_presented = false;
+        }
     }
 
     pub fn scroll(&mut self, up: bool) {
@@ -204,7 +222,7 @@ impl Preview {
     }
 
     pub fn is_preparing(&self) -> bool {
-        self.source_page.is_some() && self.pending.is_some()
+        self.source_page.is_some() && (self.pending.is_some() || self.viewport_pixels.is_none())
     }
 
     /// The page point under the cursor stays in place unless an edge clamps the viewport.
@@ -357,6 +375,7 @@ impl Preview {
                 match result {
                     Ok(prepared) => {
                         self.image = Some(prepared.image);
+                        self.image_presented = false;
                         self.scaled_page_size = Some(prepared.page_size);
                         self.scroll_pixels = prepared.scroll;
                         self.displayed_scroll = Some(prepared.scroll);
@@ -367,6 +386,7 @@ impl Preview {
                     Err(error) => {
                         self.notice = format!("Could not display the preview: {error}");
                         self.image = None;
+                        self.image_presented = false;
                         if !self.uses_basic_rendering() {
                             self.picker = Picker::halfblocks();
                             self.scaled_page_size = None;
@@ -460,24 +480,37 @@ impl Preview {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        self.draw_preview(frame, area, false);
+    }
+
+    /// Keep the last visible image beneath a modal without consuming a new Kitty upload.
+    pub fn draw_cached(&mut self, frame: &mut Frame, area: Rect) {
+        self.draw_preview(frame, area, true);
+    }
+
+    fn draw_preview(&mut self, frame: &mut Frame, area: Rect, cached_only: bool) {
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::PREVIEW)),
             area,
         );
         let content = preview_content(area);
-        self.prepare_viewport(content);
+        if !cached_only {
+            self.prepare_viewport(content);
+        }
 
         match &mut self.image {
             Some(image)
-                if image
-                    .needs_resize(&Resize::Crop(None), content.as_size())
-                    .is_none() =>
+                if (!cached_only || self.image_presented)
+                    && image
+                        .needs_resize(&Resize::Crop(None), content.as_size())
+                        .is_none() =>
             {
                 frame.render_stateful_widget(
                     StatefulImage::default().resize(Resize::Crop(None)),
                     content,
                     image,
                 );
+                self.image_presented = true;
             }
             _ => {
                 let [_, message, _] = Layout::vertical([
