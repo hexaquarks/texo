@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use texo::{preview::Preview, theme};
+use texo::theme;
 
 use super::{App, Focus};
 
@@ -228,15 +228,14 @@ impl App {
 
         let body = below_header(area, 1);
         let proposed = self.session.show_proposed && self.session.proposal_review.is_some();
-        let loading = if proposed {
-            self.session.proposed_job.as_ref()
+        let building = if proposed {
+            self.session.proposed_job.is_some()
         } else {
-            self.session.job.as_ref()
+            self.session.job.is_some()
         };
 
-        let is_loading = loading.is_some();
-        if let Some(job) = loading {
-            Preview::draw_loading(frame, body, job.elapsed());
+        if building {
+            self.active_preview().draw_loading(frame, body);
         } else if self.overlay_open() {
             // A finished proposal may switch versions while a dialog covers the upload cell.
             // Keep this resume's current image visible until the new version can be presented.
@@ -250,10 +249,11 @@ impl App {
             self.active_preview().draw(frame, body);
         }
 
+        let is_loading = building || self.active_preview().is_preparing();
         let state = if self.session.empty_workspace {
             "PDF missing"
         } else if is_loading {
-            "PDF building"
+            "PDF loading"
         } else if (proposed && self.session.proposed_render_failed)
             || (!proposed && self.session.render_failed)
         {
@@ -277,10 +277,7 @@ impl App {
             Rect { height: 1, ..area }
         };
         let zoom = self.active_preview().zoom_percent();
-        let mut title = format!(" {state}  {page} · {zoom}%");
-        if self.active_preview().is_preparing() {
-            title.push_str(" · Updating…");
-        }
+        let title = format!(" {state}  {page} · {zoom}%");
 
         let compact_title = format!(" PDF {} {zoom}%", page.replace(' ', ""));
         draw_preview_title(

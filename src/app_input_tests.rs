@@ -314,7 +314,9 @@ fn pdf_zoom_mouse_and_keyboard_events_leave_editor_and_other_preview_untouched()
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(preparing.contains("Updating…"));
+    assert!(preparing.contains("Loading PDF…"));
+    assert!(!preparing.contains("Preparing PDF"));
+    assert!(!preparing.contains("Updating…"));
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while app.session.preview.is_preparing() {

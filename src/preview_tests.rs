@@ -167,7 +167,7 @@ fn loading_state_replaces_previous_content_and_animates() -> anyhow::Result<()> 
     for elapsed in [Duration::ZERO, Duration::from_millis(150)] {
         terminal.draw(|frame| {
             frame.render_widget(Paragraph::new("Previous PDF"), frame.area());
-            Preview::draw_loading(frame, frame.area(), elapsed);
+            Preview::draw_loading_at(frame, frame.area(), elapsed);
         })?;
         let text: String = terminal
             .backend()
@@ -176,11 +176,82 @@ fn loading_state_replaces_previous_content_and_animates() -> anyhow::Result<()> 
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(text.contains("Building PDF"));
+        assert!(text.contains("Loading PDF…"));
         assert!(!text.contains("Previous PDF"));
         captures.push(text);
     }
     assert_ne!(captures[0], captures[1]);
+    Ok(())
+}
+
+#[test]
+fn loading_continues_until_the_replacement_image_is_ready() -> anyhow::Result<()> {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut preview = Preview::default();
+    let mut terminal = Terminal::new(TestBackend::new(60, 20))?;
+    let area = terminal.get_frame().area();
+    let content = preview_content(area);
+    preview.set_source(Some(patterned_page(120, 200)));
+    finish_viewport(&mut preview, content);
+    terminal.draw(|frame| preview.draw(frame, area))?;
+    assert!(preview.has_presented_image());
+
+    preview.begin_loading();
+    let started = preview.loading_started;
+    terminal.draw(|frame| preview.draw_loading(frame, area))?;
+
+    // Hold encoding pending so the compilation-to-image handoff is deterministic.
+    preview.set_source(Some(patterned_page(200, 120)));
+    let source = preview.source_page.clone().unwrap();
+    let font = preview.picker.font_size();
+    let (sender, result) = mpsc::channel();
+    preview.pending = Some(ViewportJob {
+        source: source.clone(),
+        pixels: (
+            u32::from(content.width) * u32::from(font.width),
+            u32::from(content.height) * u32::from(font.height),
+        ),
+        scroll: 0,
+        result,
+        zoom_percent: FIT_WIDTH_PERCENT,
+        horizontal: 0,
+    });
+    terminal.draw(|frame| preview.draw(frame, area))?;
+    let loading: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(loading.contains("Loading PDF…"));
+    assert!(!loading.contains("Preparing PDF"));
+    assert_eq!(preview.loading_started, started);
+
+    sender.send(
+        prepare_image(
+            Picker::halfblocks(),
+            source,
+            content,
+            0,
+            0,
+            FIT_WIDTH_PERCENT,
+        )
+        .map(PreparedImage::Raster),
+    )?;
+    terminal.draw(|frame| preview.draw(frame, area))?;
+    let ready: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(!ready.contains("Loading PDF…"));
+    assert!(!preview.is_preparing());
+    assert!(preview.has_presented_image());
+    assert!(preview.loading_started.is_none());
     Ok(())
 }
 

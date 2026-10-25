@@ -2555,6 +2555,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratatui-spinner"
+version = "0.4.18"
+source = "git+https://github.com/ratatui/ratatui-spinner?rev=4489de894e1a29460b5976508b1a25499c3ba3b0#4489de894e1a29460b5976508b1a25499c3ba3b0"
+dependencies = [
+ "ratatui",
+]
+
+[[package]]
 name = "ratatui-termina"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3345,6 +3353,7 @@ dependencies = [
  "rand 0.10.3",
  "ratatui",
  "ratatui-image",
+ "ratatui-spinner",
  "ratatui-textarea",
  "reqwest",
  "secrecy",
