@@ -21,6 +21,12 @@ const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
 
 impl App {
     pub(super) fn handle_event(&mut self, event: Event, area: Rect) -> bool {
+        if !matches!(&event, Event::Mouse(mouse) if mouse.kind == MouseEventKind::Drag(MouseButton::Left))
+        {
+            self.session.preview.end_drag();
+            self.session.proposed_preview.end_drag();
+        }
+
         if let Event::Key(key) = &event {
             if key.kind == KeyEventKind::Release {
                 return false;
@@ -110,6 +116,11 @@ impl App {
     fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) {
         let layout = self.workspace_layout(area);
         let position = Position::new(mouse.column, mouse.row);
+        if self.focus == Focus::Preview && mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
+            self.active_preview().drag_to(position);
+            return;
+        }
+
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             let chat_body = self.assistant_body(pane_content(layout.assistant));
             if Assistant::maximize_button(chat_body).contains(position) {
@@ -141,6 +152,8 @@ impl App {
                 );
             } else if layout.preview.contains(position) {
                 self.focus = Focus::Preview;
+                let body = below_header(pane_content(layout.preview), 1);
+                self.active_preview().begin_drag(body, position);
             } else if layout.editor.contains(position) {
                 self.focus = Focus::Editor;
                 if self.session.proposal_review.is_none() {

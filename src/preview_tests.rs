@@ -760,12 +760,18 @@ fn terminal_renderer_actually_zooms_and_pans_the_page() -> anyhow::Result<()> {
         },
     )?;
 
-    for phase in ["initial", "zoom", "pan", "fit"] {
+    for phase in ["initial", "zoom", "pan", "drag", "fit"] {
         match phase {
             "zoom" => preview.set_zoom(200, area, content.as_position()),
             "pan" => {
                 preview.pan_horizontal(false);
                 preview.scroll(false);
+            }
+            "drag" => {
+                let start = Position::new(content.x + 8, content.y + 6);
+                preview.begin_drag(area, start);
+                assert!(preview.drag_to(Position::new(start.x - 2, start.y - 2)));
+                preview.end_drag();
             }
             "fit" => preview.reset_zoom(area),
             _ => {}
@@ -822,4 +828,53 @@ fn scrolling_beyond_native_coordinates_uses_raster_and_can_return_to_native() {
     finish_viewport(&mut preview, content);
     assert!(matches!(preview.image, Some(PreparedImage::Retained(_))));
     assert_eq!(preview.displayed_scroll, Some(0));
+}
+
+#[test]
+fn dragging_moves_paper_in_both_axes_and_reverses_immediately_at_edges() {
+    let mut preview = Preview::default();
+    preview.picker.set_protocol_type(ProtocolType::Kitty);
+    preview.set_source(Some(patterned_page(120, 200)));
+    let area = Rect::new(0, 0, 24, 12);
+    preview.set_zoom(200, area, preview_content(area).as_position());
+    finish_viewport(&mut preview, preview_content(area));
+
+    preview.begin_drag(area, Position::new(12, 6));
+    assert!(preview.drag_to(Position::new(9, 4)));
+    assert_eq!((preview.horizontal_pixels, preview.scroll_pixels), (30, 40));
+    preview.prepare_viewport(preview_content(area));
+    assert!(
+        preview.pending.is_none(),
+        "Dragging must reuse the uploaded page"
+    );
+
+    assert!(preview.drag_to(Position::new(u16::MAX, u16::MAX)));
+    assert_eq!((preview.horizontal_pixels, preview.scroll_pixels), (0, 0));
+    assert!(preview.drag_to(Position::new(u16::MAX - 1, u16::MAX - 1)));
+    assert_eq!((preview.horizontal_pixels, preview.scroll_pixels), (10, 20));
+
+    assert!(preview.drag_to(Position::new(0, 0)));
+    let page = preview.scaled_page_size.unwrap();
+    let viewport = preview.viewport_pixels.unwrap();
+    assert_eq!(preview.horizontal_pixels, page.0 - viewport.0);
+    assert_eq!(preview.scroll_pixels, page.1 - viewport.1);
+    preview.end_drag();
+    assert!(!preview.drag_to(Position::new(12, 6)));
+}
+
+#[test]
+fn dragging_requires_page_content_and_cancels_when_the_source_changes() {
+    let mut preview = Preview::default();
+    let area = Rect::new(0, 0, 24, 12);
+    preview.begin_drag(area, Position::new(12, 6));
+    assert!(!preview.drag_to(Position::new(10, 4)));
+
+    preview.set_source(Some(patterned_page(120, 200)));
+    finish_viewport(&mut preview, preview_content(area));
+    preview.begin_drag(area, Position::new(0, 0));
+    assert!(!preview.drag_to(Position::new(10, 4)));
+
+    preview.begin_drag(area, Position::new(12, 6));
+    preview.set_source(Some(patterned_page(120, 240)));
+    assert!(!preview.drag_to(Position::new(10, 4)));
 }
