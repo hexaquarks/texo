@@ -1,24 +1,28 @@
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Alignment, Constraint, Layout, Margin, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Padding, Paragraph},
+    widgets::{Block, Padding, Paragraph, Widget},
 };
-use ratatui_textarea::CursorMove;
+use ratatui_textarea::{CursorMove, TextArea};
 use texo::{auth::Provider, theme};
 
 use super::{Assistant, Message};
 
-const INPUT_HEIGHT: u16 = 3;
+const MIN_INPUT_HEIGHT: u16 = 3;
+const INPUT_VERTICAL_PADDING: u16 = 1;
+pub(super) const MAX_INPUT_ROWS: u16 = 6;
+const MIN_HISTORY_ROWS: u16 = 2;
+const HEADER_HEIGHT: u16 = 1;
+const HEADER_GAP: u16 = 1;
 
 const CHAT_TITLE_WIDTH: u16 = 13;
 
 const SEND_WIDTH: u16 = 8;
 
 const MODEL_LABEL_HEIGHT: u16 = 1;
-
-const COMPOSER_HEIGHT: u16 = INPUT_HEIGHT + MODEL_LABEL_HEIGHT;
 
 const PROMPT_WIDTH: u16 = 2;
 
@@ -32,7 +36,7 @@ const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "
 
 impl Assistant {
     pub fn input_area(&self, area: Rect) -> Rect {
-        composer_layout(area)[0]
+        self.composer_layout(area)[0]
     }
 
     fn model_label(&self) -> &str {
@@ -61,8 +65,8 @@ impl Assistant {
         true
     }
 
-    pub fn send_button(area: Rect) -> Rect {
-        composer_layout(area)[1]
+    pub fn send_button(&self, area: Rect) -> Rect {
+        self.composer_layout(area)[1]
     }
 
     pub fn maximize_button(area: Rect) -> Rect {
@@ -88,7 +92,7 @@ impl Assistant {
             login.draw(frame, area);
             return;
         }
-        if area.width < SEND_WIDTH || area.height < INPUT_HEIGHT + 2 {
+        if area.width < SEND_WIDTH || area.height < MIN_INPUT_HEIGHT + 2 {
             return;
         }
         frame.render_widget(Block::default().style(theme::text()), area);
@@ -96,18 +100,15 @@ impl Assistant {
             horizontal: theme::PANEL_PADDING,
             vertical: 1,
         });
-        let activity_height = if self.is_running() {
-            THINKING_HEIGHT
-        } else {
-            1
-        };
+        let activity_height = self.activity_height();
+        let composer_height = self.composer_height(inner);
 
         let [header, _, history, activity, composer] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(HEADER_HEIGHT),
+            Constraint::Length(HEADER_GAP),
             Constraint::Min(0),
             Constraint::Length(activity_height),
-            Constraint::Length(COMPOSER_HEIGHT),
+            Constraint::Length(composer_height),
         ])
         .areas(inner);
         let hint = if maximized {
@@ -243,16 +244,72 @@ impl Assistant {
             area,
         );
     }
-}
 
-fn composer_layout(area: Rect) -> [Rect; 2] {
-    let inner = area.inner(Margin {
-        horizontal: theme::PANEL_PADDING,
-        vertical: 1,
-    });
-    let [_, composer] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(COMPOSER_HEIGHT)]).areas(inner);
-    composer_layout_from_row(composer_rows(composer)[0])
+    fn activity_height(&self) -> u16 {
+        if self.is_running() {
+            THINKING_HEIGHT
+        } else {
+            1
+        }
+    }
+
+    fn composer_layout(&self, area: Rect) -> [Rect; 2] {
+        let inner = area.inner(Margin::new(theme::PANEL_PADDING, 1));
+        let [_, composer] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(self.composer_height(inner)),
+        ])
+        .areas(inner);
+
+        composer_layout_from_row(composer_rows(composer)[0])
+    }
+
+    fn composer_height(&self, inner: Rect) -> u16 {
+        let [input, _] = composer_layout_from_row(inner);
+        let width = input_block().inner(input).width;
+        let reserved = HEADER_HEIGHT
+            + HEADER_GAP
+            + self.activity_height()
+            + MODEL_LABEL_HEIGHT
+            + MIN_HISTORY_ROWS
+            + INPUT_VERTICAL_PADDING * 2;
+        let maximum_rows = inner
+            .height
+            .saturating_sub(reserved)
+            .clamp(1, MAX_INPUT_ROWS);
+        let rows = self.wrapped_input_rows(width, maximum_rows);
+
+        rows + INPUT_VERTICAL_PADDING * 2 + MODEL_LABEL_HEIGHT
+    }
+
+    fn wrapped_input_rows(&self, width: u16, maximum: u16) -> u16 {
+        let width = usize::from(width.max(1));
+        // Long pastes can reach the height cap without copying or wrapping the draft twice.
+        let minimum_rows: usize = self
+            .input
+            .lines()
+            .iter()
+            .take(usize::from(maximum))
+            .map(|line| Line::raw(line.as_str()).width().div_ceil(width).max(1))
+            .sum();
+        if minimum_rows >= usize::from(maximum) {
+            return maximum;
+        }
+
+        // The textarea owns word/grapheme wrapping and cursor mapping. Measure a text-only
+        // copy so layout never changes the live cursor, selection, scroll position, or undo.
+        let mut measure = TextArea::new(self.input.lines().to_vec());
+        measure.set_wrap_mode(self.input.wrap_mode());
+        measure.set_tab_length(self.input.tab_length());
+        measure.move_cursor(CursorMove::Bottom);
+        measure.move_cursor(CursorMove::End);
+        let area = Rect::new(0, 0, width as u16, 1);
+        (&measure).render(area, &mut Buffer::empty(area));
+
+        u16::try_from(measure.screen_cursor().row + 1)
+            .unwrap_or(u16::MAX)
+            .min(maximum)
+    }
 }
 
 fn composer_rows(area: Rect) -> [Rect; 2] {
@@ -269,7 +326,12 @@ fn composer_layout_from_row(area: Rect) -> [Rect; 2] {
 fn input_block() -> Block<'static> {
     Block::default()
         .style(Style::default().bg(theme::BUTTON))
-        .padding(Padding::new(PROMPT_WIDTH + 1, 1, 1, 1))
+        .padding(Padding::new(
+            PROMPT_WIDTH + 1,
+            1,
+            INPUT_VERTICAL_PADDING,
+            INPUT_VERTICAL_PADDING,
+        ))
 }
 
 fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {

@@ -132,7 +132,10 @@ impl App {
                 if self.projects.select_at(layout.projects, mouse.row) {
                     self.activate_projects();
                 }
-            } else if Assistant::send_button(self.assistant_body(pane_content(layout.assistant)))
+            } else if self
+                .session
+                .assistant
+                .send_button(chat_body)
                 .contains(position)
             {
                 self.focus = Focus::Assistant;
