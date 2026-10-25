@@ -10,7 +10,7 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 
-use crate::config::EditorPreferences;
+use crate::config::{EditingMode, EditorPreferences};
 use syntect::{
     easy::HighlightLines,
     highlighting::{StyleModifier, Theme, ThemeItem},
@@ -22,9 +22,12 @@ use texo::theme;
 mod clipboard;
 #[path = "editor_search.rs"]
 mod search;
+#[path = "editor_vim.rs"]
+mod vim;
 
 use clipboard::{ClipboardAccess, ClipboardAction, SystemClipboard};
 use search::Search;
+use vim::Vim;
 
 const TAB_WIDTH: u8 = 4;
 const HORIZONTAL_SCROLL_COLUMNS: i16 = 4;
@@ -47,6 +50,7 @@ pub struct Editor {
     search: Search,
     clipboard: Box<dyn ClipboardAccess>,
     notice: String,
+    vim: Option<Vim>,
 }
 
 impl Editor {
@@ -91,6 +95,7 @@ impl Editor {
             search: Search::default(),
             clipboard: Box::<SystemClipboard>::default(),
             notice: String::new(),
+            vim: None,
         })
     }
 
@@ -103,6 +108,18 @@ impl Editor {
     }
 
     pub fn apply_preferences(&mut self, preferences: EditorPreferences) {
+        match preferences.mode {
+            EditingMode::Vim if self.vim.is_none() => {
+                self.text.cancel_selection();
+                self.vim = Some(Vim::default());
+            }
+            EditingMode::Standard if self.vim.is_some() => {
+                self.text.cancel_selection();
+                self.vim = None;
+            }
+            _ => {}
+        }
+
         self.text.set_wrap_mode(if preferences.soft_wrap {
             WrapMode::WordOrGlyph
         } else {
@@ -123,6 +140,27 @@ impl Editor {
         }
 
         self.notice.clear();
+        // Ctrl+Shift+F stays available for search; Ctrl+F pages in Vim Normal/Visual.
+        let search_shortcut = key.code == KeyCode::Char('f')
+            && key.modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        if search_shortcut {
+            self.cancel_pending_commands();
+            self.search.start(&mut self.text);
+            return;
+        }
+        if key.modifiers == (KeyModifiers::ALT | KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            self.scroll_horizontal(key.code == KeyCode::Left);
+            return;
+        }
+
+        if let Some(vim) = &mut self.vim
+            && vim.handle_key(key, &mut self.text)
+        {
+            return;
+        }
+
         if self.handle_editor_command(key) {
             return;
         }
@@ -184,13 +222,6 @@ impl Editor {
     }
 
     fn handle_standard_key(&mut self, mut key: KeyEvent) {
-        if key.modifiers == (KeyModifiers::ALT | KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Left | KeyCode::Right)
-        {
-            self.scroll_horizontal(key.code == KeyCode::Left);
-            return;
-        }
-
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('a') => {
@@ -239,7 +270,15 @@ impl Editor {
         if self.search.open {
             self.search.paste(text, &mut self.text);
         } else {
+            // Bracketed paste is literal text in every mode, never a sequence of commands.
+            self.cancel_pending_commands();
             self.text.insert_str(text);
+        }
+    }
+
+    pub fn cancel_pending_commands(&mut self) {
+        if let Some(vim) = &mut self.vim {
+            vim.cancel_pending();
         }
     }
 
@@ -305,7 +344,8 @@ impl Editor {
         } else {
             ""
         };
-        let status = format!("{}:{}{}", cursor.0 + 1, cursor.1 + 1, modified);
+        let mode = self.vim.as_ref().map_or("STANDARD", Vim::label);
+        let status = format!("{mode} {}:{}{}", cursor.0 + 1, cursor.1 + 1, modified);
         let [position, controls] = Layout::horizontal([
             Constraint::Length(status.chars().count() as u16 + 2),
             Constraint::Min(0),
@@ -318,6 +358,22 @@ impl Editor {
                 Paragraph::new(self.notice.as_str()).style(theme::muted()),
                 controls,
             );
+        } else if focused {
+            let mut hints = if let Some(vim) = &self.vim {
+                vim.hints()
+            } else {
+                theme::shortcuts(&[
+                    ("Ctrl+Shift+F", "Find"),
+                    ("Ctrl+Z/Y", "Undo/redo"),
+                    ("Ctrl+Shift+A", "All"),
+                    ("Ctrl+Insert", "Copy"),
+                    ("Shift+Del/Ins", "Cut/paste"),
+                ])
+            };
+            if self.text.wrap_mode() == WrapMode::None {
+                hints.extend(theme::shortcuts(&[("Ctrl+Alt+←/→", "Pan")]).spans);
+            }
+            frame.render_widget(Paragraph::new(hints).style(theme::muted()), controls);
         }
     }
 
@@ -345,6 +401,7 @@ impl Editor {
     pub fn handle_mouse(&mut self, area: Rect, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                self.cancel_pending_commands();
                 if let Some(cursor) = self.clicked_cursor(area, mouse.column, mouse.row) {
                     self.text.cancel_selection();
                     self.text.move_cursor(cursor);
@@ -372,13 +429,16 @@ impl Editor {
     }
 
     pub fn end_drag(&mut self) {
-        self.dragging = false;
+        let was_dragging = std::mem::take(&mut self.dragging);
         if self
             .text
             .selection_range()
             .is_some_and(|(from, to)| from == to)
         {
             self.text.cancel_selection();
+        }
+        if was_dragging && let Some(vim) = &mut self.vim {
+            vim.finish_mouse_selection(self.text.is_selecting());
         }
     }
 
@@ -400,6 +460,8 @@ impl Editor {
             return false;
         }
 
+        self.cancel_pending_commands();
+        self.end_drag();
         self.text.select_all();
         self.text.insert_str(source);
         true
@@ -690,7 +752,10 @@ mod tests {
         let path = directory.path().join("resume.tex");
         fs::write(&path, "李\t\\section{Résumé} % Notes")?;
         let mut editor = Editor::open(path)?;
-        editor.apply_preferences(EditorPreferences { soft_wrap: false });
+        editor.apply_preferences(EditorPreferences {
+            soft_wrap: false,
+            ..EditorPreferences::default()
+        });
         editor.text.select_all();
         editor.text.move_cursor(CursorMove::End);
         let mut terminal = Terminal::new(TestBackend::new(18, 4))?;
@@ -868,7 +933,10 @@ mod viewport_tests {
     fn horizontal_pan_and_click_use_scrolled_gutter_coordinates() -> Result<()> {
         let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
         editor.replace_source("\\section{Experience} % Notes about work");
-        editor.apply_preferences(EditorPreferences { soft_wrap: false });
+        editor.apply_preferences(EditorPreferences {
+            soft_wrap: false,
+            ..EditorPreferences::default()
+        });
         editor.text.move_cursor(CursorMove::Top);
         editor.text.move_cursor(CursorMove::End);
         let area = Rect::new(0, 0, 22, 6);
@@ -1023,6 +1091,57 @@ mod editing_polish_tests {
         assert!(editor.text.undo());
         assert!(editor.text.undo());
         assert_eq!(editor.source(), STARTER_DOCUMENT);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod vim_navigation_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn vim_is_optional_and_uses_the_existing_unicode_buffer_and_history() -> Result<()> {
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        editor.replace_source("李 résumé words\nSecond line\n");
+        assert!(editor.vim.is_none());
+        editor.text.move_cursor(CursorMove::Jump(0, 0));
+        editor.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        editor.apply_preferences(EditorPreferences {
+            mode: EditingMode::Vim,
+            ..EditorPreferences::default()
+        });
+        let source = editor.source();
+        for character in ['q', 'z', ':'] {
+            editor.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        assert_eq!(editor.source(), source);
+
+        editor.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+        assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Insert);
+        editor.paste_text(" new");
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        editor.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE));
+        editor.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        editor.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert!(editor.text.is_selecting());
+        assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Visual);
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 10))?;
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        let visible: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(visible.contains("VISUAL"));
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!editor.text.is_selecting());
+        editor.apply_preferences(EditorPreferences::default());
+        editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(editor.source(), source);
         Ok(())
     }
 }

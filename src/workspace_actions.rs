@@ -531,6 +531,10 @@ impl App {
             }
         };
 
+        self.session.editor.cancel_pending_commands();
+        self.session.editor.end_drag();
+        target.editor.cancel_pending_commands();
+        target.editor.end_drag();
         target.editor.apply_preferences(self.editor_preferences);
 
         let files_focused = self.projects.files_focused;

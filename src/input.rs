@@ -21,6 +21,30 @@ const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
 
 impl App {
     pub(super) fn handle_event(&mut self, event: Event, area: Rect) -> bool {
+        let previous_focus = self.focus;
+        let had_overlay = self.overlay_open() || self.session.assistant.login_open();
+        let cancelled = matches!(
+            &event,
+            Event::FocusLost
+                | Event::Key(KeyEvent {
+                    code: KeyCode::Esc,
+                    ..
+                })
+        );
+        if cancelled {
+            self.session.editor.cancel_pending_commands();
+        }
+
+        let quit = self.route_event(event, area);
+        let has_overlay = self.overlay_open() || self.session.assistant.login_open();
+        if self.focus != previous_focus || (has_overlay && !had_overlay) {
+            self.session.editor.cancel_pending_commands();
+        }
+
+        quit
+    }
+
+    fn route_event(&mut self, event: Event, area: Rect) -> bool {
         if !matches!(&event, Event::Mouse(mouse) if mouse.kind == MouseEventKind::Drag(MouseButton::Left))
         {
             self.session.preview.end_drag();
@@ -65,8 +89,12 @@ impl App {
 
         if let Event::Key(key) = event {
             match self.prefix.handle(key) {
-                PrefixInput::Pending => return false,
+                PrefixInput::Pending => {
+                    self.session.editor.cancel_pending_commands();
+                    return false;
+                }
                 PrefixInput::Action(code) => {
+                    self.session.editor.cancel_pending_commands();
                     self.handle_prefix_action(code, area);
                     return false;
                 }
