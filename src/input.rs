@@ -132,18 +132,6 @@ impl App {
                 if self.projects.select_at(layout.projects, mouse.row) {
                     self.activate_projects();
                 }
-            } else if self
-                .session
-                .assistant
-                .send_button(chat_body)
-                .contains(position)
-            {
-                self.focus = Focus::Assistant;
-                if self.session.assistant.is_running() {
-                    self.session.assistant.cancel();
-                } else {
-                    self.send_message();
-                }
             } else if layout.assistant.contains(position) {
                 self.focus = Focus::Assistant;
                 self.session.assistant.click(

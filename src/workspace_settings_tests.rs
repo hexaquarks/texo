@@ -254,7 +254,19 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
     let footer: String = (0..area.width)
         .map(|x| terminal.backend().buffer()[(x, area.height - 1)].symbol())
         .collect();
+    let footer = footer.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(footer.contains("? Settings"));
+    let settings_key = (0..area.width)
+        .find(|x| terminal.backend().buffer()[(*x, area.height - 1)].symbol() == "?")
+        .unwrap();
+    assert_eq!(
+        terminal.backend().buffer()[(settings_key, area.height - 1)].bg,
+        theme::KEYCAP
+    );
+    assert_eq!(
+        terminal.backend().buffer()[(settings_key + 3, area.height - 1)].bg,
+        theme::ELEVATED
+    );
     assert_eq!(
         terminal.backend().buffer()[(0, area.height - 1)].bg,
         theme::ELEVATED

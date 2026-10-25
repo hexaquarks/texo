@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea;
@@ -87,11 +88,17 @@ impl SettingsDialog {
             config,
         );
         frame.render_widget(
-            Paragraph::new(format!("Prefix: {}", self.prefix_label)),
+            Paragraph::new(Line::from(vec![
+                Span::raw("Prefix: "),
+                theme::keycap(&self.prefix_label),
+            ])),
             prefix,
         );
         frame.render_widget(
-            Paragraph::new("Ctrl+O Open config · Ctrl+R Reload").style(theme::pane_title(true)),
+            Paragraph::new(theme::shortcuts(&[
+                ("Ctrl+O", "Open config"),
+                ("Ctrl+R", "Reload"),
+            ])),
             actions,
         );
         let (message, color) = if self.error.is_empty() {
@@ -106,7 +113,7 @@ impl SettingsDialog {
             error,
         );
         frame.render_widget(
-            Paragraph::new("Enter apply · Esc close").style(theme::muted()),
+            Paragraph::new(theme::shortcuts(&[("Enter", "apply"), ("Esc", "close")])),
             hint,
         );
     }
@@ -137,6 +144,7 @@ mod tests {
             "┘"
         );
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(text.contains("/new/resumes"));
         assert!(text.contains("Enter apply"));
         assert!(text.contains("/config/texo/config.toml"));

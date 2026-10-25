@@ -13,6 +13,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Position, Rect},
     style::Style,
+    text::{Line, Text},
     widgets::{Block, Clear, Paragraph, Wrap},
 };
 use ratatui_image::{
@@ -34,7 +35,7 @@ const MAX_ZOOM_PERCENT: u16 = 300;
 const ZOOM_STEP_PERCENT: u16 = 10;
 const WHEEL_ZOOM_INTERVAL: Duration = Duration::from_millis(150);
 const EMPTY_NOTICE: &str =
-    "Your PDF will appear here.\n\nBuild your document to update the preview.\n\nCtrl+B  to build";
+    "Your PDF will appear here.\n\nBuild your document to update the preview.";
 
 pub struct Preview {
     picker: Picker,
@@ -485,15 +486,21 @@ impl Preview {
                     Constraint::Fill(1),
                 ])
                 .areas(content);
+                let notice = if self.source_page.is_some() && self.pending.is_some() {
+                    Text::from("Preparing PDF preview…")
+                } else if self.source_page.is_none() {
+                    let mut notice = Text::from(EMPTY_NOTICE);
+                    notice.extend([Line::default(), theme::shortcuts(&[("Ctrl+B", "build")])]);
+                    notice
+                } else {
+                    Text::from(self.notice.as_str())
+                };
+
                 frame.render_widget(
-                    Paragraph::new(if self.source_page.is_some() && self.pending.is_some() {
-                        "Preparing PDF preview…"
-                    } else {
-                        self.notice.as_str()
-                    })
-                    .centered()
-                    .style(theme::muted())
-                    .wrap(Wrap { trim: false }),
+                    Paragraph::new(notice)
+                        .centered()
+                        .style(theme::muted())
+                        .wrap(Wrap { trim: false }),
                     message,
                 );
             }

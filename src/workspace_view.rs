@@ -2,13 +2,12 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use texo::{preview::Preview, theme};
 
 use super::{App, Focus};
-
-const SETTINGS_HINT: &str = "? Settings";
 
 const MULTIPANE_WIDTH: u16 = 100;
 const MULTIPANE_HEIGHT: u16 = 20;
@@ -73,16 +72,25 @@ impl App {
         self.draw_preview(frame, preview, &source_state);
         self.draw_diagnostics(frame, &layout);
 
+        let prefix = self.prefix.label();
         let settings_hint = if self.prefix.armed {
+            let mut bindings = vec![
+                ("n", "New"),
+                ("i", "Import"),
+                ("r", "Resumes"),
+                ("f", "Files"),
+                ("s", "Settings"),
+            ];
             if self.focus == Focus::Assistant {
-                "Prefix · u Maximize/restore · n New · i Import · r Resumes · f Files · s Settings"
-                    .to_owned()
-            } else {
-                "Prefix · n New · i Import · r Resumes · f Files · s Settings · Esc Cancel"
-                    .to_owned()
+                bindings.insert(0, ("u", "Maximize/restore"));
             }
+            bindings.push(("Esc", "Cancel"));
+
+            let mut hint = Line::from(vec![theme::keycap(&prefix), Span::raw("  ")]);
+            hint.extend(theme::shortcuts(&bindings).spans);
+            hint
         } else {
-            format!("{} Prefix · {SETTINGS_HINT} ", self.prefix.label())
+            theme::shortcuts(&[(&prefix, "Prefix"), ("?", "Settings")])
         };
         frame.render_widget(
             Paragraph::new(settings_hint)
@@ -112,7 +120,11 @@ impl App {
         source_state: &anyhow::Result<crate::editor::DiskState>,
     ) {
         if self.session.empty_workspace {
-            let prompt = "Create a resume with +, or Import from Actions (Ctrl+P).\nExisting loose TeX files stay untouched.";
+            let prompt = vec![
+                Line::from("Create a resume with +, or Import from Actions."),
+                theme::shortcuts(&[("Ctrl+P", "Actions")]),
+                Line::from("Existing loose TeX files stay untouched."),
+            ];
             frame.render_widget(
                 Paragraph::new(prompt)
                     .style(theme::muted())
@@ -188,12 +200,12 @@ impl App {
         );
 
         if self.session.proposal_review.is_some() && !self.session.assistant.login_open() {
-            for (button, label) in
-                review_buttons(area)
-                    .into_iter()
-                    .zip(["[F7 Accept]", "[F8 Modify]", "[F9 Discard]"])
-            {
-                frame.render_widget(Paragraph::new(label).style(theme::pane_title(true)), button);
+            for (button, label) in review_buttons(area).into_iter().zip([
+                ("F7", "Accept"),
+                ("F8", "Modify"),
+                ("F9", "Discard"),
+            ]) {
+                frame.render_widget(Paragraph::new(theme::shortcuts(&[label])), button);
             }
         }
     }
@@ -257,11 +269,13 @@ impl App {
             title.push_str(" · Updating…");
         }
 
-        let zoom_hint = " · Ctrl+wheel / +/- zoom · 0 fit";
+        let zoom_hint = theme::shortcuts(&[("Ctrl+wheel / +/-", "zoom"), ("0", "fit")]);
+        let mut title = Line::from(title);
         if self.focus == Focus::Preview
-            && title.chars().count() + zoom_hint.chars().count() <= usize::from(title_area.width)
+            && title.width() + zoom_hint.width() + 2 <= usize::from(title_area.width)
         {
-            title.push_str(zoom_hint);
+            title.push_span("  ");
+            title.extend(zoom_hint.spans);
         }
         frame.render_widget(
             Paragraph::new(title).style(theme::pane_title(self.focus == Focus::Preview)),
@@ -285,8 +299,11 @@ impl App {
 
     pub(super) fn draw_diagnostics(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
         if let Some(diagnostics) = &self.session.diagnostics {
+            let mut title = Line::from(" Build diagnostics  ");
+            title.extend(theme::shortcuts(&[("PgUp/PgDn", "scroll"), ("Esc", "close")]).spans);
+
             let log = Paragraph::new(diagnostics.as_str())
-                .block(Block::default().title(" Build diagnostics · PgUp/PgDn scroll · Esc close "))
+                .block(Block::default().title(title))
                 .style(Style::default().fg(theme::ERROR).bg(theme::ELEVATED))
                 .wrap(Wrap { trim: false })
                 .scroll((self.session.diagnostic_scroll, 0));

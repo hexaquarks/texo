@@ -44,7 +44,10 @@ fn chat_maximizes_and_restores_without_changing_documents_or_prompt() -> anyhow:
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(text.contains(&format!("Maximized · {} u Restore", app.prefix.label())));
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.contains(&format!("{} u Restore", app.prefix.label())));
+        assert!(!text.contains("Maximized"));
+        assert!(!text.contains("Split"));
 
         for (small_width, small_height) in [(1, 1), (30, 10)] {
             let mut small_terminal = Terminal::new(TestBackend::new(small_width, small_height))?;
@@ -99,7 +102,12 @@ fn chat_toggle_uses_reloaded_prefix_and_cancels_without_typing_action_keys() -> 
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(text.contains(&format!("{} u Restore", app.prefix.label())));
+    assert!(
+        text.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains(&format!("{} u Restore", app.prefix.label()))
+    );
     assert!(!text.contains("Alt+Z"));
 
     app.handle_event(prefix, area);
@@ -373,5 +381,36 @@ fn pdf_zoom_mouse_and_keyboard_events_leave_editor_and_other_preview_untouched()
     );
     assert_eq!(app.session.assistant.input.lines().join(""), "+");
     assert_eq!(app.session.preview.zoom_percent(), 100);
+    Ok(())
+}
+
+#[test]
+fn clicking_the_composer_right_edge_keeps_typing_and_enter_still_submits_commands()
+-> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    app.session.assistant.input.insert_str("/settings");
+    let source = app.session.editor.source();
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    let layout = app.workspace_layout(area);
+    let chat = app.assistant_body(pane_content(layout.assistant));
+    let input = app.session.assistant.input_area(chat);
+
+    app.handle_event(
+        Event::Mouse(event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: input.right() - 2,
+            row: input.y + 1,
+            modifiers: KeyModifiers::NONE,
+        }),
+        area,
+    );
+
+    assert!(app.settings.is_none());
+    assert_eq!(app.session.assistant.input.lines(), &["/settings"]);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.settings.is_some());
+    assert_eq!(app.session.editor.source(), source);
     Ok(())
 }

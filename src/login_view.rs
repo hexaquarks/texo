@@ -65,10 +65,7 @@ impl LoginDialog {
                 ));
             }
             if self.models.is_empty() {
-                lines.push(Line::styled(
-                    "Press Enter to retry · Esc cancel",
-                    theme::muted(),
-                ));
+                lines.push(theme::shortcuts(&[("Enter", "retry"), ("Esc", "cancel")]));
             }
         } else {
             let text = match self.step {
@@ -85,7 +82,7 @@ impl LoginDialog {
                         "Checking the existing Codex login…".into()
                     } else {
                         concat!(
-                            "Finish signing in in your browser. Esc cancels.\n",
+                            "Finish signing in in your browser.\n",
                             "If no browser opened, run `codex login` in another terminal, ",
                             "then retry using the existing login.",
                         )
@@ -104,10 +101,11 @@ impl LoginDialog {
             }
         }
         lines.push(Line::default());
-        lines.push(Line::styled(
-            "↑↓ navigate · Enter select · Esc cancel",
-            theme::muted(),
-        ));
+        lines.push(theme::shortcuts(&[
+            ("↑↓", "navigate"),
+            ("Enter", "select"),
+            ("Esc", "cancel"),
+        ]));
         if !self.error.is_empty() {
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
