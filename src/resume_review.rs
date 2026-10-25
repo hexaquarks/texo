@@ -86,7 +86,10 @@ impl App {
         let build = self.session.assistant.take_compiled_draft();
         self.session.assistant.take_proposal();
         self.render_proposal(build);
-        self.session.status = "Review changes · F7 accept · F8 modify · F9 discard".into();
+        self.session.status = format!(
+            "Review changes · {} a accept · m modify · d discard",
+            self.prefix.label()
+        );
     }
 
     pub(super) fn start_proposed_render(&mut self) {
@@ -158,8 +161,10 @@ impl App {
         }
 
         let Some(build) = &self.session.proposed_build else {
-            self.session.status =
-                "The proposal must build successfully before accepting. Ctrl+B retries.".into();
+            self.session.status = format!(
+                "The proposal must build successfully before accepting. {} b retries.",
+                self.prefix.label()
+            );
             return;
         };
         let edit = review.edit.clone();
@@ -184,10 +189,14 @@ impl App {
         self.session.rendered_pdf = Some(pdf_path);
         self.session.render_failed = false;
         self.clear_proposal();
-        self.session.status = "Accepted · PDF updated · Ctrl+S to save TeX".into();
-        self.session
-            .assistant
-            .report_edit_result("Changes accepted. PDF updated; Ctrl+S to save TeX.");
+        self.session.status = format!(
+            "Accepted · PDF updated · {} w to save TeX",
+            self.prefix.label()
+        );
+        self.session.assistant.report_edit_result(&format!(
+            "Changes accepted. PDF updated; {} w to save TeX.",
+            self.prefix.label()
+        ));
     }
 
     pub(super) fn modify_proposal(&mut self) {
@@ -239,8 +248,11 @@ impl App {
         }
 
         if self.session.editor.replace_source(&proposal.source_after) {
-            self.session.status =
-                "Edit applied. Ctrl+Z twice to undo; Ctrl+S to save; Ctrl+B to build.".into();
+            self.session.status = format!(
+                "Edit applied. Undo twice to revert; {} w to save; {} b to build.",
+                self.prefix.label(),
+                self.prefix.label()
+            );
         } else {
             self.session.status = "The returned resume is unchanged.".into();
             self.session
@@ -333,8 +345,10 @@ impl App {
     }
 
     pub(super) fn report_error(&mut self, error: anyhow::Error) {
-        self.session.status =
-            "Operation failed. See diagnostics below; PgUp/PgDn to scroll.".into();
+        self.session.status = format!(
+            "Operation failed. See diagnostics; {} [/] to scroll.",
+            self.prefix.label()
+        );
         self.session.diagnostics = Some(format!("{error:#}"));
         self.session.diagnostic_scroll = 0;
     }

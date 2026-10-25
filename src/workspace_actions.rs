@@ -199,7 +199,10 @@ impl App {
         if self.session.rendered_source.as_deref() != Some(self.session.editor.source().as_str())
             || self.session.rendered_pdf.is_none()
         {
-            self.session.status = "Build the current document with Ctrl+B before exporting.".into();
+            self.session.status = format!(
+                "Build the current document with {} b before exporting.",
+                self.prefix.label()
+            );
             return;
         }
         self.export = Some(ExportDialog::new(&self.session.editor.path));
@@ -282,7 +285,7 @@ impl App {
             Action::Export => 'e',
             Action::Save => 's',
             Action::ToggleProjects => 't',
-            Action::Quit => 'q',
+            Action::Quit => return true,
             Action::FocusAssistant => 'j',
             Action::ClearChat => {
                 self.discard_proposal();
@@ -304,16 +307,19 @@ impl App {
                 return false;
             }
             Action::PreviousPage | Action::NextPage => {
-                let code = if matches!(action, Action::PreviousPage) {
-                    KeyCode::Left
+                let result = if matches!(action, Action::PreviousPage) {
+                    self.active_preview().previous_page()
                 } else {
-                    KeyCode::Right
+                    self.active_preview().next_page()
                 };
-                self.handle_alt_key(KeyEvent::new(code, KeyModifiers::ALT));
+                if let Err(error) = result {
+                    self.report_error(error);
+                }
                 return false;
             }
         };
-        self.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL))
+        self.handle_control_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL));
+        false
     }
 
     pub(super) fn finish_export(&mut self) {

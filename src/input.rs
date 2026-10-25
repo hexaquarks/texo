@@ -67,7 +67,8 @@ impl App {
                 PrefixInput::Pass => {}
             }
 
-            if key.code == KeyCode::Char('?')
+            if !matches!(self.focus, Focus::Editor | Focus::Assistant)
+                && key.code == KeyCode::Char('?')
                 && !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -239,6 +240,40 @@ impl App {
                 self.focus = Focus::Projects;
                 self.projects.files_focused = true;
             }
+            KeyCode::Char('b') => self.start_render(),
+            KeyCode::Char('p') => self.actions = Some(ActionMenu::open()),
+            KeyCode::Char('e') => self.open_export(),
+            KeyCode::Char('v') => self.refresh_projects(),
+            KeyCode::Char('w') => {
+                self.handle_control_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+            }
+            KeyCode::Char('t') => {
+                self.handle_control_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL))
+            }
+            KeyCode::Char('D') => self.session.diagnostics = None,
+            KeyCode::Char('a') => self.apply_proposal(),
+            KeyCode::Char('m') => self.modify_proposal(),
+            KeyCode::Char('d') if self.session.proposal_review.is_some() => self.discard_proposal(),
+            KeyCode::Char('c') => {
+                self.focus = match self.focus {
+                    Focus::Editor => Focus::Assistant,
+                    Focus::Assistant => Focus::Preview,
+                    Focus::Preview if self.projects_visible => Focus::Projects,
+                    Focus::Preview | Focus::Projects => Focus::Editor,
+                };
+            }
+            KeyCode::Char('[') => {
+                self.session.diagnostic_scroll = self
+                    .session
+                    .diagnostic_scroll
+                    .saturating_sub(DIAGNOSTIC_SCROLL_LINES);
+            }
+            KeyCode::Char(']') => {
+                self.session.diagnostic_scroll = self
+                    .session
+                    .diagnostic_scroll
+                    .saturating_add(DIAGNOSTIC_SCROLL_LINES);
+            }
             KeyCode::Char('s' | '?') => self.open_settings(),
             _ => {}
         }
@@ -278,20 +313,8 @@ impl App {
             return true;
         }
 
-        if self.session.proposal_review.is_some() {
+        if let Some(review) = &mut self.session.proposal_review {
             match key.code {
-                KeyCode::F(7) => {
-                    self.apply_proposal();
-                    return false;
-                }
-                KeyCode::F(8) => {
-                    self.modify_proposal();
-                    return false;
-                }
-                KeyCode::F(9) => {
-                    self.discard_proposal();
-                    return false;
-                }
                 KeyCode::Char('[') if self.focus == Focus::Preview => {
                     self.session.show_proposed = false;
                     return false;
@@ -304,7 +327,6 @@ impl App {
             }
 
             if self.focus == Focus::Editor && key.modifiers.is_empty() {
-                let review = self.session.proposal_review.as_mut().unwrap();
                 match key.code {
                     KeyCode::Up | KeyCode::PageUp => review.scroll(true),
                     KeyCode::Down | KeyCode::PageDown => review.scroll(false),
@@ -325,6 +347,17 @@ impl App {
                     return false;
                 }
             }
+        }
+
+        if self.focus == Focus::Editor
+            && !(key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('s'))
+        {
+            if self.session.proposal_review.is_none() && !self.session.empty_workspace {
+                self.session.editor.handle_key(key);
+            }
+
+            self.session.chat_maximized = false;
+            return false;
         }
 
         if self.focus == Focus::Assistant && self.session.assistant.complete_command(key) {
@@ -384,26 +417,6 @@ impl App {
                 }
                 Err(error) => self.report_error(error),
             },
-            KeyCode::Char('z')
-                if self.focus == Focus::Editor
-                    && self.session.proposal_review.is_none()
-                    && !self.session.empty_workspace =>
-            {
-                self.session.editor.text.undo();
-            }
-            KeyCode::Char('y')
-                if self.focus == Focus::Editor
-                    && self.session.proposal_review.is_none()
-                    && !self.session.empty_workspace =>
-            {
-                self.session.editor.text.redo();
-            }
-            _ if self.focus == Focus::Editor
-                && self.session.proposal_review.is_none()
-                && !self.session.empty_workspace =>
-            {
-                self.session.editor.text.input(key);
-            }
             _ if self.focus == Focus::Assistant => {
                 self.session.assistant.input.input(key);
             }
@@ -416,6 +429,10 @@ impl App {
             self.session.assistant.input.insert_newline();
             return;
         }
+        if self.focus != Focus::Preview {
+            return;
+        }
+
         let result = match key.code {
             KeyCode::Left => self.active_preview().previous_page(),
             KeyCode::Right => self.active_preview().next_page(),
@@ -427,15 +444,7 @@ impl App {
                 self.active_preview().scroll(false);
                 Ok(())
             }
-            _ => {
-                if self.focus == Focus::Editor
-                    && self.session.proposal_review.is_none()
-                    && !self.session.empty_workspace
-                {
-                    self.session.editor.text.input(key);
-                }
-                Ok(())
-            }
+            _ => Ok(()),
         };
         if let Err(error) = result {
             self.report_error(error);
@@ -449,15 +458,6 @@ impl App {
             }
             KeyCode::Right if self.focus == Focus::Preview => {
                 self.active_preview().pan_horizontal(false)
-            }
-            KeyCode::F(5) => self.refresh_projects(),
-            KeyCode::F(6) => {
-                self.focus = match self.focus {
-                    Focus::Editor => Focus::Assistant,
-                    Focus::Assistant => Focus::Preview,
-                    Focus::Preview if self.projects_visible => Focus::Projects,
-                    Focus::Preview | Focus::Projects => Focus::Editor,
-                };
             }
             KeyCode::Esc
                 if self.focus == Focus::Assistant && self.session.assistant.is_running() =>
@@ -488,12 +488,6 @@ impl App {
                 self.session.assistant.input.input(key);
             }
             _ if self.focus == Focus::Projects => self.handle_projects_key(key),
-            _ if self.focus == Focus::Editor
-                && self.session.proposal_review.is_none()
-                && !self.session.empty_workspace =>
-            {
-                self.session.editor.text.input(key);
-            }
             _ => {}
         }
     }

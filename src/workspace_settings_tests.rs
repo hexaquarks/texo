@@ -234,6 +234,10 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     let area = Rect::new(0, 0, 160, 45);
     app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+        area,
+    );
+    app.handle_event(
         Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
         area,
     );
@@ -265,9 +269,9 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
         .map(|x| terminal.backend().buffer()[(x, area.height - 1)].symbol())
         .collect();
     let footer = footer.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(footer.contains("? Settings"));
+    assert!(footer.contains(&format!("{} s Settings", app.prefix.label())));
     let settings_key = (0..area.width)
-        .find(|x| terminal.backend().buffer()[(*x, area.height - 1)].symbol() == "?")
+        .find(|x| terminal.backend().buffer()[(*x, area.height - 1)].symbol() == "s")
         .unwrap();
     assert_eq!(
         terminal.backend().buffer()[(settings_key, area.height - 1)].bg,
