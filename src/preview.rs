@@ -22,6 +22,8 @@ use ratatui_image::{
     protocol::StatefulProtocol,
 };
 
+use ratatui_spinner::CircleSpinner;
+
 use crate::theme;
 use crate::{
     pdf::PdfPages,
@@ -29,9 +31,8 @@ use crate::{
 };
 
 const EMPTY_STATE_HEIGHT: u16 = 7;
-const LOADING_STATE_HEIGHT: u16 = 3;
-const LOADING_FRAME_MS: u128 = 150;
-const LOADING_FRAMES: [&str; 6] = ["[=   ]", "[ =  ]", "[  = ]", "[   =]", "[  = ]", "[ =  ]"];
+const LOADING_FRAME_MS: u128 = 100;
+const LOADING_LABEL_HEIGHT: u16 = 2;
 const SCROLL_LINES: u32 = 3;
 const FIT_WIDTH_PERCENT: u16 = 100;
 const MAX_ZOOM_PERCENT: u16 = 300;
@@ -43,6 +44,7 @@ const EMPTY_NOTICE: &str =
 pub struct Preview {
     picker: Picker,
     notice: String,
+    loading_started: Option<Instant>,
     pages: Option<PdfPages>,
     page_index: usize,
     image: Option<PreparedImage>,
@@ -95,6 +97,7 @@ impl Default for Preview {
         Self {
             picker: Picker::halfblocks(),
             notice: EMPTY_NOTICE.into(),
+            loading_started: None,
             pages: None,
             page_index: 0,
             image: None,
@@ -165,6 +168,16 @@ impl Preview {
         self.image_presented
     }
 
+    /// Keep one animation clock across compilation and terminal image preparation.
+    pub fn begin_loading(&mut self) {
+        self.loading_started = Some(Instant::now());
+    }
+
+    pub fn draw_loading(&mut self, frame: &mut Frame, area: Rect) {
+        let started = self.loading_started.get_or_insert_with(Instant::now);
+        Self::draw_loading_at(frame, area, started.elapsed());
+    }
+
     pub fn clear(&mut self) {
         self.pages = None;
         self.set_source(None);
@@ -213,6 +226,12 @@ impl Preview {
 
     fn set_source(&mut self, source: Option<DynamicImage>) {
         self.source_page = source.map(Arc::new);
+        if self.source_page.is_some() {
+            self.loading_started.get_or_insert_with(Instant::now);
+        } else {
+            self.loading_started = None;
+        }
+
         self.scaled_page_size = None;
         self.viewport_pixels = None;
         self.displayed_scroll = None;
@@ -220,7 +239,7 @@ impl Preview {
         self.last_wheel_zoom = None;
         self.end_drag();
 
-        // Keep the visible page until its replacement is ready. Clearing removes it immediately.
+        // Retain the previous page for modal redraws until its replacement is ready.
         if self.source_page.is_none() {
             self.image = None;
             self.image_source = None;
@@ -642,26 +661,42 @@ impl Preview {
             .map(|pages| format!("{} / {}", self.page_index + 1, pages.page_count()))
     }
 
-    pub fn draw_loading(frame: &mut Frame, area: Rect, elapsed: Duration) {
+    fn draw_loading_at(frame: &mut Frame, area: Rect, elapsed: Duration) {
         frame.render_widget(Clear, area);
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::PREVIEW)),
             area,
         );
-        let phase = (elapsed.as_millis() / LOADING_FRAME_MS) % LOADING_FRAMES.len() as u128;
-        let label = format!(
-            "{}  Building PDF\n\nThe preview will appear when ready.",
-            LOADING_FRAMES[phase as usize]
-        );
+
+        let tick = (elapsed.as_millis() / LOADING_FRAME_MS) as u64;
+        let spinner = CircleSpinner::new(tick)
+            .arc_color(theme::LAVENDER)
+            .dim_color(theme::DIVIDER);
+        let (spinner_width, spinner_height) = spinner.char_size();
         let [_, message, _] = Layout::vertical([
             Constraint::Fill(1),
-            Constraint::Length(LOADING_STATE_HEIGHT),
+            Constraint::Length(spinner_height + LOADING_LABEL_HEIGHT),
             Constraint::Fill(1),
         ])
         .areas(area);
+        let [spinner_row, label] = Layout::vertical([
+            Constraint::Length(spinner_height),
+            Constraint::Length(LOADING_LABEL_HEIGHT),
+        ])
+        .areas(message);
+        let [_, spinner_area, _] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(spinner_width),
+            Constraint::Fill(1),
+        ])
+        .areas(spinner_row);
+
+        frame.render_widget(spinner, spinner_area);
         frame.render_widget(
-            Paragraph::new(label).centered().style(theme::muted()),
-            message,
+            Paragraph::new("\nLoading PDF…")
+                .centered()
+                .style(theme::muted()),
+            label,
         );
     }
 
@@ -682,6 +717,15 @@ impl Preview {
         let content = preview_content(area);
         if !cached_only {
             self.prepare_viewport(content);
+
+            let waiting_for_page =
+                self.is_preparing() && (self.loading_started.is_some() || self.image.is_none());
+            if waiting_for_page {
+                self.draw_loading(frame, area);
+                return;
+            }
+
+            self.loading_started = None;
         }
 
         // A modal or a replacement page can keep an older image visible. Recompute
@@ -732,9 +776,7 @@ impl Preview {
                     Constraint::Fill(1),
                 ])
                 .areas(content);
-                let notice = if self.source_page.is_some() && self.pending.is_some() {
-                    Text::from("Preparing PDF preview…")
-                } else if self.source_page.is_none() {
+                let notice = if self.source_page.is_none() {
                     let mut notice = Text::from(EMPTY_NOTICE);
                     notice.extend([Line::default(), theme::shortcuts(&[("Ctrl+B", "build")])]);
                     notice

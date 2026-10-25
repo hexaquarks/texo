@@ -112,7 +112,10 @@ impl App {
         };
 
         match job {
-            Ok(job) => self.session.proposed_job = Some(job),
+            Ok(job) => {
+                self.session.proposed_preview.begin_loading();
+                self.session.proposed_job = Some(job);
+            }
             Err(error) => self.report_build_error(error, true),
         }
     }
@@ -274,6 +277,7 @@ impl App {
             self.session.editor.path.clone(),
         ) {
             Ok(job) => {
+                self.session.preview.begin_loading();
                 self.session.job = Some(job);
                 self.session.render_failed = false;
                 self.session.diagnostics = None;
