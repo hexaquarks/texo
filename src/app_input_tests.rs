@@ -602,7 +602,7 @@ fn resize_moves_dividers_like_tmux_from_either_side() -> anyhow::Result<()> {
     for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
         for focus in [Focus::Editor, Focus::Assistant, Focus::Preview] {
             app.focus = focus;
-            app.pane_sizes = workspace_view::PaneSizes::default();
+            app.pane_sizes = PaneSizes::default();
             let before = app.workspace_layout(area);
 
             pane_prefix(&mut app, 'L', modifiers, area);
@@ -618,7 +618,7 @@ fn resize_moves_dividers_like_tmux_from_either_side() -> anyhow::Result<()> {
 
         for focus in [Focus::Editor, Focus::Assistant] {
             app.focus = focus;
-            app.pane_sizes = workspace_view::PaneSizes::default();
+            app.pane_sizes = PaneSizes::default();
             let before = app.workspace_layout(area);
 
             pane_prefix(&mut app, 'J', modifiers, area);
@@ -632,7 +632,7 @@ fn resize_moves_dividers_like_tmux_from_either_side() -> anyhow::Result<()> {
         }
 
         app.focus = Focus::Projects;
-        app.pane_sizes = workspace_view::PaneSizes::default();
+        app.pane_sizes = PaneSizes::default();
         let before = app.workspace_layout(area);
         pane_prefix(&mut app, 'H', modifiers, area);
         assert_eq!(
@@ -735,5 +735,78 @@ fn custom_prefix_controls_panes_from_chat_in_a_narrow_layout() -> anyhow::Result
 
     assert!(app.workspace_layout(area).assistant.height > before.assistant.height);
     assert_eq!(app.session.assistant.input.lines(), &["Keep this prompt"]);
+    Ok(())
+}
+
+#[test]
+fn pane_sizes_restore_in_a_new_instance_without_changing_config() -> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    let path = directory.path().join("state/layout.json");
+    let config = directory.path().join("config.toml");
+    Settings::default().save(&config)?;
+    let original_config = std::fs::read(&config)?;
+    app.settings_path = config.clone();
+    app.restore_layout(path.clone());
+    assert!(!path.exists());
+    let area = Rect::new(0, 0, 160, 80);
+
+    app.focus = Focus::Projects;
+    pane_prefix(&mut app, 'L', KeyModifiers::SHIFT, area);
+    app.focus = Focus::Assistant;
+    pane_prefix(&mut app, 'L', KeyModifiers::SHIFT, area);
+    pane_prefix(&mut app, 'J', KeyModifiers::SHIFT, area);
+    let expected = app.workspace_layout(area);
+    drop(app);
+
+    let (_other_directory, mut restored) = application()?;
+    restored.restore_layout(path);
+    let actual = restored.workspace_layout(area);
+    assert_eq!(actual.projects, expected.projects);
+    assert_eq!(actual.editor, expected.editor);
+    assert_eq!(actual.assistant, expected.assistant);
+    assert_eq!(actual.preview, expected.preview);
+    assert_eq!(std::fs::read(config)?, original_config);
+    Ok(())
+}
+
+#[test]
+fn restored_sizes_fit_smaller_terminals_without_overwriting_saved_dimensions() -> anyhow::Result<()>
+{
+    let (directory, mut app) = application()?;
+    let path = directory.path().join("layout.json");
+    let sizes = PaneSizes {
+        sidebar: Some(u16::MAX),
+        preview: Some(u16::MAX),
+        editor: Some(u16::MAX),
+    };
+    sizes.save(&path)?;
+    app.restore_layout(path.clone());
+
+    for (width, height) in [(160, 45), (100, 21), (80, 30), (1, 1)] {
+        let area = Rect::new(0, 0, width, height);
+        let layout = app.workspace_layout(area);
+        for pane in [
+            layout.projects,
+            layout.files,
+            layout.editor,
+            layout.assistant,
+            layout.preview,
+        ] {
+            assert!(pane.right() <= area.right());
+            assert!(pane.bottom() <= area.bottom());
+        }
+
+        if width >= 100 {
+            assert!(layout.editor.width >= workspace_view::MIN_PANE_WIDTH);
+            assert!(layout.preview.width >= workspace_view::MIN_PANE_WIDTH);
+            assert!(layout.editor.height >= workspace_view::MIN_EDITOR_HEIGHT);
+            assert!(layout.assistant.height >= workspace_view::MIN_CHAT_HEIGHT);
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+        terminal.draw(|frame| app.draw(frame))?;
+    }
+
+    assert!(PaneSizes::load(&path) == sizes);
     Ok(())
 }
