@@ -1,4 +1,20 @@
-"""Check Texo's actual terminal output with Kitty's headless graphics renderer."""
+"""Verify preview geometry using Kitty's real terminal graphics renderer.
+
+The Rust test `terminal_renderer_actually_zooms_and_pans_the_page` in
+src/preview_tests.rs captures terminal output for initial display, zoom, pan,
+drag, and fit, then runs this helper through `kitty +runpy`. Python is needed
+to access Kitty's internal Screen and graphics manager; checking Rust state
+alone cannot prove that the terminal displays the intended part of the page.
+
+The argument is a temporary directory containing each phase's .bin capture.
+Replay them into one headless screen to check the visible image bounds and
+confirm that all phases reuse one uploaded image. Print the observed bounds
+as JSON for the Rust test's diagnostics; assertion failures fail that test.
+
+Run from the repository root with Kitty installed:
+    cargo test terminal_renderer_actually_zooms_and_pans_the_page -- --ignored --nocapture
+"""
+
 import json
 import re
 import sys

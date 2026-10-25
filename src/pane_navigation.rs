@@ -26,12 +26,17 @@ impl App {
     }
 
     pub(super) fn resize_directional_pane(&mut self, direction: char, area: Rect) {
+        let previous_sizes = self.pane_sizes;
         let layout = self.workspace_layout(area);
 
         match direction {
             'H' | 'L' => self.move_horizontal_divider(&layout, direction == 'L'),
             'J' | 'K' => self.move_vertical_divider(&layout, direction == 'J'),
             _ => {}
+        }
+
+        if self.pane_sizes != previous_sizes {
+            self.save_layout();
         }
     }
 

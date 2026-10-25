@@ -166,6 +166,8 @@ impl App {
             Self::with_workspace(editor, self.session.preview.empty_like(), root)?;
         replacement.session.empty_workspace = workspace.empty;
         replacement.settings_path = self.settings_path.clone();
+        replacement.pane_sizes = self.pane_sizes;
+        replacement.layout_state_path = self.layout_state_path.clone();
         replacement.prefix = prefix;
         if save {
             settings.save(&self.settings_path)?;

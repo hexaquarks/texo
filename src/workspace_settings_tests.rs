@@ -126,6 +126,14 @@ fn config_open_reload_and_folder_apply_preserve_prefix_and_reject_invalid_edits(
 #[test]
 fn settings_switch_discards_pending_state_and_refreshes_an_empty_workspace() -> anyhow::Result<()> {
     let (directory, mut app) = application()?;
+    let layout_state_path = directory.path().join("layout.json");
+    app.restore_layout(layout_state_path.clone());
+    app.pane_sizes = PaneSizes {
+        sidebar: Some(30),
+        preview: Some(65),
+        editor: Some(20),
+    };
+    let pane_sizes = app.pane_sizes;
     let original = app.session.editor.source();
     app.session.editor.text.insert_str("unsaved");
     app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
@@ -143,6 +151,8 @@ fn settings_switch_discards_pending_state_and_refreshes_an_empty_workspace() -> 
         ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
     app.apply_settings()?;
 
+    assert!(app.pane_sizes == pane_sizes);
+    assert_eq!(app.layout_state_path, Some(layout_state_path));
     assert_eq!(app.projects.root(), target.canonicalize()?);
     assert_eq!(
         app.session.editor.path,

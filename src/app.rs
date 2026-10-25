@@ -16,6 +16,7 @@ use crate::{
     settings::SettingsDialog,
 };
 
+use layout_state::PaneSizes;
 use resume_session::ResumeSession;
 
 #[path = "resume_session.rs"]
@@ -41,7 +42,8 @@ struct App {
     settings: Option<SettingsDialog>,
     settings_path: PathBuf,
     prefix: Prefix,
-    pane_sizes: workspace_view::PaneSizes,
+    pane_sizes: PaneSizes,
+    layout_state_path: Option<PathBuf>,
     export: Option<ExportDialog>,
     focus: Focus,
 }
@@ -53,6 +55,7 @@ pub fn run(
     empty_workspace: bool,
 ) -> anyhow::Result<()> {
     let mut app = App::with_workspace(editor, Preview::detect(), root)?;
+    app.restore_layout(PaneSizes::path()?);
     app.session.empty_workspace = empty_workspace;
     if !empty_workspace && !app.session.editor.is_modified() {
         app.start_render();
@@ -88,7 +91,8 @@ impl App {
             settings: None,
             settings_path: Settings::path()?,
             prefix: Prefix::default(),
-            pane_sizes: workspace_view::PaneSizes::default(),
+            pane_sizes: PaneSizes::default(),
+            layout_state_path: None,
             export: None,
             focus: Focus::Editor,
         })
@@ -123,6 +127,8 @@ impl App {
 mod event_loop;
 #[path = "input.rs"]
 mod input;
+#[path = "layout_state.rs"]
+mod layout_state;
 #[path = "pane_navigation.rs"]
 mod pane_navigation;
 #[path = "resume_review.rs"]

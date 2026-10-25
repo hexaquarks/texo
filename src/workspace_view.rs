@@ -7,7 +7,7 @@ use ratatui::{
 };
 use texo::theme;
 
-use super::{App, Focus};
+use super::{App, Focus, PaneSizes};
 
 const MULTIPANE_WIDTH: u16 = 100;
 pub(super) const MIN_PANE_WIDTH: u16 = 8;
@@ -414,13 +414,6 @@ fn draw_pane_border(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
         area,
     );
     pane_content(area)
-}
-
-#[derive(Default)]
-pub(super) struct PaneSizes {
-    pub(super) sidebar: Option<u16>,
-    pub(super) preview: Option<u16>,
-    pub(super) editor: Option<u16>,
 }
 
 #[derive(Default)]
