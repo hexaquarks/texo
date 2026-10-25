@@ -100,14 +100,10 @@ fn pending_image_work_does_not_block_or_replace_a_new_page() {
 
     preview.set_source(Some(DynamicImage::new_rgb8(60, 60)));
     sender
-        .send(prepare_image(
-            Picker::halfblocks(),
-            source,
-            area,
-            0,
-            0,
-            FIT_WIDTH_PERCENT,
-        ))
+        .send(
+            prepare_image(Picker::halfblocks(), source, area, 0, 0, FIT_WIDTH_PERCENT)
+                .map(PreparedImage::Raster),
+        )
         .unwrap();
     preview.prepare_viewport(area);
     assert!(
@@ -219,7 +215,7 @@ fn preview_scrolls_in_lines_and_clamps_after_viewport_resize() {
 }
 
 #[test]
-fn kitty_zoom_upload_reaches_the_terminal_backend() -> anyhow::Result<()> {
+fn kitty_zoom_reuses_the_upload_through_the_terminal_backend() -> anyhow::Result<()> {
     use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
     use std::io::{Read, Seek, SeekFrom};
 
@@ -253,8 +249,13 @@ fn kitty_zoom_upload_reaches_the_terminal_backend() -> anyhow::Result<()> {
         let mut output = String::new();
         wire.read_to_string(&mut output)?;
         assert!(
-            output.contains("a=T"),
-            "zoom={percent}%: image upload was lost"
+            output.contains("a=p"),
+            "zoom={percent}%: placement was lost"
+        );
+        assert_eq!(output.contains("a=T"), percent == 100);
+        assert!(
+            preview.pending.is_none(),
+            "Zoom must not start another encoder"
         );
     }
     Ok(())
@@ -369,20 +370,20 @@ fn trackpad_zoom_uses_paced_steps_without_replaying_a_swipe() {
             started + Duration::from_millis(elapsed_ms),
         );
     }
-    assert_eq!(preview.zoom_percent(), 110);
-
-    preview.zoom_from_wheel_at(true, area, pointer, started + WHEEL_ZOOM_INTERVAL);
     assert_eq!(preview.zoom_percent(), 120);
 
+    preview.zoom_from_wheel_at(true, area, pointer, started + WHEEL_ZOOM_INTERVAL);
+    assert_eq!(preview.zoom_percent(), 140);
+
     preview.zoom_from_wheel_at(false, area, pointer, started + WHEEL_ZOOM_INTERVAL * 2);
-    assert_eq!(preview.zoom_percent(), 110);
+    assert_eq!(preview.zoom_percent(), 120);
 
     // There is no queued gesture work after input ends, and keyboard steps stay immediate.
     finish_viewport(&mut preview, preview_content(area));
-    assert_eq!(preview.zoom_percent(), 110);
+    assert_eq!(preview.zoom_percent(), 120);
     preview.zoom_at(true, area, pointer);
     preview.zoom_at(true, area, pointer);
-    assert_eq!(preview.zoom_percent(), 130);
+    assert_eq!(preview.zoom_percent(), 160);
 }
 
 #[test]
@@ -433,11 +434,11 @@ fn zoom_anchors_the_cursor_clamps_limits_and_resets_to_fit_page() {
     finish_viewport(&mut preview, content);
 
     preview.zoom_at(true, area, pointer);
-    assert_eq!(preview.zoom_percent(), 110);
-    assert_eq!(preview.horizontal_pixels, 4);
-    assert_eq!(preview.scroll_pixels, 4);
+    assert_eq!(preview.zoom_percent(), 120);
+    assert_eq!(preview.horizontal_pixels, 8);
+    assert_eq!(preview.scroll_pixels, 8);
     finish_viewport(&mut preview, content);
-    assert_eq!(preview.scaled_page_size.unwrap().0, 110);
+    assert_eq!(preview.scaled_page_size.unwrap().0, 120);
 
     for _ in 0..20 {
         preview.zoom_at(true, area, pointer);
@@ -492,22 +493,25 @@ fn late_zoom_work_cannot_replace_the_latest_scale_or_pan() {
 
     preview.zoom_at(true, area, Position::new(content.x + 4, content.y + 2));
     sender
-        .send(prepare_image(
-            Picker::halfblocks(),
-            source,
-            content,
-            0,
-            0,
-            FIT_WIDTH_PERCENT,
-        ))
+        .send(
+            prepare_image(
+                Picker::halfblocks(),
+                source,
+                content,
+                0,
+                0,
+                FIT_WIDTH_PERCENT,
+            )
+            .map(PreparedImage::Raster),
+        )
         .unwrap();
     preview.prepare_viewport(content);
     assert!(preview.image.is_none());
 
     finish_viewport(&mut preview, content);
-    assert_eq!(preview.scaled_page_size.unwrap().0, 110);
-    assert_eq!(preview.displayed_horizontal, Some(4));
-    assert_eq!(preview.displayed_scroll, Some(4));
+    assert_eq!(preview.scaled_page_size.unwrap().0, 120);
+    assert_eq!(preview.displayed_horizontal, Some(8));
+    assert_eq!(preview.displayed_scroll, Some(8));
     preview.prepare_viewport(content);
     assert!(preview.pending.is_none());
 
@@ -519,7 +523,7 @@ fn late_zoom_work_cannot_replace_the_latest_scale_or_pan() {
 }
 
 #[test]
-fn kitty_transmits_a_new_image_after_zooming() -> anyhow::Result<()> {
+fn kitty_reuses_uploaded_page_after_zooming() -> anyhow::Result<()> {
     let mut preview = Preview::default();
     preview.picker.set_protocol_type(ProtocolType::Kitty);
     preview.set_source(Some(DynamicImage::new_rgb8(120, 200)));
@@ -539,8 +543,10 @@ fn kitty_transmits_a_new_image_after_zooming() -> anyhow::Result<()> {
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(output.contains("a=T"));
-    assert_eq!(preview.scaled_page_size.unwrap().0, 176);
+    assert!(output.contains("a=p"));
+    assert!(!output.contains("a=T"));
+    assert!(preview.pending.is_none());
+    assert_eq!(preview.scaled_page_size.unwrap().0, 192);
     Ok(())
 }
 
@@ -571,7 +577,7 @@ fn zoomed_out_page_is_centered_and_clears_old_image_cells() -> anyhow::Result<()
         buffer[(content.x + 10, content.y)].fg,
         ratatui::style::Color::Rgb(255, 255, 255)
     );
-    assert_eq!(preview.zoom_percent(), 80);
+    assert_eq!(preview.zoom_percent(), 60);
     Ok(())
 }
 
@@ -580,4 +586,240 @@ fn viewport_scroll_reaches_bottom_without_reading_past_paper() {
     assert_eq!(viewport_crop(1200, 800, 150), (150, 800));
     assert_eq!(viewport_crop(1200, 800, 1000), (400, 800));
     assert_eq!(viewport_crop(1200, 1500, 400), (0, 1200));
+}
+
+#[test]
+fn native_page_preparation_remains_valid_when_zoom_changes_before_completion() {
+    let mut preview = Preview::default();
+    preview.picker.set_protocol_type(ProtocolType::Kitty);
+    preview.set_source(Some(patterned_page(120, 200)));
+    let area = Rect::new(0, 0, 24, 12);
+    let content = preview_content(area);
+    let source = preview.source_page.clone().unwrap();
+    let (sender, result) = mpsc::channel();
+    preview.pending = Some(ViewportJob {
+        source: source.clone(),
+        pixels: (200, 200),
+        scroll: 0,
+        result,
+        zoom_percent: FIT_WIDTH_PERCENT,
+        horizontal: 0,
+    });
+    preview.set_zoom(200, area, Position::new(10, 6));
+    sender
+        .send(
+            RetainedImage::new(
+                &preview.picker,
+                source.as_ref().clone(),
+                preview.terminal_images.clone(),
+            )
+            .map(PreparedImage::Retained),
+        )
+        .unwrap();
+
+    preview.prepare_viewport(content);
+    assert!(matches!(preview.image, Some(PreparedImage::Retained(_))));
+    assert!(preview.pending.is_none());
+    assert_eq!(preview.scaled_page_size.unwrap().0, 400);
+    assert!(!preview.is_preparing());
+}
+
+#[test]
+fn native_zoom_pan_and_resize_do_not_start_another_worker() -> anyhow::Result<()> {
+    let mut preview = Preview::default();
+    preview.picker.set_protocol_type(ProtocolType::Kitty);
+    preview.set_source(Some(patterned_page(120, 200)));
+    let area = Rect::new(0, 0, 24, 12);
+    finish_viewport(&mut preview, preview_content(area));
+    let source = preview.image_source.clone().unwrap();
+
+    for percent in [110, 150, 200, 250, 300, 200, 100] {
+        preview.set_zoom(percent, area, Position::new(10, 6));
+        preview.prepare_viewport(preview_content(area));
+        preview.pan_horizontal(false);
+        preview.scroll(false);
+        preview.prepare_viewport(preview_content(area));
+
+        assert!(preview.pending.is_none());
+        assert!(!preview.is_preparing());
+        assert!(Arc::ptr_eq(preview.image_source.as_ref().unwrap(), &source));
+        let viewport = preview.retained_viewport(&source, preview_content(area));
+        assert_eq!(viewport.view.area.width, preview_content(area).width);
+        assert!(viewport.view.offset.x + viewport.view.area.width <= viewport.view.page_size.width);
+        assert!(
+            viewport.view.offset.y + viewport.view.area.height <= viewport.view.page_size.height
+        );
+    }
+
+    preview.prepare_viewport(Rect::new(2, 2, 8, 5));
+    assert!(preview.pending.is_none());
+    assert!(!preview.is_preparing());
+    Ok(())
+}
+
+#[test]
+fn a_cached_native_page_stays_inside_a_resized_pane() -> anyhow::Result<()> {
+    let mut preview = Preview::default();
+    preview.picker.set_protocol_type(ProtocolType::Kitty);
+    preview.set_source(Some(patterned_page(120, 200)));
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 20))?;
+    finish_viewport(&mut preview, preview_content(Rect::new(0, 0, 40, 20)));
+    terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+
+    // A new source is queued while the modal keeps the already displayed page underneath it.
+    let previous = preview.image_source.clone().unwrap();
+    preview.set_source(Some(patterned_page(200, 120)));
+    for (width, height) in [(12, 6), (2, 2), (60, 30)] {
+        terminal.backend_mut().resize(width, height);
+        terminal.resize(Rect::new(0, 0, width, height))?;
+        terminal.draw(|frame| preview.draw_cached(frame, frame.area()))?;
+        assert!(
+            preview.pending.is_none(),
+            "A modal must not consume a new upload"
+        );
+        assert!(preview.is_preparing(), "The new source must remain queued");
+        assert!(Arc::ptr_eq(
+            preview.image_source.as_ref().unwrap(),
+            &previous
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "measures complete retained-image draw and terminal output latency"]
+fn high_resolution_native_zoom_draws_without_reuploading_pixels() -> anyhow::Result<()> {
+    use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
+    use std::io::{Read, Seek, SeekFrom};
+
+    const INTERACTIVE_FRAME_BUDGET: Duration = Duration::from_millis(50);
+    let area = Rect::new(0, 0, 160, 60);
+    let mut preview = Preview::default();
+    preview.picker.set_protocol_type(ProtocolType::Kitty);
+    preview.set_source(Some(patterned_page(1200, 1600)));
+    finish_viewport(&mut preview, preview_content(area));
+    let mut wire = tempfile::tempfile()?;
+    let mut terminal = Terminal::with_options(
+        CrosstermBackend::new(wire.try_clone()?),
+        TerminalOptions {
+            viewport: Viewport::Fixed(area),
+        },
+    )?;
+    terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+    terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+    let upload_bytes = wire.metadata()?.len();
+
+    for percent in [110, 125, 150, 200, 250, 300, 200, 100] {
+        let start = wire.metadata()?.len();
+        let started = Instant::now();
+        preview.set_zoom(percent, area, Position::new(80, 30));
+        terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+        let elapsed = started.elapsed();
+        let bytes = wire.metadata()?.len() - start;
+        eprintln!(
+            "zoom={percent}%: {elapsed:?}, {bytes} bytes (initial upload {upload_bytes} bytes)"
+        );
+
+        wire.seek(SeekFrom::Start(start))?;
+        let mut output = String::new();
+        wire.read_to_string(&mut output)?;
+        assert!(output.contains("a=p"));
+        assert!(!output.contains("a=T"));
+        assert!(preview.pending.is_none());
+        assert!(
+            elapsed < INTERACTIVE_FRAME_BUDGET,
+            "Zoom draw exceeded the interactive budget"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the Kitty executable for headless terminal rendering"]
+fn terminal_renderer_actually_zooms_and_pans_the_page() -> anyhow::Result<()> {
+    // Kitty uses foreground colors as image IDs, even when the test runner sets NO_COLOR.
+    ratatui::crossterm::style::force_color_output(true);
+
+    use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
+    use std::{
+        io::{Read, Seek, SeekFrom},
+        process::Command,
+    };
+
+    let directory = tempfile::tempdir()?;
+    let area = Rect::new(0, 0, 40, 20);
+    let content = preview_content(area);
+    let mut preview = Preview::default();
+    preview.picker.set_protocol_type(ProtocolType::Kitty);
+    preview.set_source(Some(patterned_page(120, 200)));
+    let mut wire = tempfile::tempfile()?;
+    let mut terminal = Terminal::with_options(
+        CrosstermBackend::new(wire.try_clone()?),
+        TerminalOptions {
+            viewport: Viewport::Fixed(area),
+        },
+    )?;
+
+    for phase in ["initial", "zoom", "pan", "fit"] {
+        match phase {
+            "zoom" => preview.set_zoom(200, area, content.as_position()),
+            "pan" => {
+                preview.pan_horizontal(false);
+                preview.scroll(false);
+            }
+            "fit" => preview.reset_zoom(area),
+            _ => {}
+        }
+        finish_viewport(&mut preview, content);
+        let start = wire.metadata()?.len();
+        terminal.draw(|frame| preview.draw(frame, frame.area()))?;
+        wire.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        wire.read_to_end(&mut bytes)?;
+        std::fs::write(directory.path().join(format!("{phase}.bin")), bytes)?;
+    }
+
+    let kitty = if cfg!(target_os = "macos") {
+        "/Applications/kitty.app/Contents/MacOS/kitty"
+    } else {
+        "kitty"
+    };
+    let result = Command::new(kitty)
+        .args([
+            "+runpy",
+            concat!(
+                "exec(compile(open('tests/kitty_geometry.py').read(), ",
+                "'tests/kitty_geometry.py', 'exec', optimize=0), {'__name__': '__main__'})",
+            ),
+        ])
+        .arg(directory.path())
+        .output()?;
+    anyhow::ensure!(
+        result.status.success(),
+        "Terminal renderer regression: {}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    eprintln!("{}", String::from_utf8_lossy(&result.stdout));
+    Ok(())
+}
+
+#[test]
+fn scrolling_beyond_native_coordinates_uses_raster_and_can_return_to_native() {
+    let mut preview = Preview::default();
+    preview.picker.set_protocol_type(ProtocolType::Kitty);
+    preview.set_source(Some(patterned_page(120, 2400)));
+    let content = preview_content(Rect::new(0, 0, 40, 20));
+    finish_viewport(&mut preview, content);
+    assert!(matches!(preview.image, Some(PreparedImage::Retained(_))));
+
+    preview.scroll_pixels = u32::MAX;
+    finish_viewport(&mut preview, content);
+    assert!(matches!(preview.image, Some(PreparedImage::Raster(_))));
+    assert_eq!(preview.picker.protocol_type(), ProtocolType::Kitty);
+
+    preview.scroll_pixels = 0;
+    finish_viewport(&mut preview, content);
+    assert!(matches!(preview.image, Some(PreparedImage::Retained(_))));
+    assert_eq!(preview.displayed_scroll, Some(0));
 }

@@ -6,6 +6,7 @@ pub mod pdf;
 pub mod preview;
 mod process;
 pub mod resume_tools;
+mod retained_image;
 pub mod sandbox;
 pub mod theme;
 pub mod tools;

@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow};
 use image::{DynamicImage, imageops::FilterType};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Margin, Position, Rect},
+    layout::{Constraint, Layout, Margin, Position, Rect, Size},
     style::Style,
     text::{Line, Text},
     widgets::{Block, Clear, Paragraph, Wrap},
@@ -22,8 +22,11 @@ use ratatui_image::{
     protocol::StatefulProtocol,
 };
 
-use crate::pdf::PdfPages;
 use crate::theme;
+use crate::{
+    pdf::PdfPages,
+    retained_image::{ImageView, RetainedImage, TerminalImages},
+};
 
 const EMPTY_STATE_HEIGHT: u16 = 7;
 const LOADING_STATE_HEIGHT: u16 = 3;
@@ -32,7 +35,7 @@ const LOADING_FRAMES: [&str; 6] = ["[=   ]", "[ =  ]", "[  = ]", "[   =]", "[  =
 const SCROLL_LINES: u32 = 3;
 const FIT_WIDTH_PERCENT: u16 = 100;
 const MAX_ZOOM_PERCENT: u16 = 300;
-const ZOOM_STEP_PERCENT: u16 = 10;
+const ZOOM_STEP_PERCENT: u16 = 20;
 const WHEEL_ZOOM_INTERVAL: Duration = Duration::from_millis(150);
 const EMPTY_NOTICE: &str =
     "Your PDF will appear here.\n\nBuild your document to update the preview.";
@@ -42,7 +45,9 @@ pub struct Preview {
     notice: String,
     pages: Option<PdfPages>,
     page_index: usize,
-    image: Option<StatefulProtocol>,
+    image: Option<PreparedImage>,
+    image_source: Option<Arc<DynamicImage>>,
+    terminal_images: TerminalImages,
     image_presented: bool,
     source_page: Option<Arc<DynamicImage>>,
     scaled_page_size: Option<(u32, u32)>,
@@ -56,8 +61,20 @@ pub struct Preview {
     displayed_horizontal: Option<u32>,
 }
 
+enum PreparedImage {
+    Raster(PreparedViewport),
+    Retained(RetainedImage),
+}
+
 struct PreparedViewport {
     image: StatefulProtocol,
+    page_size: (u32, u32),
+    scroll: u32,
+    horizontal: u32,
+}
+
+struct RetainedViewport {
+    view: ImageView,
     page_size: (u32, u32),
     scroll: u32,
     horizontal: u32,
@@ -67,7 +84,7 @@ struct ViewportJob {
     source: Arc<DynamicImage>,
     pixels: (u32, u32),
     scroll: u32,
-    result: Receiver<Result<PreparedViewport>>,
+    result: Receiver<Result<PreparedImage>>,
     zoom_percent: u16,
     horizontal: u32,
 }
@@ -80,6 +97,8 @@ impl Default for Preview {
             pages: None,
             page_index: 0,
             image: None,
+            image_source: None,
+            terminal_images: TerminalImages::default(),
             image_presented: false,
             source_page: None,
             scaled_page_size: None,
@@ -120,8 +139,13 @@ impl Preview {
     pub fn empty_like(&self) -> Self {
         Self {
             picker: self.picker.clone(),
+            terminal_images: self.terminal_images.clone(),
             ..Self::default()
         }
+    }
+
+    pub fn flush_retired_images(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
+        self.terminal_images.flush_retired(writer)
     }
 
     pub fn uses_basic_rendering(&self) -> bool {
@@ -196,6 +220,7 @@ impl Preview {
         // Keep the visible page until its replacement is ready. Clearing removes it immediately.
         if self.source_page.is_none() {
             self.image = None;
+            self.image_source = None;
             self.image_presented = false;
         }
     }
@@ -336,8 +361,8 @@ impl Preview {
         };
     }
 
-    // Only one worker per preview may run at a time. Resizes and scrolls coalesce
-    // while it runs; results for an old page or viewport are never displayed.
+    // Retained pages need only new placement geometry after upload. Other protocols
+    // coalesce view changes into one worker and never display obsolete raster results.
     fn prepare_viewport(&mut self, area: Rect) {
         let Some(source) = self.source_page.clone() else {
             return;
@@ -358,30 +383,84 @@ impl Preview {
             self.scaled_page_size = None;
         }
 
+        if !self.receive_prepared_viewport(&source, pixels) {
+            return;
+        }
+
+        // Beyond the protocol's coordinate table, keep the existing raster backend.
+        let retain_page = self.picker.protocol_type() == ProtocolType::Kitty
+            && self
+                .retained_viewport(&source, area)
+                .view
+                .supports_placeholders();
+        let retained_ready = retain_page
+            && matches!(self.image, Some(PreparedImage::Retained(_)))
+            && self
+                .image_source
+                .as_ref()
+                .is_some_and(|image_source| Arc::ptr_eq(image_source, &source));
+        if retained_ready {
+            let viewport = self.retained_viewport(&source, area);
+            self.scaled_page_size = Some(viewport.page_size);
+            self.viewport_pixels = Some(pixels);
+            self.scroll_pixels = viewport.scroll;
+            self.horizontal_pixels = viewport.horizontal;
+            self.displayed_scroll = Some(viewport.scroll);
+            self.displayed_horizontal = Some(viewport.horizontal);
+            return;
+        }
+
+        if !retain_page
+            && self.viewport_pixels == Some(pixels)
+            && self.displayed_scroll == Some(self.scroll_pixels)
+            && self.displayed_horizontal == Some(self.horizontal_pixels)
+        {
+            return;
+        }
+
+        self.start_viewport(source, area, pixels, retain_page);
+    }
+
+    // A result must belong to this source; raster results must also match the view.
+    // Retained uploads can adopt a newer zoom without repeating preparation.
+    fn receive_prepared_viewport(
+        &mut self,
+        source: &Arc<DynamicImage>,
+        pixels: (u32, u32),
+    ) -> bool {
         if let Some(job) = &self.pending {
             let result = match job.result.try_recv() {
                 Ok(result) => result,
-                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Empty) => return false,
                 Err(TryRecvError::Disconnected) => Err(anyhow!("Preview worker stopped")),
             };
-            let current = Arc::ptr_eq(&job.source, &source)
-                && job.pixels == pixels
-                && job.scroll == self.scroll_pixels
-                && job.horizontal == self.horizontal_pixels
-                && job.zoom_percent == self.zoom_percent;
+
+            // A retained page upload is independent of zoom or pan. It is still useful
+            // when the user changes the view before the first upload has finished.
+            let retained = matches!(&result, Ok(PreparedImage::Retained(_)));
+            let current = Arc::ptr_eq(&job.source, source)
+                && (retained
+                    || (job.pixels == pixels
+                        && job.scroll == self.scroll_pixels
+                        && job.horizontal == self.horizontal_pixels
+                        && job.zoom_percent == self.zoom_percent));
             self.pending = None;
 
             if current {
                 match result {
                     Ok(prepared) => {
-                        self.image = Some(prepared.image);
+                        if let PreparedImage::Raster(viewport) = &prepared {
+                            self.scaled_page_size = Some(viewport.page_size);
+                            self.scroll_pixels = viewport.scroll;
+                            self.displayed_scroll = Some(viewport.scroll);
+                            self.horizontal_pixels = viewport.horizontal;
+                            self.displayed_horizontal = Some(viewport.horizontal);
+                            self.viewport_pixels = Some(pixels);
+                        }
+
+                        self.image = Some(prepared);
+                        self.image_source = Some(source.clone());
                         self.image_presented = false;
-                        self.scaled_page_size = Some(prepared.page_size);
-                        self.scroll_pixels = prepared.scroll;
-                        self.displayed_scroll = Some(prepared.scroll);
-                        self.horizontal_pixels = prepared.horizontal;
-                        self.displayed_horizontal = Some(prepared.horizontal);
-                        self.viewport_pixels = Some(pixels);
                     }
                     Err(error) => {
                         self.notice = format!("Could not display the preview: {error}");
@@ -396,37 +475,49 @@ impl Preview {
                             self.viewport_pixels = Some(pixels);
                             self.displayed_scroll = Some(self.scroll_pixels);
                             self.displayed_horizontal = Some(self.horizontal_pixels);
-                            return;
+                            return false;
                         }
                     }
                 }
             }
         }
 
-        if self.viewport_pixels == Some(pixels)
-            && self.displayed_scroll == Some(self.scroll_pixels)
-            && self.displayed_horizontal == Some(self.horizontal_pixels)
-        {
-            return;
-        }
+        true
+    }
 
+    fn start_viewport(
+        &mut self,
+        source: Arc<DynamicImage>,
+        area: Rect,
+        pixels: (u32, u32),
+        retain_page: bool,
+    ) {
         let picker = self.picker.clone();
         let worker_source = Arc::clone(&source);
         let scroll = self.scroll_pixels;
         let horizontal = self.horizontal_pixels;
         let zoom_percent = self.zoom_percent;
+        let terminal_images = self.terminal_images.clone();
         let (sender, result) = mpsc::channel();
+
         let worker = thread::Builder::new()
             .name("texo-preview".into())
             .spawn(move || {
-                let prepared = prepare_image(
-                    picker,
-                    worker_source,
-                    area,
-                    scroll,
-                    horizontal,
-                    zoom_percent,
-                );
+                let prepared = if retain_page {
+                    RetainedImage::new(&picker, worker_source.as_ref().clone(), terminal_images)
+                        .map(PreparedImage::Retained)
+                } else {
+                    prepare_image(
+                        picker,
+                        worker_source,
+                        area,
+                        scroll,
+                        horizontal,
+                        zoom_percent,
+                    )
+                    .map(PreparedImage::Raster)
+                };
+
                 let _ = sender.send(prepared);
             });
 
@@ -447,6 +538,50 @@ impl Preview {
                 self.displayed_scroll = Some(self.scroll_pixels);
                 self.displayed_horizontal = Some(self.horizontal_pixels);
             }
+        }
+    }
+
+    fn retained_viewport(&self, source: &DynamicImage, area: Rect) -> RetainedViewport {
+        let font = self.picker.font_size();
+        let pixels = (
+            u32::from(area.width) * u32::from(font.width),
+            u32::from(area.height) * u32::from(font.height),
+        );
+        let page_width = zoomed_width(pixels.0, self.zoom_percent);
+        let page_height = fit_width_height(source.width(), source.height(), page_width);
+        let (scroll, visible_height) = viewport_crop(page_height, pixels.1, self.scroll_pixels);
+        let horizontal = self
+            .horizontal_pixels
+            .min(page_width.saturating_sub(pixels.0));
+        let visible_width = page_width.min(pixels.0);
+        let gutter = pixels.0.saturating_sub(visible_width) / 2;
+
+        let view = ImageView {
+            page_size: Size::new(
+                page_width
+                    .div_ceil(u32::from(font.width))
+                    .min(u32::from(u16::MAX)) as u16,
+                page_height
+                    .div_ceil(u32::from(font.height))
+                    .min(u32::from(u16::MAX)) as u16,
+            ),
+            offset: Position::new(
+                (horizontal / u32::from(font.width)).min(u32::from(u16::MAX)) as u16,
+                (scroll / u32::from(font.height)).min(u32::from(u16::MAX)) as u16,
+            ),
+            area: Rect::new(
+                area.x + (gutter / u32::from(font.width)) as u16,
+                area.y,
+                visible_width.div_ceil(u32::from(font.width)) as u16,
+                visible_height.div_ceil(u32::from(font.height)) as u16,
+            ),
+        };
+
+        RetainedViewport {
+            view,
+            page_size: (page_width, page_height),
+            scroll,
+            horizontal,
         }
     }
 
@@ -498,17 +633,44 @@ impl Preview {
             self.prepare_viewport(content);
         }
 
+        // A modal or a replacement page can keep an older image visible. Recompute
+        // its geometry from that image's source so resizing never writes outside the pane.
+        let retained_view = self
+            .image_source
+            .as_ref()
+            .filter(|_| matches!(self.image, Some(PreparedImage::Retained(_))))
+            .map(|source| self.retained_viewport(source, content).view);
+
         match &mut self.image {
-            Some(image)
+            Some(PreparedImage::Retained(image)) if !cached_only || self.image_presented => {
+                let view = retained_view
+                    .filter(|view| view.supports_placeholders())
+                    .or_else(|| image.last_view());
+                if let Some(mut view) = view {
+                    view.area = view.area.intersection(content);
+                    match image.render(view, frame.buffer_mut()) {
+                        Ok(()) => self.image_presented = true,
+                        Err(error) => {
+                            self.notice = format!("Could not place the PDF preview: {error}");
+                            self.image = None;
+                            self.image_source = None;
+                            self.picker = Picker::halfblocks();
+                            self.viewport_pixels = None;
+                        }
+                    }
+                }
+            }
+            Some(PreparedImage::Raster(viewport))
                 if (!cached_only || self.image_presented)
-                    && image
+                    && viewport
+                        .image
                         .needs_resize(&Resize::Crop(None), content.as_size())
                         .is_none() =>
             {
                 frame.render_stateful_widget(
                     StatefulImage::default().resize(Resize::Crop(None)),
                     content,
-                    image,
+                    &mut viewport.image,
                 );
                 self.image_presented = true;
             }

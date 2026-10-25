@@ -260,3 +260,33 @@ fn settings_do_not_consume_the_first_kitty_upload() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn focused_pdf_keeps_zoom_and_fit_hints_in_split_and_full_width_layouts() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    app.focus = Focus::Preview;
+
+    for width in [80, 120, 160, 240] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 45))?;
+        let area = Rect::new(0, 0, width, 45);
+        let header = pane_content(app.preview_area(area));
+        terminal.draw(|frame| app.draw(frame))?;
+        let text: String = (header.x..header.right())
+            .map(|x| terminal.backend().buffer()[(x, header.y)].symbol())
+            .collect();
+
+        assert!(
+            text.contains("+/-"),
+            "Missing zoom controls at {width}: {text}"
+        );
+        assert!(
+            text.contains("fit"),
+            "Missing fit control at {width}: {text}"
+        );
+        assert!(
+            text.contains("100%"),
+            "Missing zoom level at {width}: {text}"
+        );
+    }
+    Ok(())
+}
