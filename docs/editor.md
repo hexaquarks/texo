@@ -1,6 +1,10 @@
 # TeX editor commands
 
-Standard editing is the default. In Settings, use **Open config**, then **Reload** after changing:
+Standard editing is the default. Open Settings with the configured prefix followed by `s`
+(default Ctrl+X, then S), select **Standard** or **Vim**, and press Enter to apply. Ctrl+V toggles
+the choice within Settings; Escape closes without applying it.
+
+You can also use **Open config**, then **Reload** after changing:
 
 ```toml
 [editor]

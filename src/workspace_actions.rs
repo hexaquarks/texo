@@ -4,7 +4,7 @@ use ratatui::{
     crossterm::event::{
         Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
     },
-    layout::Rect,
+    layout::{Position, Rect},
 };
 
 use super::{App, Focus, resume_session::ResumeSession};
@@ -37,7 +37,17 @@ impl App {
         self.settings = Some(dialog);
     }
 
-    pub(super) fn handle_settings_event(&mut self, event: Event) {
+    pub(super) fn handle_settings_event(&mut self, event: Event, screen: Rect) {
+        if let Event::Key(key) = event
+            && key.code == KeyCode::Char('v')
+            && key.modifiers == KeyModifiers::CONTROL
+        {
+            if let Some(dialog) = &mut self.settings {
+                dialog.toggle_mode();
+            }
+            return;
+        }
+
         if let Event::Key(key) = event
             && key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('o' | 'r'))
@@ -68,6 +78,11 @@ impl App {
         }
 
         match event {
+            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(dialog) = &mut self.settings {
+                    dialog.select_mode_at(screen, Position::new(mouse.column, mouse.row));
+                }
+            }
             Event::Key(key) if key.code == KeyCode::Esc => self.settings = None,
             Event::Key(key) if key.code == KeyCode::Enter => {
                 if let Err(error) = self.apply_settings()
@@ -130,6 +145,7 @@ impl App {
         let root = crate::config::resume_folder(&dialog.value())?;
         let mut settings = Settings::load(&self.settings_path)?;
         settings.resume_folder = Some(root.clone());
+        settings.editor = dialog.editor_preferences;
         self.replace_workspace(root, settings, true)
     }
 

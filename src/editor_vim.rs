@@ -2,12 +2,8 @@
 // Copyright (c) 2022 rhysd; Copyright (c) The Ratatui Developers.
 // See THIRD_PARTY_LICENSES/ratatui-textarea.txt for the license.
 
-use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
-    text::Line,
-};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui_textarea::{CursorMove, DataCursor, Scrolling, TextArea};
-use texo::theme;
 
 use super::clipboard::ClipboardAction;
 
@@ -70,25 +66,6 @@ impl Vim {
                 Mode::Visual if self.pending_g => "VISUAL g…",
                 Mode::Visual => "VISUAL",
             },
-        }
-    }
-
-    pub(super) fn hints(&self) -> Line<'static> {
-        if self.operator.is_some() {
-            return theme::shortcuts(&[("motion/repeat", "Apply"), ("Esc", "Cancel")]);
-        }
-
-        match self.mode {
-            Mode::Normal => theme::shortcuts(&[
-                ("i/v", "Insert/Visual"),
-                ("d/c/y", "Operator"),
-                ("p", "Paste"),
-                ("u/Ctrl+R", "Undo/redo"),
-            ]),
-            Mode::Insert => theme::shortcuts(&[("Esc", "Normal"), ("Ctrl+Shift+F", "Find")]),
-            Mode::Visual => {
-                theme::shortcuts(&[("d/c/y", "Delete/change/yank"), ("Esc/v", "Normal")])
-            }
         }
     }
 

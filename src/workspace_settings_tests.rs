@@ -223,7 +223,10 @@ fn invalid_or_unsavable_settings_preserve_pending_work() -> anyhow::Result<()> {
         assert!(app.settings.is_some());
         assert!(app.session.proposal_review.is_some());
     }
-    app.handle_settings_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        Rect::new(0, 0, 160, 45),
+    );
     assert!(app.settings.is_none());
     assert_eq!(app.session.editor.source(), source);
     Ok(())
@@ -252,7 +255,10 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
         .map(|cell| cell.symbol())
         .collect();
     assert!(text.contains("Settings") && text.contains("Resume folder"));
-    app.handle_settings_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        Rect::new(0, 0, 160, 45),
+    );
     app.session.assistant.input.insert_str("/set");
     app.session
         .assistant
@@ -357,5 +363,110 @@ fn wrap_reload_updates_cached_editors_without_resetting_history_or_proposals() -
     assert!(app.session.proposal_review.is_some());
     assert!(app.session.editor.text.undo());
     assert_eq!(app.session.editor.source(), "Original document");
+    Ok(())
+}
+
+#[test]
+fn visible_mode_controls_save_or_cancel_without_losing_resume_state() -> anyhow::Result<()> {
+    use crate::config::EditingMode;
+    use ratatui::layout::Position;
+
+    let (directory, mut app) = application()?;
+    app.settings_path = directory.path().join("config.toml");
+    let first = app.session.editor.path.clone();
+    let second = directory.path().join("second.tex");
+    app.session.editor.text.insert_str("Unsaved ");
+    let source = app.session.editor.source();
+    app.open_document(second.clone());
+    app.open_document(first.clone());
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: source.clone(),
+        source_after: "Pending proposal".into(),
+    }));
+    let area = Rect::new(0, 0, 160, 45);
+    app.open_settings();
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+        area,
+    );
+    assert!(app.settings.as_ref().unwrap().editor_preferences.mode == EditingMode::Vim);
+    assert!(app.editor_preferences.mode == EditingMode::Standard);
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        area,
+    );
+    assert!(app.editor_preferences.mode == EditingMode::Standard);
+    assert!(!app.settings_path.exists());
+
+    app.open_settings();
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    let buffer = terminal.backend().buffer();
+    let vim_button = (0..area.height)
+        .find_map(|row| {
+            (0..area.width.saturating_sub(2)).find_map(|column| {
+                let label: String = (column..column + 3)
+                    .map(|x| buffer[(x, row)].symbol())
+                    .collect();
+                (label == "Vim").then_some(Position::new(column, row))
+            })
+        })
+        .expect("Vim must be visible in Settings");
+    app.handle_event(
+        Event::Mouse(event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: vim_button.x,
+            row: vim_button.y,
+            modifiers: KeyModifiers::NONE,
+        }),
+        area,
+    );
+    assert!(app.settings.as_ref().unwrap().editor_preferences.mode == EditingMode::Vim);
+    terminal.draw(|frame| app.draw(frame))?;
+    assert_eq!(
+        terminal.backend().buffer()[(vim_button.x, vim_button.y)].bg,
+        theme::ACCENT
+    );
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        area,
+    );
+
+    assert!(app.settings.is_none());
+    assert!(Settings::load(&app.settings_path)?.editor.mode == EditingMode::Vim);
+    assert_eq!(app.session.editor.source(), source);
+    assert!(app.session.proposal_review.is_some());
+    app.open_document(second);
+    assert!(app.sessions[&first].proposal_review.is_some());
+    let second_source = app.session.editor.source();
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+        area,
+    );
+    assert_eq!(app.session.editor.source(), second_source);
+    app.open_document(first);
+    app.discard_proposal();
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE)),
+        area,
+    );
+    assert_eq!(app.session.editor.source(), "Original document");
+
+    app.open_settings();
+    assert!(app.settings.as_ref().unwrap().editor_preferences.mode == EditingMode::Vim);
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+        area,
+    );
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        area,
+    );
+    assert!(Settings::load(&app.settings_path)?.editor.mode == EditingMode::Standard);
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)),
+        area,
+    );
+    assert!(app.session.editor.is_modified());
     Ok(())
 }

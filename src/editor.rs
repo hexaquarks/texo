@@ -387,22 +387,6 @@ impl Editor {
                 Paragraph::new(self.notice.as_str()).style(theme::muted()),
                 controls,
             );
-        } else if focused {
-            let mut hints = if let Some(vim) = &self.vim {
-                vim.hints()
-            } else {
-                theme::shortcuts(&[
-                    ("Ctrl+Shift+F", "Find"),
-                    ("Ctrl+Shift+U/R", "Undo/redo"),
-                    ("Ctrl+Shift+A", "All"),
-                    ("Ctrl+Insert", "Copy"),
-                    ("Shift+Del/Ins", "Cut/paste"),
-                ])
-            };
-            if self.text.wrap_mode() == WrapMode::None {
-                hints.extend(theme::shortcuts(&[("Ctrl+Alt+←/→", "Pan")]).spans);
-            }
-            frame.render_widget(Paragraph::new(hints).style(theme::muted()), controls);
         }
     }
 
