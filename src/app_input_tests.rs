@@ -347,7 +347,7 @@ fn pdf_zoom_mouse_and_keyboard_events_leave_editor_and_other_preview_untouched()
         ),
         area,
     );
-    assert_eq!(app.session.preview.zoom_percent(), 110);
+    assert_eq!(app.session.preview.zoom_percent(), 120);
     assert_eq!(app.session.proposed_preview.zoom_percent(), 100);
     app.handle_event(
         wheel(
@@ -357,15 +357,15 @@ fn pdf_zoom_mouse_and_keyboard_events_leave_editor_and_other_preview_untouched()
         ),
         area,
     );
-    assert_eq!(app.session.preview.zoom_percent(), 110);
+    assert_eq!(app.session.preview.zoom_percent(), 120);
     app.handle_event(
         wheel(MouseEventKind::ScrollUp, KeyModifiers::CONTROL, 0),
         area,
     );
-    assert_eq!(app.session.preview.zoom_percent(), 110);
+    assert_eq!(app.session.preview.zoom_percent(), 120);
 
     app.focus = Focus::Preview;
-    for (key, expected) in [('+', 120), ('-', 110), ('0', 100)] {
+    for (key, expected) in [('+', 140), ('-', 120), ('0', 100)] {
         app.handle_event(
             Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
             area,

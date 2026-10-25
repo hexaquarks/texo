@@ -35,7 +35,7 @@ const LOADING_FRAMES: [&str; 6] = ["[=   ]", "[ =  ]", "[  = ]", "[   =]", "[  =
 const SCROLL_LINES: u32 = 3;
 const FIT_WIDTH_PERCENT: u16 = 100;
 const MAX_ZOOM_PERCENT: u16 = 300;
-const ZOOM_STEP_PERCENT: u16 = 10;
+const ZOOM_STEP_PERCENT: u16 = 20;
 const WHEEL_ZOOM_INTERVAL: Duration = Duration::from_millis(150);
 const EMPTY_NOTICE: &str =
     "Your PDF will appear here.\n\nBuild your document to update the preview.";

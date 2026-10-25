@@ -276,17 +276,13 @@ impl App {
             title.push_str(" · Updating…");
         }
 
-        let zoom_hint = theme::shortcuts(&[("Ctrl+wheel / +/-", "zoom"), ("0", "fit")]);
-        let mut title = Line::from(title);
-        if self.focus == Focus::Preview
-            && title.width() + zoom_hint.width() + 2 <= usize::from(title_area.width)
-        {
-            title.push_span("  ");
-            title.extend(zoom_hint.spans);
-        }
-        frame.render_widget(
-            Paragraph::new(title).style(theme::pane_title(self.focus == Focus::Preview)),
+        let compact_title = format!(" PDF {} {zoom}%", page.replace(' ', ""));
+        draw_preview_title(
+            frame,
             title_area,
+            title,
+            compact_title,
+            self.focus == Focus::Preview,
         );
 
         if self.session.proposal_review.is_some() {
@@ -317,6 +313,48 @@ impl App {
             frame.render_widget(log, layout.diagnostics);
         }
     }
+}
+
+fn draw_preview_title(
+    frame: &mut Frame,
+    area: Rect,
+    title: String,
+    compact_title: String,
+    focused: bool,
+) {
+    let mut title_area = area;
+    if focused {
+        let full_hint = theme::shortcuts(&[("Ctrl+wheel / +/-", "zoom"), ("0", "fit")]);
+        let compact_hint = theme::shortcuts(&[("+/-", "zoom"), ("0", "fit")]);
+        let hint = if Line::from(title.as_str()).width() + full_hint.width() + 2
+            <= usize::from(area.width)
+        {
+            full_hint
+        } else if compact_hint.width() + 2 <= usize::from(area.width) {
+            compact_hint
+        } else {
+            theme::shortcuts(&[("0", "fit")])
+        };
+
+        // Reserve room for the controls; a split layout can give the PDF a narrow pane
+        // even when the overall terminal is wide.
+        let [label, controls] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(hint.width() as u16)])
+                .spacing(2)
+                .areas(area);
+        title_area = label;
+        frame.render_widget(Paragraph::new(hint).style(theme::muted()), controls);
+    }
+
+    let title = if Line::from(title.as_str()).width() <= usize::from(title_area.width) {
+        title
+    } else {
+        compact_title
+    };
+    frame.render_widget(
+        Paragraph::new(title).style(theme::pane_title(focused)),
+        title_area,
+    );
 }
 
 pub(super) fn below_header(area: Rect, height: u16) -> Rect {

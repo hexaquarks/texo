@@ -370,20 +370,20 @@ fn trackpad_zoom_uses_paced_steps_without_replaying_a_swipe() {
             started + Duration::from_millis(elapsed_ms),
         );
     }
-    assert_eq!(preview.zoom_percent(), 110);
-
-    preview.zoom_from_wheel_at(true, area, pointer, started + WHEEL_ZOOM_INTERVAL);
     assert_eq!(preview.zoom_percent(), 120);
 
+    preview.zoom_from_wheel_at(true, area, pointer, started + WHEEL_ZOOM_INTERVAL);
+    assert_eq!(preview.zoom_percent(), 140);
+
     preview.zoom_from_wheel_at(false, area, pointer, started + WHEEL_ZOOM_INTERVAL * 2);
-    assert_eq!(preview.zoom_percent(), 110);
+    assert_eq!(preview.zoom_percent(), 120);
 
     // There is no queued gesture work after input ends, and keyboard steps stay immediate.
     finish_viewport(&mut preview, preview_content(area));
-    assert_eq!(preview.zoom_percent(), 110);
+    assert_eq!(preview.zoom_percent(), 120);
     preview.zoom_at(true, area, pointer);
     preview.zoom_at(true, area, pointer);
-    assert_eq!(preview.zoom_percent(), 130);
+    assert_eq!(preview.zoom_percent(), 160);
 }
 
 #[test]
@@ -434,11 +434,11 @@ fn zoom_anchors_the_cursor_clamps_limits_and_resets_to_fit_page() {
     finish_viewport(&mut preview, content);
 
     preview.zoom_at(true, area, pointer);
-    assert_eq!(preview.zoom_percent(), 110);
-    assert_eq!(preview.horizontal_pixels, 4);
-    assert_eq!(preview.scroll_pixels, 4);
+    assert_eq!(preview.zoom_percent(), 120);
+    assert_eq!(preview.horizontal_pixels, 8);
+    assert_eq!(preview.scroll_pixels, 8);
     finish_viewport(&mut preview, content);
-    assert_eq!(preview.scaled_page_size.unwrap().0, 110);
+    assert_eq!(preview.scaled_page_size.unwrap().0, 120);
 
     for _ in 0..20 {
         preview.zoom_at(true, area, pointer);
@@ -509,9 +509,9 @@ fn late_zoom_work_cannot_replace_the_latest_scale_or_pan() {
     assert!(preview.image.is_none());
 
     finish_viewport(&mut preview, content);
-    assert_eq!(preview.scaled_page_size.unwrap().0, 110);
-    assert_eq!(preview.displayed_horizontal, Some(4));
-    assert_eq!(preview.displayed_scroll, Some(4));
+    assert_eq!(preview.scaled_page_size.unwrap().0, 120);
+    assert_eq!(preview.displayed_horizontal, Some(8));
+    assert_eq!(preview.displayed_scroll, Some(8));
     preview.prepare_viewport(content);
     assert!(preview.pending.is_none());
 
@@ -546,7 +546,7 @@ fn kitty_reuses_uploaded_page_after_zooming() -> anyhow::Result<()> {
     assert!(output.contains("a=p"));
     assert!(!output.contains("a=T"));
     assert!(preview.pending.is_none());
-    assert_eq!(preview.scaled_page_size.unwrap().0, 176);
+    assert_eq!(preview.scaled_page_size.unwrap().0, 192);
     Ok(())
 }
 
@@ -577,7 +577,7 @@ fn zoomed_out_page_is_centered_and_clears_old_image_cells() -> anyhow::Result<()
         buffer[(content.x + 10, content.y)].fg,
         ratatui::style::Color::Rgb(255, 255, 255)
     );
-    assert_eq!(preview.zoom_percent(), 80);
+    assert_eq!(preview.zoom_percent(), 60);
     Ok(())
 }
 
