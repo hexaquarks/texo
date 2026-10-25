@@ -44,13 +44,13 @@ def main(directory):
     set_options(defaults)
     screen = Screen(None, 20, 40, 0, 10, 20)
     observed = []
-    for phase in ("initial", "zoom", "pan", "fit"):
+    for phase in ("initial", "zoom", "pan", "drag", "fit"):
         data = (directory / f"{phase}.bin").read_bytes()
         feed(screen, data)
         observed.append(visible_source(screen))
         assert screen.grman.image_count == 1, "Zoom should reuse one uploaded image"
 
-    initial, zoom, pan, fit = observed
+    initial, zoom, pan, drag, fit = observed
     initial_width = initial["right"] - initial["left"]
     zoom_width = zoom["right"] - zoom["left"]
     assert abs(zoom_width / initial_width - 0.5) < 0.03, (
@@ -58,6 +58,9 @@ def main(directory):
     )
     assert pan["left"] > zoom["left"], f"Horizontal pan did not move the page: {observed}"
     assert pan["top"] > zoom["top"], f"Vertical pan did not move the page: {observed}"
+    assert drag["left"] > pan["left"] and drag["top"] > pan["top"], (
+        f"Dragging did not move the rendered page: {observed}"
+    )
     assert fit["left"] < 0.01 and fit["top"] < 0.01, f"Fit lost the page origin: {fit}"
     assert fit["right"] > 0.99 and fit["bottom"] > 0.99, f"Fit cropped the page: {fit}"
     print(json.dumps(observed))

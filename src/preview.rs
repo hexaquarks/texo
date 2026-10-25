@@ -57,6 +57,7 @@ pub struct Preview {
     displayed_scroll: Option<u32>,
     zoom_percent: u16,
     last_wheel_zoom: Option<Instant>,
+    drag_position: Option<Position>,
     horizontal_pixels: u32,
     displayed_horizontal: Option<u32>,
 }
@@ -108,6 +109,7 @@ impl Default for Preview {
             displayed_scroll: None,
             zoom_percent: FIT_WIDTH_PERCENT,
             last_wheel_zoom: None,
+            drag_position: None,
             horizontal_pixels: 0,
             displayed_horizontal: None,
         }
@@ -216,6 +218,7 @@ impl Preview {
         self.displayed_scroll = None;
         self.displayed_horizontal = None;
         self.last_wheel_zoom = None;
+        self.end_drag();
 
         // Keep the visible page until its replacement is ready. Clearing removes it immediately.
         if self.source_page.is_none() {
@@ -223,6 +226,53 @@ impl Preview {
             self.image_source = None;
             self.image_presented = false;
         }
+    }
+
+    pub fn begin_drag(&mut self, area: Rect, position: Position) {
+        self.drag_position = None;
+        if preview_content(area).contains(position)
+            && self.scaled_page_size.is_some()
+            && self.viewport_pixels.is_some()
+        {
+            self.drag_position = Some(position);
+        }
+    }
+
+    pub fn end_drag(&mut self) {
+        self.drag_position = None;
+    }
+
+    /// Move the paper with the pointer, including when it crosses the pane boundary.
+    pub fn drag_to(&mut self, position: Position) -> bool {
+        let Some(previous) = self.drag_position else {
+            return false;
+        };
+        let Some((page_width, page_height)) = self.scaled_page_size else {
+            self.end_drag();
+            return false;
+        };
+        let Some((viewport_width, viewport_height)) = self.viewport_pixels else {
+            self.end_drag();
+            return false;
+        };
+
+        let font = self.picker.font_size();
+        let horizontal =
+            (i32::from(previous.x) - i32::from(position.x)).saturating_mul(i32::from(font.width));
+        let vertical =
+            (i32::from(previous.y) - i32::from(position.y)).saturating_mul(i32::from(font.height));
+        self.horizontal_pixels = self
+            .horizontal_pixels
+            .saturating_add_signed(horizontal)
+            .min(page_width.saturating_sub(viewport_width));
+        self.scroll_pixels = self
+            .scroll_pixels
+            .saturating_add_signed(vertical)
+            .min(page_height.saturating_sub(viewport_height));
+
+        // Advance even at an edge, so reversing direction responds immediately.
+        self.drag_position = Some(position);
+        true
     }
 
     pub fn scroll(&mut self, up: bool) {
@@ -301,6 +351,7 @@ impl Preview {
     }
 
     fn set_zoom(&mut self, percent: u16, area: Rect, position: Position) {
+        self.end_drag();
         let Some(source) = &self.source_page else {
             return;
         };
