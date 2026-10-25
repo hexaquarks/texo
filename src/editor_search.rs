@@ -2,6 +2,7 @@ use ratatui::{
     Frame,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout, Rect},
+    style::Style,
     widgets::Paragraph,
 };
 use ratatui_textarea::TextArea;
@@ -21,6 +22,7 @@ impl Default for Search {
         let mut input = TextArea::default();
         input.set_style(theme::text());
         input.set_cursor_line_style(theme::text());
+        input.set_cursor_style(Style::default());
         input.set_selection_style(theme::text().bg(theme::SELECTION));
 
         Self {
@@ -98,11 +100,6 @@ impl Search {
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
-        self.input.set_cursor_style(if focused {
-            theme::text().fg(theme::BACKGROUND).bg(theme::ACCENT)
-        } else {
-            theme::text()
-        });
         let [label, input, hint] = Layout::horizontal([
             Constraint::Length(SEARCH_LABEL_WIDTH),
             Constraint::Min(1),
@@ -111,6 +108,9 @@ impl Search {
         .areas(area);
         frame.render_widget(Paragraph::new("Find: ").style(theme::muted()), label);
         frame.render_widget(&self.input, input);
+        if focused {
+            crate::terminal::show_text_cursor(frame, &self.input, input);
+        }
         let hint_text = if !self.notice.is_empty() {
             self.notice
         } else if focused {

@@ -1090,3 +1090,48 @@ fn vim_operators_clear_across_resume_switches_and_pending_ai_reviews() -> anyhow
     assert_eq!(app.session.editor.source(), original);
     Ok(())
 }
+
+#[test]
+fn editor_terminal_cursor_yields_to_dialogs_and_other_panes() -> anyhow::Result<()> {
+    use crate::config::{EditingMode, EditorPreferences};
+    use ratatui::crossterm::cursor::SetCursorStyle;
+
+    let (_directory, mut app) = application()?;
+    app.apply_editor_preferences(EditorPreferences {
+        mode: EditingMode::Vim,
+        ..EditorPreferences::default()
+    });
+    let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    assert!(terminal.backend().cursor_visible());
+    assert_eq!(app.terminal_cursor_style(), SetCursorStyle::SteadyBlock);
+
+    app.open_settings();
+    terminal.draw(|frame| app.draw(frame))?;
+    assert!(!terminal.backend().cursor_visible());
+    assert_eq!(
+        app.terminal_cursor_style(),
+        SetCursorStyle::DefaultUserShape
+    );
+    app.settings = None;
+    app.focus = Focus::Assistant;
+    terminal.draw(|frame| app.draw(frame))?;
+    assert!(!terminal.backend().cursor_visible());
+    assert_eq!(
+        app.terminal_cursor_style(),
+        SetCursorStyle::DefaultUserShape
+    );
+
+    app.focus = Focus::Editor;
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: app.session.editor.source(),
+        source_after: "Pending proposal".into(),
+    }));
+    terminal.draw(|frame| app.draw(frame))?;
+    assert!(!terminal.backend().cursor_visible());
+    assert_eq!(
+        app.terminal_cursor_style(),
+        SetCursorStyle::DefaultUserShape
+    );
+    Ok(())
+}

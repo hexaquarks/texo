@@ -3,7 +3,10 @@ use std::{fs, io::ErrorKind, path::PathBuf, sync::OnceLock};
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
-    crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
+    crossterm::{
+        cursor::SetCursorStyle,
+        event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
+    },
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Style},
     widgets::{Block, Padding, Paragraph},
@@ -82,7 +85,7 @@ impl Editor {
         text.set_style(Style::default().fg(theme::TEXT).bg(theme::EDITOR));
         text.set_line_number_style(theme::muted().bg(theme::EDITOR));
         text.set_cursor_line_style(Style::default());
-        text.set_cursor_style(Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT));
+        text.set_cursor_style(Style::default());
         text.set_selection_style(Style::default().bg(theme::SELECTION));
         text.set_search_style(Style::default().bg(theme::KEYCAP));
 
@@ -373,8 +376,11 @@ impl Editor {
         } else {
             ""
         };
-        let mode = self.vim.as_ref().map_or("STANDARD", Vim::label);
-        let status = format!("{mode} {}:{}{}", cursor.0 + 1, cursor.1 + 1, modified);
+        let position = format!("{}:{}{}", cursor.0 + 1, cursor.1 + 1, modified);
+        let status = match &self.vim {
+            Some(vim) => format!("VIM {} {position}", vim.label()),
+            None => position,
+        };
         let [position, controls] = Layout::horizontal([
             Constraint::Length(status.chars().count() as u16 + 2),
             Constraint::Min(0),
@@ -540,6 +546,19 @@ impl Editor {
         Ok(())
     }
 
+    pub fn terminal_cursor_style(&self) -> SetCursorStyle {
+        if self.search.open
+            || self
+                .vim
+                .as_ref()
+                .is_none_or(|vim| vim.mode == vim::Mode::Insert)
+        {
+            SetCursorStyle::BlinkingBar
+        } else {
+            SetCursorStyle::SteadyBlock
+        }
+    }
+
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
         let panel = Block::default()
             .style(Style::default().bg(theme::EDITOR))
@@ -551,24 +570,21 @@ impl Editor {
             ));
         let content = panel.inner(area);
         self.text.set_block(panel);
-        self.text.set_cursor_style(if focused {
-            Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT)
-        } else {
-            Style::default()
-        });
         frame.render_widget(&self.text, area);
+        if focused && !self.search.open {
+            crate::terminal::show_text_cursor(frame, &self.text, area);
+        }
 
         self.highlighting.update(self.text.lines());
-        self.draw_highlighting(frame, content, focused);
+        self.draw_highlighting(frame, content);
         self.draw_status(frame, area, focused);
     }
 
-    fn draw_highlighting(&self, frame: &mut Frame, content: Rect, focused: bool) {
+    fn draw_highlighting(&self, frame: &mut Frame, content: Rect) {
         let (scroll_row, scroll_column) = self.text.scroll_offset();
         let number_width = self.text.line_number_width();
-        let cursor = self.text.cursor();
 
-        // Let the editor own glyphs, scrolling, tabs, selection, and cursor backgrounds.
+        // Let the textarea own glyphs, scrolling, tabs, and selection backgrounds.
         // Only recolor the text cells, using its screen mapping for wide Unicode characters.
         for y in 0..content.height {
             let row = usize::from(scroll_row) + usize::from(y);
@@ -578,10 +594,6 @@ impl Editor {
                     continue;
                 };
                 let position = self.text.screen_to_data(row, column);
-                if focused && position == cursor {
-                    continue;
-                }
-
                 if let Some(color) = self
                     .highlighting
                     .colors
@@ -1089,7 +1101,10 @@ mod editing_polish_tests {
                     && (cell.bg == theme::KEYCAP || cell.bg == theme::ACCENT)
             })
             .collect();
-        assert_eq!(matches.len(), 6);
+        // The component leaves its source cursor cell unshaded; the terminal caret is in the query.
+        assert_eq!(matches.len(), 5);
+        assert!(terminal.backend().cursor_visible());
+        assert_eq!(terminal.backend().cursor_position().y, 9);
         assert!(
             matches
                 .iter()
@@ -1279,6 +1294,100 @@ mod vim_editing_tests {
         editor.paste_text("?\n");
         assert!(editor.source().contains("?\n"));
         assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Normal);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod caret_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn footer(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let row = buffer.area.bottom() - 1;
+        (0..buffer.area.width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn status_and_terminal_caret_follow_standard_and_vim_modes() -> Result<()> {
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        editor.replace_source("李\t\\section{Résumé}");
+        editor.text.move_cursor(CursorMove::Jump(0, 3));
+        let mut terminal = Terminal::new(TestBackend::new(60, 8))?;
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        assert!(!footer(&terminal).contains("STANDARD"));
+        assert!(!footer(&terminal).contains("VIM"));
+        assert!(footer(&terminal).contains("1:4"));
+        assert_eq!(editor.terminal_cursor_style(), SetCursorStyle::BlinkingBar);
+        assert!(terminal.backend().cursor_visible());
+        let position = terminal.backend().cursor_position();
+        assert_eq!(
+            position,
+            Position::new(
+                theme::PANEL_PADDING + editor.text.line_number_width() + u16::from(TAB_WIDTH) + 1,
+                1
+            )
+        );
+        assert_eq!(
+            terminal.backend().buffer()[position].fg,
+            theme::SYNTAX_COMMAND
+        );
+        assert_eq!(terminal.backend().buffer()[position].bg, theme::EDITOR);
+
+        editor.apply_preferences(EditorPreferences {
+            mode: EditingMode::Vim,
+            ..EditorPreferences::default()
+        });
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        assert!(footer(&terminal).contains("VIM NORMAL"));
+        assert_eq!(editor.terminal_cursor_style(), SetCursorStyle::SteadyBlock);
+        editor.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        assert!(footer(&terminal).contains("VIM INSERT"));
+        assert_eq!(editor.terminal_cursor_style(), SetCursorStyle::BlinkingBar);
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        editor.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        assert!(footer(&terminal).contains("VIM VISUAL"));
+        assert_eq!(editor.terminal_cursor_style(), SetCursorStyle::SteadyBlock);
+        terminal.draw(|frame| editor.draw(frame, frame.area(), false))?;
+        assert!(!terminal.backend().cursor_visible());
+        Ok(())
+    }
+
+    #[test]
+    fn caret_stays_on_rendered_unicode_after_wrapping_scrolling_and_resize() -> Result<()> {
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        let source = format!("李\t{}§XY", "experience ".repeat(12));
+        editor.replace_source(&source);
+        let target = u16::try_from(
+            source
+                .chars()
+                .position(|character| character == '§')
+                .unwrap(),
+        )?;
+        editor.text.move_cursor(CursorMove::Jump(0, target));
+
+        for (width, soft_wrap) in [(24, true), (40, true), (18, true), (24, false)] {
+            editor.apply_preferences(EditorPreferences {
+                soft_wrap,
+                ..EditorPreferences::default()
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, 6))?;
+            terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+            let position = terminal.backend().cursor_position();
+            assert!(terminal.backend().cursor_visible());
+            assert_eq!(terminal.backend().buffer()[position].symbol(), "§");
+            if soft_wrap {
+                assert!(editor.text.scroll_offset().0 > 0);
+            } else {
+                assert!(editor.text.scroll_offset().1 > 0);
+            }
+            assert_eq!(editor.source(), source);
+        }
         Ok(())
     }
 }
