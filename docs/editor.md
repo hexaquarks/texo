@@ -44,11 +44,31 @@ Search works within individual source lines; newlines pasted into the query beco
 | Normal and Visual | `h/j/k/l`, arrows, `w/b/e`, `0/^/$`, Home/End, `gg/G`, Page Up/Down |
 | Normal | `i/a/I/A/o/O` enter Insert; `v` enters Visual; `V` initially selects the current source line |
 | Insert | Ordinary editor input; Escape, Ctrl+[ or Ctrl+C returns to Normal |
-| Normal | `d/c/y` followed by a supported motion, `gg`, or `G`; `dd/cc/yy` operate on a whole source line |
+| Normal | `d/c/y` followed by a supported motion, text object, `gg`, or `G`; `dd/cc/yy` operate on a whole source line |
 | Normal | `x` deletes the character under the cursor |
 | Visual | `d/c/y` deletes, changes, or yanks the inclusive character range in either direction; `v` or Escape cancels |
 | Normal and Visual | `D/C` delete/change to line end; `S` changes the current line; `D/C/S` act on the selected range in Visual; `J` joins lines; `p` pastes the internal yank buffer at the cursor; `u` undoes; Ctrl+R redoes |
 | Normal and Visual | Ctrl+E/Y scroll one row, Ctrl+D/U half a page, Ctrl+F/B a page |
+
+### Text objects
+
+Use `i` for the inside of an object and `a` to include its surrounding space or delimiters.
+These work after `d`, `c`, and `y`, and in Visual mode after `v`. For example, `ciw` replaces
+the current word and enters Insert, `diw` deletes it, `yiw` yanks it, and `viw` selects it.
+
+| Object | Keys |
+| --- | --- |
+| Word or punctuation run | `iw`, `aw` |
+| WORD separated only by whitespace | `iW`, `aW` |
+| Parentheses | `i(`/`i)`/`ib`, `a(`/`a)`/`ab` |
+| Braces | `i{`/`i}`/`iB`, `a{`/`a}`/`aB` |
+| Square brackets | `i[`/`i]`, `a[`/`a]` |
+| Angle brackets | `i<`/`i>`, `a<`/`a>` |
+| Double quotes, single quotes, backticks | `i"`/`a"`, `i'`/`a'`, `` i` `` / `` a` `` |
+
+Word objects handle Unicode letters and combining marks. Around-word objects prefer trailing
+space, otherwise leading space. Brackets and braces nest and can span source lines; escaped
+delimiters are skipped. Quote objects stay on one line and skip escaped quotes.
 
 `c/cc/C/S` enter Insert mode; deletes and yanks return to Normal. Yanks and cuts also attempt a
 system clipboard copy. The standard clipboard alternatives above work in Vim mode.
@@ -61,7 +81,9 @@ column where possible, and `h/l` can cross line boundaries. Yanking leaves the c
 selection endpoint. Whole-line operators include the following newline when it exists; `cc`
 removes that line before entering Insert. `V` does not implement Vim's full Visual Line mode.
 Undo follows component transactions; replacing a selection, including accepting AI edits, may require
-two undos. Counts, registers, text objects, dot repeat, replace modes, and Ex commands are unsupported.
+two undos. Counts, registers, sentence/paragraph/tag objects, repeated Visual-object expansion, dot repeat,
+replace modes, and Ex commands are unsupported. Delimiter objects use matching characters rather
+than a TeX parser.
 
 Mouse selection does not scroll beyond the viewport while dragging. Terminal support determines
 which modified shortcuts are distinguishable; the configured prefix always takes precedence.

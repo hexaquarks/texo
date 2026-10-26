@@ -7,6 +7,17 @@ use ratatui_textarea::{CursorMove, DataCursor, Scrolling, TextArea};
 
 use super::clipboard::ClipboardAction;
 
+#[path = "vim_objects.rs"]
+mod objects;
+
+use objects::{ObjectRange, ObjectScope, text_object};
+
+#[derive(Clone, Copy)]
+enum Pending {
+    GoToTop,
+    Object(ObjectScope),
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Mode {
     #[default]
@@ -49,7 +60,7 @@ pub(super) enum VimInput {
 #[derive(Default)]
 pub(super) struct Vim {
     pub(super) mode: Mode,
-    pending_g: bool,
+    pending: Option<Pending>,
     operator: Option<Operator>,
 }
 
@@ -60,10 +71,10 @@ impl Vim {
             Some(Operator::Change) => "NORMAL c…",
             Some(Operator::Yank) => "NORMAL y…",
             None => match self.mode {
-                Mode::Normal if self.pending_g => "NORMAL g…",
+                Mode::Normal if matches!(self.pending, Some(Pending::GoToTop)) => "NORMAL g…",
                 Mode::Normal => "NORMAL",
                 Mode::Insert => "INSERT",
-                Mode::Visual if self.pending_g => "VISUAL g…",
+                Mode::Visual if matches!(self.pending, Some(Pending::GoToTop)) => "VISUAL g…",
                 Mode::Visual => "VISUAL",
             },
         }
@@ -81,7 +92,7 @@ impl Vim {
     }
 
     pub(super) fn cancel_pending(&mut self, text: &mut TextArea<'static>) {
-        self.pending_g = false;
+        self.pending = None;
         if self.operator.take().is_some() {
             text.cancel_selection();
         }
@@ -111,9 +122,20 @@ impl Vim {
             return VimInput::Consumed;
         }
 
-        let was_pending_g = std::mem::take(&mut self.pending_g);
+        let pending = self.pending.take();
+        if let Some(Pending::Object(scope)) = pending {
+            return self.handle_text_object(scope, key.code, text);
+        }
+        let was_pending_g = matches!(pending, Some(Pending::GoToTop));
         if let Some(operator) = self.operator {
             return self.handle_operator(operator, key.code, was_pending_g, text);
+        }
+        if self.mode == Mode::Visual
+            && let KeyCode::Char(character) = key.code
+            && let Some(scope) = ObjectScope::from_key(character)
+        {
+            self.pending = Some(Pending::Object(scope));
+            return VimInput::Consumed;
         }
         if let Some(motion) = Self::motion(key.code) {
             text.move_cursor(motion);
@@ -146,6 +168,13 @@ impl Vim {
             return VimInput::Consumed;
         }
 
+        if let KeyCode::Char(character) = code
+            && let Some(scope) = ObjectScope::from_key(character)
+        {
+            self.pending = Some(Pending::Object(scope));
+            return VimInput::Consumed;
+        }
+
         if Operator::from_key(code) == Some(operator) {
             Self::select_source_line(text);
         } else if let Some(motion) = Self::motion(code) {
@@ -157,7 +186,7 @@ impl Vim {
             match code {
                 KeyCode::Char('g') if was_pending_g => text.move_cursor(CursorMove::Top),
                 KeyCode::Char('g') => {
-                    self.pending_g = true;
+                    self.pending = Some(Pending::GoToTop);
                     return VimInput::Consumed;
                 }
                 KeyCode::Char('G') => text.move_cursor(CursorMove::Bottom),
@@ -171,9 +200,48 @@ impl Vim {
         self.finish_operator(operator)
     }
 
+    fn handle_text_object(
+        &mut self,
+        scope: ObjectScope,
+        code: KeyCode,
+        text: &mut TextArea<'static>,
+    ) -> VimInput {
+        let range = match code {
+            KeyCode::Char(character) => text_object(text, scope, character),
+            _ => None,
+        };
+        let Some(range) = range else {
+            self.cancel_pending(text);
+            return VimInput::Consumed;
+        };
+
+        if self.mode == Mode::Visual {
+            if range.start != range.end {
+                Self::select_object(text, &range);
+                // Visual commands include the cursor character; the component's range excludes its end.
+                text.move_cursor(CursorMove::Back);
+            }
+            return VimInput::Consumed;
+        }
+
+        if let Some(operator) = self.operator {
+            Self::select_object(text, &range);
+            return self.finish_operator(operator);
+        }
+
+        VimInput::Consumed
+    }
+
+    fn select_object(text: &mut TextArea<'static>, range: &ObjectRange) {
+        text.cancel_selection();
+        Self::jump(text, range.start);
+        text.start_selection();
+        Self::jump(text, range.end);
+    }
+
     fn finish_operator(&mut self, operator: Operator) -> VimInput {
         self.operator = None;
-        self.pending_g = false;
+        self.pending = None;
         self.mode = if operator == Operator::Change {
             Mode::Insert
         } else {
@@ -225,7 +293,7 @@ impl Vim {
     ) -> VimInput {
         match code {
             KeyCode::Char('g') if was_pending_g => text.move_cursor(CursorMove::Top),
-            KeyCode::Char('g') => self.pending_g = true,
+            KeyCode::Char('g') => self.pending = Some(Pending::GoToTop),
             KeyCode::Char('G') => text.move_cursor(CursorMove::Bottom),
             KeyCode::Char('i' | 'a' | 'I' | 'A' | 'o' | 'O') if self.mode == Mode::Normal => {
                 self.enter_insert(code, text);

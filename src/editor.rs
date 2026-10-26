@@ -1395,3 +1395,7 @@ mod caret_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "vim_features_tests.rs"]
+mod vim_features_tests;
