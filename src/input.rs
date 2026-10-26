@@ -66,6 +66,11 @@ impl App {
             }
         }
 
+        if self.label_dialog.is_some() {
+            self.handle_label_event(event, area);
+            return false;
+        }
+
         if self.project_dialog.is_some() {
             self.handle_project_dialog(event);
             return false;
@@ -548,6 +553,7 @@ impl App {
 
     pub(super) fn handle_projects_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Char('l') if !self.projects.files_focused => self.open_label_dialog(),
             KeyCode::Tab => self.projects.files_focused = !self.projects.files_focused,
             KeyCode::Up | KeyCode::Char('k') => {
                 self.projects.move_selection(false);

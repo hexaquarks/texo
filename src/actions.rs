@@ -23,6 +23,7 @@ pub enum Action {
     NewResume,
     ImportResume,
     RenameResume,
+    LabelResume,
     DuplicateResume,
     FocusResumes,
     FocusFiles,
@@ -43,7 +44,7 @@ pub enum Action {
     Quit,
 }
 
-const ACTIONS: [(Action, &str, Option<&str>); 22] = [
+const ACTIONS: [(Action, &str, Option<&str>); 23] = [
     (Action::NewResume, "New resume", None),
     (
         Action::ImportResume,
@@ -51,6 +52,7 @@ const ACTIONS: [(Action, &str, Option<&str>); 22] = [
         None,
     ),
     (Action::RenameResume, "Rename resume", None),
+    (Action::LabelResume, "Set resume label", None),
     (Action::DuplicateResume, "Duplicate resume", None),
     (Action::FocusResumes, "Focus resumes", None),
     (Action::FocusFiles, "Focus files", None),

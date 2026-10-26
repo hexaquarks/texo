@@ -1,0 +1,116 @@
+use super::*;
+use crate::resume_label::{LabelColor, PRESET_LABELS, ResumeLabel};
+use ratatui::{Terminal, backend::TestBackend};
+
+const SCREEN: Rect = Rect::new(0, 0, 100, 30);
+
+fn key(app: &mut App, code: KeyCode) {
+    app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), SCREEN);
+}
+
+fn managed_application() -> anyhow::Result<(tempfile::TempDir, App)> {
+    let directory = tempfile::tempdir()?;
+    let project = resume_project::create(directory.path(), "General")?;
+    let app = App::with_workspace(
+        Editor::open(project.document())?,
+        Preview::default(),
+        directory.path().to_path_buf(),
+    )?;
+    Ok((directory, app))
+}
+
+#[test]
+fn custom_label_dialog_preserves_unsaved_history_review_and_concurrent_rename() -> anyhow::Result<()>
+{
+    let (_directory, mut app) = managed_application()?;
+    let root = app.session.editor.path.parent().unwrap().to_path_buf();
+    app.session.editor.text.insert_str("Unsaved edit ");
+    let source = app.session.editor.source();
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: source.clone(),
+        source_after: "Pending proposal".into(),
+    }));
+    app.perform_action(Action::LabelResume);
+    assert!(app.label_dialog.is_some());
+
+    for _ in 0..=PRESET_LABELS.len() {
+        key(&mut app, KeyCode::Down);
+    }
+    key(&mut app, KeyCode::Enter);
+    app.handle_event(Event::Paste("Systems engineer".into()), SCREEN);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Right);
+    resume_project::Project::load(&root)?.rename("Renamed elsewhere")?;
+    key(&mut app, KeyCode::Enter);
+
+    let expected = Some(ResumeLabel::new("Systems engineer", LabelColor::Teal)?);
+    let project = resume_project::Project::load(&root)?;
+    assert_eq!(project.manifest.label, expected);
+    assert_eq!(project.manifest.name, "Renamed elsewhere");
+    assert!(app.label_dialog.is_none());
+    assert_eq!(app.session.editor.source(), source);
+    assert!(app.session.proposal_review.is_some());
+    app.session.editor.text.undo();
+    assert_eq!(app.session.editor.source(), crate::editor::STARTER_DOCUMENT);
+
+    // A fresh application must recover both the custom name and its color.
+    let mut reopened = App::with_workspace(
+        Editor::open(project.document())?,
+        Preview::default(),
+        app.projects.root().to_path_buf(),
+    )?;
+    reopened.open_label_dialog();
+    key(&mut reopened, KeyCode::Enter);
+    key(&mut reopened, KeyCode::Enter);
+    assert!(reopened.label_dialog.is_none());
+    assert_eq!(
+        resume_project::Project::load(&root)?.manifest.label,
+        expected
+    );
+    Ok(())
+}
+
+#[test]
+fn label_shortcut_is_scoped_and_invalid_or_cancelled_labels_do_not_save() -> anyhow::Result<()> {
+    let (_directory, mut app) = managed_application()?;
+    let root = app.session.editor.path.parent().unwrap().to_path_buf();
+    key(&mut app, KeyCode::Char('l'));
+    assert!(app.label_dialog.is_none());
+    assert!(app.session.editor.source().starts_with('l'));
+
+    app.focus = Focus::Projects;
+    app.projects.files_focused = true;
+    key(&mut app, KeyCode::Char('l'));
+    assert!(app.label_dialog.is_none());
+    app.projects.files_focused = false;
+    key(&mut app, KeyCode::Char('l'));
+    assert!(app.label_dialog.is_some());
+    for _ in 0..=PRESET_LABELS.len() {
+        key(&mut app, KeyCode::Down);
+    }
+    key(&mut app, KeyCode::Enter);
+    app.handle_event(Event::Paste("one two three four".into()), SCREEN);
+    key(&mut app, KeyCode::Enter);
+    assert!(!app.label_dialog.as_ref().unwrap().error.is_empty());
+    assert!(
+        resume_project::Project::load(&root)?
+            .manifest
+            .label
+            .is_none()
+    );
+
+    for (width, height) in [(100, 30), (32, 10), (2, 2)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+        terminal.draw(|frame| app.draw(frame))?;
+    }
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::Esc);
+    assert!(app.label_dialog.is_none());
+    assert!(
+        resume_project::Project::load(&root)?
+            .manifest
+            .label
+            .is_none()
+    );
+    Ok(())
+}

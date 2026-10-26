@@ -4,7 +4,7 @@ use anyhow::Result;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Margin, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, List, ListItem, ListState, Paragraph},
 };
@@ -17,6 +17,7 @@ const SECTION_HEADER_GAP: u16 = 1;
 const FILES_LABEL_WIDTH: u16 = 6;
 const CONTENT_INSET: u16 = 1;
 const ITEM_HEIGHT: u16 = 1;
+const PROJECT_MARKER_WIDTH: u16 = 3;
 
 pub struct Projects {
     root: PathBuf,
@@ -102,13 +103,23 @@ impl Projects {
         if row < content.y || row >= content.bottom() {
             return false;
         }
-        let index = usize::from((row - content.y) / ITEM_HEIGHT) + self.state.offset();
-        if index >= self.catalog.projects.len() {
-            return false;
+        let mut item_row = content.y;
+        for (index, project) in self
+            .catalog
+            .projects
+            .iter()
+            .enumerate()
+            .skip(self.state.offset())
+        {
+            let height = project_height(project);
+            if row < item_row.saturating_add(height) {
+                self.state.select(Some(index));
+                self.files_focused = false;
+                return true;
+            }
+            item_row = item_row.saturating_add(height);
         }
-        self.state.select(Some(index));
-        self.files_focused = false;
-        true
+        false
     }
 
     pub fn new_button(area: Rect) -> Rect {
@@ -157,15 +168,38 @@ impl Projects {
             Self::new_button(resumes),
         );
 
+        let text_width = list_area(resumes)
+            .width
+            .saturating_sub(PROJECT_MARKER_WIDTH);
         let items: Vec<_> = self
             .catalog
             .projects
             .iter()
-            .map(|project| {
-                ListItem::new(Line::from(vec![
-                    Span::styled(" • ", Style::default().fg(theme::ACCENT)),
-                    Span::raw(project.manifest.name.clone()),
-                ]))
+            .enumerate()
+            .map(|(index, project)| {
+                let selected = self.state.selected() == Some(index);
+                let name_style = if selected {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let mut lines = vec![Line::from(vec![
+                    Span::styled(
+                        if selected { " ○ " } else { " ● " },
+                        Style::default().fg(theme::TEAL),
+                    ),
+                    Span::styled(sidebar_text(&project.manifest.name, text_width), name_style),
+                ])];
+                if let Some(label) = &project.manifest.label {
+                    lines.push(Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled(
+                            sidebar_text(&label.name, text_width),
+                            Style::default().fg(label.color.color()),
+                        ),
+                    ]));
+                }
+                ListItem::new(lines)
             })
             .collect();
         frame.render_stateful_widget(
@@ -180,6 +214,8 @@ impl Projects {
             format!("{} invalid projects · Actions", self.catalog.warnings.len())
         } else if self.catalog.projects.is_empty() {
             "No resumes yet".into()
+        } else if focused && !self.files_focused {
+            "l Label · + New".into()
         } else {
             String::new()
         };
@@ -234,6 +270,34 @@ impl Projects {
     }
 }
 
+fn sidebar_text(text: &str, width: u16) -> String {
+    let width = usize::from(width);
+    let span = Span::raw(text);
+    if span.width() <= width {
+        return text.into();
+    }
+    if width == 0 {
+        return String::new();
+    }
+
+    let mut result = String::new();
+    let mut used_width = 0;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let grapheme_width = Span::raw(grapheme.symbol).width();
+        if used_width + grapheme_width > width - 1 {
+            break;
+        }
+        result.push_str(grapheme.symbol);
+        used_width += grapheme_width;
+    }
+    result.push('…');
+    result
+}
+
+fn project_height(project: &Project) -> u16 {
+    ITEM_HEIGHT + u16::from(project.manifest.label.is_some())
+}
+
 fn list_area(area: Rect) -> Rect {
     let inner = area.inner(Margin::new(CONTENT_INSET, 1));
     let header = (HEADER_HEIGHT + SECTION_HEADER_GAP).min(inner.height);
@@ -248,6 +312,97 @@ fn list_area(area: Rect) -> Rect {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn colored_labels_use_a_second_row_and_mouse_selection_tracks_variable_heights() -> Result<()> {
+        use crate::resume_label::{LabelColor, ResumeLabel};
+
+        let workspace = tempfile::tempdir()?;
+        let first = resume_project::create(workspace.path(), "Alpha")?;
+        let mut second = resume_project::create(workspace.path(), "Beta")?;
+        second.set_label(Some(ResumeLabel::new("Backend", LabelColor::Teal)?))?;
+        let third = resume_project::create(workspace.path(), "Gamma")?;
+        let mut projects = Projects::new(workspace.path().to_path_buf(), &second.document())?;
+        let area = Rect::new(0, 0, 24, 18);
+        let mut terminal = Terminal::new(TestBackend::new(24, 18))?;
+        terminal
+            .draw(|frame| projects.draw(frame, area, Rect::default(), &second.document(), true))?;
+        let buffer = terminal.backend().buffer();
+        let name_row = list_area(area).y + ITEM_HEIGHT;
+        let label_row = name_row + ITEM_HEIGHT;
+        assert_eq!(buffer[(CONTENT_INSET + 3, label_row)].symbol(), "B");
+        assert_eq!(buffer[(CONTENT_INSET + 3, label_row)].fg, theme::TEAL);
+        assert_eq!(buffer[(CONTENT_INSET + 3, label_row)].bg, theme::SELECTION);
+        assert!(
+            buffer[(CONTENT_INSET + 3, name_row)]
+                .modifier
+                .contains(Modifier::BOLD)
+        );
+
+        assert!(projects.select_at(area, label_row));
+        assert_eq!(projects.selected_path(), Some(second.document()));
+        assert!(projects.select_at(area, label_row + ITEM_HEIGHT));
+        assert_eq!(projects.selected_path(), Some(third.document()));
+        assert!(projects.select_at(area, list_area(area).y));
+        assert_eq!(projects.selected_path(), Some(first.document()));
+
+        for index in 0..15 {
+            let mut project =
+                resume_project::create(workspace.path(), &format!("Project {index:02}"))?;
+            project.set_label(Some(ResumeLabel::new("Custom role", LabelColor::Lavender)?))?;
+        }
+        projects.refresh()?;
+        for _ in 0..20 {
+            projects.move_selection(true);
+        }
+        for size in [(24, 12), (12, 9), (2, 2)] {
+            let mut terminal = Terminal::new(TestBackend::new(size.0, size.1))?;
+            let area = Rect::new(0, 0, size.0, size.1);
+            terminal.draw(|frame| {
+                projects.draw(frame, area, Rect::default(), &first.document(), true)
+            })?;
+            if list_area(area).height > 0 {
+                let expected = projects.catalog.projects[projects.state.offset()].document();
+                assert!(projects.select_at(area, list_area(area).y));
+                assert_eq!(projects.selected_path(), Some(expected));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn narrow_sidebar_labels_keep_graphemes_and_show_ellipsis() -> Result<()> {
+        use crate::resume_label::{LabelColor, ResumeLabel};
+
+        let workspace = tempfile::tempdir()?;
+        let mut project = resume_project::create(workspace.path(), "Very long project name")?;
+        project.set_label(Some(ResumeLabel::new(
+            "Senior systems engineer",
+            LabelColor::Lavender,
+        )?))?;
+        let mut projects = Projects::new(workspace.path().to_path_buf(), &project.document())?;
+        let area = Rect::new(0, 0, 16, 14);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        terminal
+            .draw(|frame| projects.draw(frame, area, Rect::default(), &project.document(), true))?;
+        let buffer = terminal.backend().buffer();
+        let row_text = |row| {
+            (0..area.width)
+                .map(|column| buffer[(column, row)].symbol())
+                .collect::<String>()
+        };
+        assert_eq!(row_text(list_area(area).y), "  ○ Very long … ");
+        assert_eq!(
+            row_text(list_area(area).y + ITEM_HEIGHT),
+            "    Senior sys… "
+        );
+
+        assert_eq!(sidebar_text("李明工程师", 6), "李明…");
+        assert_eq!(sidebar_text("e\u{301}cole work", 5), "e\u{301}col…");
+        assert_eq!(sidebar_text("Role", 1), "…");
+        assert_eq!(sidebar_text("Role", 0), "");
+        Ok(())
+    }
 
     #[test]
     fn split_sidebar_keeps_selection_visible_without_keyboard_focus() -> Result<()> {
@@ -285,11 +440,11 @@ mod tests {
         assert!(rows[usize::from(files.y + 2)].trim().is_empty());
         assert_eq!(
             buffer[(CONTENT_INSET + 1, list_area(resumes).y)].symbol(),
-            "•"
+            "○"
         );
         assert_eq!(
             buffer[(CONTENT_INSET + 1, list_area(resumes).y)].fg,
-            theme::ACCENT
+            theme::TEAL
         );
         assert!(!text.contains("notes.tex") && !text.contains("main.pdf"));
         assert_eq!(

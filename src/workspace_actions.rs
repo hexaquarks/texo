@@ -297,6 +297,10 @@ impl App {
                 self.session.diagnostics = Some(self.projects.catalog.warnings.join("\n"));
                 return false;
             }
+            Action::LabelResume => {
+                self.open_label_dialog();
+                return false;
+            }
             Action::Settings => {
                 self.open_settings();
                 return false;
