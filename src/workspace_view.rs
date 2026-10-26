@@ -20,7 +20,7 @@ const EDITOR_PERCENT: u16 = 55;
 pub(super) const MIN_CHAT_HEIGHT: u16 = 11;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
 const REVIEW_CONTROLS_HEIGHT: u16 = 2;
-const REVIEW_BUTTON_WIDTH: u16 = 13;
+const REVIEW_BUTTON_WIDTH: u16 = 22;
 const PREVIEW_TAB_WIDTH: u16 = 13;
 
 impl App {
@@ -86,6 +86,14 @@ impl App {
                 ("r", "Resumes"),
                 ("f", "Files"),
                 ("s", "Settings"),
+                ("b", "Build"),
+                ("w", "Save"),
+                ("p", "Actions"),
+                ("e", "Export"),
+                ("c", "Cycle pane"),
+                ("v", "Refresh"),
+                ("[/]/D", "Scroll/close log"),
+                ("t", "Sidebar"),
             ];
             if self.focus == Focus::Assistant {
                 bindings.insert(0, ("u", "Maximize/restore"));
@@ -96,7 +104,7 @@ impl App {
             hint.extend(theme::shortcuts(&bindings).spans);
             hint
         } else {
-            theme::shortcuts(&[(&prefix, "Prefix"), ("?", "Settings")])
+            theme::shortcuts(&[(&prefix, "Prefix"), (&format!("{prefix} s"), "Settings")])
         };
         frame.render_widget(
             Paragraph::new(settings_hint)
@@ -106,7 +114,7 @@ impl App {
         );
 
         if let Some(menu) = &mut self.actions {
-            menu.draw(frame);
+            menu.draw(frame, &self.prefix.label());
         }
         if let Some(export) = &mut self.export {
             export.draw(frame);
@@ -128,7 +136,7 @@ impl App {
         if self.session.empty_workspace {
             let prompt = vec![
                 Line::from("Create a resume with +, or Import from Actions."),
-                theme::shortcuts(&[("Ctrl+P", "Actions")]),
+                theme::shortcuts(&[(&format!("{} p", self.prefix.label()), "Actions")]),
                 Line::from("Existing loose TeX files stay untouched."),
             ];
             frame.render_widget(
@@ -146,6 +154,25 @@ impl App {
             self.session
                 .editor
                 .draw(frame, area, self.focus == Focus::Editor);
+        }
+
+        if self.focus == Focus::Editor && self.session.proposal_review.is_none() && area.height > 2
+        {
+            let hints = theme::shortcuts(&[
+                ("Ctrl+Shift+A", "All"),
+                ("Ctrl+Z", "Undo"),
+                ("Ctrl+Y", "Redo"),
+                ("Shift+arrows", "Select"),
+            ]);
+            frame.render_widget(
+                Paragraph::new(hints).style(theme::muted()),
+                Rect::new(
+                    area.x + theme::PANEL_PADDING,
+                    area.bottom() - 1,
+                    area.width.saturating_sub(theme::PANEL_PADDING * 2),
+                    1,
+                ),
+            );
         }
 
         if !area.is_empty() {
@@ -207,11 +234,14 @@ impl App {
 
         if self.session.proposal_review.is_some() && !self.session.assistant.login_open() {
             for (button, label) in review_buttons(area).into_iter().zip([
-                ("F7", "Accept"),
-                ("F8", "Modify"),
-                ("F9", "Discard"),
+                (&format!("{} a", self.prefix.label()), "Accept"),
+                (&format!("{} m", self.prefix.label()), "Modify"),
+                (&format!("{} d", self.prefix.label()), "Discard"),
             ]) {
-                frame.render_widget(Paragraph::new(theme::shortcuts(&[label])), button);
+                frame.render_widget(
+                    Paragraph::new(theme::shortcuts(&[(label.0.as_str(), label.1)])),
+                    button,
+                );
             }
         }
     }
@@ -306,7 +336,13 @@ impl App {
     pub(super) fn draw_diagnostics(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
         if let Some(diagnostics) = &self.session.diagnostics {
             let mut title = Line::from(" Build diagnostics  ");
-            title.extend(theme::shortcuts(&[("PgUp/PgDn", "scroll"), ("Esc", "close")]).spans);
+            title.extend(
+                theme::shortcuts(&[
+                    (&format!("{} [/]", self.prefix.label()), "scroll"),
+                    (&format!("{} D", self.prefix.label()), "close"),
+                ])
+                .spans,
+            );
 
             let log = Paragraph::new(diagnostics.as_str())
                 .block(Block::default().title(title))

@@ -116,7 +116,7 @@ fn pane_selection_highlights_only_the_selected_border() -> anyhow::Result<()> {
     }
 
     app.focus = Focus::Editor;
-    app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+    app.handle_prefix_action(KeyCode::Char('c'), Rect::new(0, 0, 160, 45));
     terminal.draw(|frame| app.draw(frame))?;
     assert_eq!(
         terminal.backend().buffer()[(layout.assistant.x, layout.assistant.y)].fg,
@@ -161,7 +161,7 @@ fn narrow_layout_shows_each_focused_pane_and_tolerates_tiny_sizes() -> anyhow::R
         Focus::Projects,
         Focus::Editor,
     ] {
-        app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+        app.handle_prefix_action(KeyCode::Char('c'), Rect::new(0, 0, 160, 45));
         assert!(app.focus == expected);
     }
     Ok(())

@@ -220,10 +220,42 @@ fn export_rejects_stale_buffers_and_modal_typing_does_not_edit_source() -> anyho
 }
 
 #[test]
+fn application_actions_bypass_editor_shortcuts_and_use_the_configured_prefix() -> anyhow::Result<()>
+{
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    let source = app.session.editor.source();
+    app.perform_action(Action::FocusAssistant);
+    assert!(app.focus == Focus::Assistant);
+    app.perform_action(Action::FocusAssistant);
+    assert!(app.focus == Focus::Editor);
+    app.session.rendered_source = Some(source.clone());
+    app.session.rendered_pdf = Some(app.session.editor.path.with_extension("pdf"));
+    app.perform_action(Action::Export);
+    assert!(app.export.is_some());
+    app.export = None;
+    app.session.editor.text.insert_str("Saved through prefix ");
+    app.prefix = Prefix::new("ctrl+s")?;
+    for (code, modifiers) in [
+        (KeyCode::Char('s'), KeyModifiers::CONTROL),
+        (KeyCode::Char('w'), KeyModifiers::NONE),
+    ] {
+        app.handle_event(Event::Key(KeyEvent::new(code, modifiers)), area);
+    }
+    assert!(!app.session.editor.is_modified());
+    assert_eq!(
+        std::fs::read_to_string(&app.session.editor.path)?,
+        app.session.editor.source()
+    );
+    assert!(app.session.editor.source().ends_with(&source));
+    Ok(())
+}
+
+#[test]
 fn assistant_focus_keeps_chat_input_out_of_the_document() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     let original = app.session.editor.source();
-    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    app.handle_prefix_action(KeyCode::Char('c'), Rect::new(0, 0, 160, 50));
     app.handle_event(
         Event::Paste("Shorten these bullets".into()),
         Rect::new(0, 0, 160, 50),
@@ -808,5 +840,99 @@ fn restored_sizes_fit_smaller_terminals_without_overwriting_saved_dimensions() -
     }
 
     assert!(PaneSizes::load(&path) == sizes);
+    Ok(())
+}
+
+#[test]
+fn focused_editor_owns_typing_selection_navigation_and_history() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    app.session.diagnostics = Some("Build log".into());
+    let key = |app: &mut App, code, modifiers| {
+        app.handle_event(Event::Key(KeyEvent::new(code, modifiers)), area);
+    };
+
+    key(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
+    assert!(app.settings.is_none());
+    assert!(app.session.editor.source().starts_with('?'));
+    key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    key(
+        &mut app,
+        KeyCode::Left,
+        KeyModifiers::ALT | KeyModifiers::SHIFT,
+    );
+    assert!(app.session.editor.text.is_selecting());
+    assert!(app.focus == Focus::Editor);
+
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('X'), KeyModifiers::SHIFT);
+    assert_eq!(app.session.editor.source(), "X");
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!(app.session.editor.source().starts_with('?'));
+    key(
+        &mut app,
+        KeyCode::Char('z'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    key(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+    assert_eq!(app.session.editor.source(), "X");
+
+    app.prefix = Prefix::new("ctrl+a")?;
+    key(
+        &mut app,
+        KeyCode::Char('A'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert!(app.session.editor.text.is_selecting());
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!app.session.editor.text.is_selecting());
+    assert!(app.session.diagnostics.is_some());
+
+    app.session.editor.replace_source(&"line\n".repeat(100));
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    key(&mut app, KeyCode::Home, KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    assert!(app.session.editor.text.cursor().0 > 0);
+    assert_eq!(app.session.diagnostic_scroll, 0);
+    key(
+        &mut app,
+        KeyCode::End,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert_eq!(app.session.editor.text.cursor().0, 100);
+
+    let source = app.session.editor.source();
+    app.focus = Focus::Assistant;
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(app.session.editor.source(), source);
+    Ok(())
+}
+
+#[test]
+fn proposal_review_blocks_editor_commands_and_paste() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let source = app.session.editor.source();
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: source.clone(),
+        source_after: "Proposed".into(),
+    }));
+    let area = Rect::new(0, 0, 160, 45);
+
+    for event in [
+        Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        Event::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+        Event::Paste("Do not insert".into()),
+    ] {
+        app.handle_event(event, area);
+    }
+
+    assert_eq!(app.session.editor.source(), source);
+    assert!(!app.session.editor.text.is_selecting());
+    app.handle_prefix_action(KeyCode::Char('d'), area);
+    assert!(app.session.proposal_review.is_none());
+    assert_eq!(app.session.editor.source(), source);
     Ok(())
 }

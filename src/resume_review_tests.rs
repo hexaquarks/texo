@@ -24,7 +24,7 @@ fn startup_displays_pdf_and_manual_build_recovers_after_failure() -> anyhow::Res
     app.session.editor.replace_source(
         r"\documentclass{missing-texo-test-class}\begin{document}Invalid\end{document}",
     );
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_prefix_action(KeyCode::Char('b'), Rect::new(0, 0, 160, 45));
     assert!(finish_test_render(&mut app).is_err());
     assert!(
         app.session.diagnostics.is_some(),
@@ -41,7 +41,7 @@ fn startup_displays_pdf_and_manual_build_recovers_after_failure() -> anyhow::Res
     assert!(text.contains("missing-texo-test-class"));
 
     app.session.editor.replace_source(source);
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_prefix_action(KeyCode::Char('b'), Rect::new(0, 0, 160, 45));
     wait_for_visible_pdf(&mut app, &mut terminal)?;
     assert!(app.session.diagnostics.is_none());
     Ok(())
@@ -67,9 +67,9 @@ fn pending_review_protects_the_editor_and_exposes_controls() -> anyhow::Result<(
         .map(|cell| cell.symbol())
         .collect();
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(text.contains("F7 Accept"));
-    assert!(text.contains("F8 Modify"));
-    assert!(text.contains("F9 Discard"));
+    assert!(text.contains(&format!("{} a Accept", app.prefix.label())));
+    assert!(text.contains(&format!("{} m Modify", app.prefix.label())));
+    assert!(text.contains(&format!("{} d Discard", app.prefix.label())));
     assert!(text.contains("[ Current ]"));
     assert!(text.contains("[ Proposed ]"));
     assert!(text.contains("Changed bullet"));

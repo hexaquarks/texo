@@ -3,6 +3,7 @@ use std::{fs, io::ErrorKind, path::PathBuf, sync::OnceLock};
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Position, Rect},
     style::{Color, Style},
     widgets::{Block, Padding},
@@ -78,6 +79,55 @@ impl Editor {
 
     pub fn is_modified(&self) -> bool {
         self.saved_source.as_deref() != Some(self.source().as_str())
+    }
+
+    pub fn handle_key(&mut self, mut key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if let KeyCode::Char(character) = key.code {
+                key.code = KeyCode::Char(character.to_ascii_lowercase());
+            }
+
+            match key.code {
+                KeyCode::Char('a') => {
+                    self.text.select_all();
+                    return;
+                }
+                KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.text.redo();
+                    return;
+                }
+                KeyCode::Char('z') => {
+                    self.text.undo();
+                    return;
+                }
+                KeyCode::Char('y') => {
+                    self.text.redo();
+                    return;
+                }
+                KeyCode::Home | KeyCode::End => {
+                    // The component uses Ctrl+Alt+Up/Down for document boundaries.
+                    key.code = if key.code == KeyCode::Home {
+                        KeyCode::Up
+                    } else {
+                        KeyCode::Down
+                    };
+                    key.modifiers.insert(KeyModifiers::ALT);
+                }
+                _ => {}
+            }
+        } else if key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            // Accept terminal Option/Alt arrows as word motions, including selection.
+            key.modifiers.remove(KeyModifiers::ALT);
+            key.modifiers.insert(KeyModifiers::CONTROL);
+        }
+
+        if key.code == KeyCode::Esc {
+            self.text.cancel_selection();
+        } else {
+            self.text.input(key);
+        }
     }
 
     pub fn click(&mut self, area: Rect, column: u16, row: u16) {

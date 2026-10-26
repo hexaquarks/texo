@@ -65,24 +65,16 @@ const ACTIONS: [(Action, &str, Option<&str>); 22] = [
         None,
     ),
     (Action::WorkspaceWarnings, "Show workspace warnings", None),
-    (Action::Settings, "Settings", Some("?")),
-    (Action::Build, "Build PDF", Some("Ctrl+B")),
-    (Action::Export, "Export PDF", Some("Ctrl+E")),
-    (Action::Save, "Save TeX", Some("Ctrl+S")),
-    (
-        Action::ToggleProjects,
-        "Show / hide projects",
-        Some("Ctrl+T"),
-    ),
-    (Action::PreviousPage, "Previous PDF page", Some("Alt+Left")),
-    (Action::NextPage, "Next PDF page", Some("Alt+Right")),
-    (Action::ScrollUp, "Scroll PDF up", Some("Alt+Up")),
-    (Action::ScrollDown, "Scroll PDF down", Some("Alt+Down")),
-    (
-        Action::FocusAssistant,
-        "Focus assistant / editor",
-        Some("Ctrl+J"),
-    ),
+    (Action::Settings, "Settings", None),
+    (Action::Build, "Build PDF", None),
+    (Action::Export, "Export PDF", None),
+    (Action::Save, "Save TeX", None),
+    (Action::ToggleProjects, "Show / hide projects", None),
+    (Action::PreviousPage, "Previous PDF page", None),
+    (Action::NextPage, "Next PDF page", None),
+    (Action::ScrollUp, "Scroll PDF up", None),
+    (Action::ScrollDown, "Scroll PDF down", None),
+    (Action::FocusAssistant, "Focus assistant / editor", None),
     (Action::ReviewEdit, "Review suggested TeX edit", None),
     (Action::ClearChat, "Clear conversation", None),
     (Action::Quit, "Quit", Some("Ctrl+Q")),
@@ -127,14 +119,24 @@ impl ActionMenu {
         Some(self.selected())
     }
 
-    pub fn draw(&mut self, frame: &mut Frame) {
+    pub fn draw(&mut self, frame: &mut Frame, prefix: &str) {
         let area = menu_area(frame.area());
         frame.render_widget(Clear, area);
         let selected = self.state.selected();
         let rows = ACTIONS
             .iter()
             .enumerate()
-            .map(|(index, (_, description, shortcut))| {
+            .map(|(index, (action, description, shortcut))| {
+                let prefix_action = match action {
+                    Action::Settings => Some('s'),
+                    Action::Build => Some('b'),
+                    Action::Export => Some('e'),
+                    Action::Save => Some('w'),
+                    Action::ToggleProjects => Some('t'),
+                    _ => None,
+                };
+                let configured_shortcut = prefix_action.map(|key| format!("{prefix} {key}"));
+                let shortcut = configured_shortcut.as_deref().or(*shortcut);
                 let line = match shortcut {
                     Some(key) => theme::shortcuts(&[(key, description)]),
                     None => Line::from(format!(" {description}")),
@@ -293,16 +295,17 @@ mod tests {
             .unwrap();
         menu.state.select(Some(settings));
         let mut terminal = Terminal::new(TestBackend::new(80, 30))?;
-        terminal.draw(|frame| menu.draw(frame))?;
+        terminal.draw(|frame| menu.draw(frame, "ctrl-x"))?;
         let area = menu_area(terminal.backend().buffer().area);
         let row = area.y + 2 + settings as u16;
         let column = area.x + 2;
         let buffer = terminal.backend().buffer();
 
-        assert_eq!(buffer[(column + 1, row)].symbol(), "?");
+        assert_eq!(buffer[(column + 1, row)].symbol(), "c");
         assert_eq!(buffer[(column + 1, row)].bg, theme::KEYCAP);
-        assert_eq!(buffer[(column + 4, row)].symbol(), "S");
-        assert_eq!(buffer[(column + 4, row)].bg, theme::SELECTION);
+        let description_column = column + "ctrl-x s".len() as u16 + 3;
+        assert_eq!(buffer[(description_column, row)].symbol(), "S");
+        assert_eq!(buffer[(description_column, row)].bg, theme::SELECTION);
         Ok(())
     }
 
