@@ -1135,3 +1135,75 @@ fn editor_terminal_cursor_yields_to_dialogs_and_other_panes() -> anyhow::Result<
     );
     Ok(())
 }
+
+#[test]
+fn vim_objects_and_jumps_respect_focus_resume_sessions_prefixes_and_ai_review() -> anyhow::Result<()>
+{
+    use crate::config::{EditingMode, EditorPreferences};
+    use ratatui_textarea::CursorMove;
+
+    let (directory, mut app) = application()?;
+    app.apply_editor_preferences(EditorPreferences {
+        mode: EditingMode::Vim,
+        ..EditorPreferences::default()
+    });
+    let source = "first\nsecond\nthird\nfourth\n";
+    app.session.editor.replace_source(source);
+    app.session.editor.text.move_cursor(CursorMove::Jump(2, 1));
+    let first = app.session.editor.path.clone();
+    let area = Rect::new(0, 0, 160, 45);
+    let character = |app: &mut App, character, modifiers| {
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(character), modifiers)),
+            area,
+        );
+    };
+    for key in ['G', 'g', 'g'] {
+        character(&mut app, key, KeyModifiers::NONE);
+    }
+    assert_eq!(app.session.editor.text.cursor(), (0, 0));
+
+    app.open_document(directory.path().join("second.tex"));
+    character(&mut app, 'o', KeyModifiers::CONTROL);
+    app.open_document(first);
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: source.into(),
+        source_after: "Pending proposal".into(),
+    }));
+    for key in ['c', 'i', 'w'] {
+        character(&mut app, key, KeyModifiers::NONE);
+    }
+    character(&mut app, 'o', KeyModifiers::CONTROL);
+    assert_eq!(app.session.editor.source(), source);
+    assert_eq!(app.session.editor.text.cursor(), (0, 0));
+    pane_prefix(&mut app, 'd', KeyModifiers::NONE, area);
+    character(&mut app, 'o', KeyModifiers::CONTROL);
+    assert_eq!(app.session.editor.text.cursor(), (4, 0));
+    character(&mut app, 'o', KeyModifiers::CONTROL);
+    assert_eq!(app.session.editor.text.cursor(), (2, 1));
+
+    character(&mut app, 'c', KeyModifiers::NONE);
+    character(&mut app, 'i', KeyModifiers::NONE);
+    app.handle_event(Event::FocusLost, area);
+    character(&mut app, 'w', KeyModifiers::NONE);
+    assert_eq!(app.session.editor.source(), source);
+    app.focus = Focus::Assistant;
+    for key in ['c', 'i', 'w'] {
+        character(&mut app, key, KeyModifiers::NONE);
+    }
+    assert_eq!(app.session.assistant.input.lines(), &["ciw"]);
+    assert_eq!(app.session.editor.source(), source);
+
+    app.focus = Focus::Editor;
+    app.prefix = Prefix::new("ctrl+i")?;
+    let cursor = app.session.editor.text.cursor();
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        area,
+    );
+    assert!(app.prefix.armed);
+    assert_eq!(app.session.editor.text.cursor(), cursor);
+    character(&mut app, 'c', KeyModifiers::NONE);
+    assert!(app.focus == Focus::Assistant);
+    Ok(())
+}

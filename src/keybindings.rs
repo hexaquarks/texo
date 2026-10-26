@@ -89,7 +89,11 @@ impl Prefix {
             };
         }
 
-        if KeyCombination::from(event) == self.key {
+        // Traditional terminals report Ctrl+I as Tab. The configured prefix still owns that key.
+        let ctrl_i_alias = self.key == crokey::key!(ctrl - i)
+            && event.code == KeyCode::Tab
+            && event.modifiers.is_empty();
+        if KeyCombination::from(event) == self.key || ctrl_i_alias {
             self.armed = true;
             self.resize_repeat_until = None;
             return PrefixInput::Pending;

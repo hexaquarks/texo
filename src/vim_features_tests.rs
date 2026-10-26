@@ -153,6 +153,60 @@ fn failed_and_cancelled_objects_cannot_insert_command_keys() -> Result<()> {
 }
 
 #[test]
+fn jump_history_uses_ctrl_o_ctrl_i_and_tab_without_recording_ordinary_motions() -> Result<()> {
+    let source = "first\nsecond\nthird\nfourth\nfifth\n";
+    let mut editor = editor(source, 2, 2)?;
+    commands(&mut editor, "j");
+    control(&mut editor, 'o');
+    assert_eq!(editor.text.cursor(), (3, 2));
+    editor.text.move_cursor(CursorMove::Jump(2, 2));
+    commands(&mut editor, "Ggg");
+    assert_eq!(editor.text.cursor(), (0, 0));
+    control(&mut editor, 'o');
+    assert_eq!(editor.text.cursor(), (5, 0));
+    control(&mut editor, 'o');
+    assert_eq!(editor.text.cursor(), (2, 2));
+    control(&mut editor, 'o');
+    assert_eq!(editor.text.cursor(), (2, 2));
+    control(&mut editor, 'i');
+    assert_eq!(editor.text.cursor(), (5, 0));
+    editor.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(editor.text.cursor(), (0, 0));
+    assert_eq!(editor.source(), source);
+
+    commands(&mut editor, "i");
+    editor.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(editor.source().starts_with("    first"));
+    Ok(())
+}
+
+#[test]
+fn search_jumps_commit_one_origin_and_history_resets_for_replaced_documents() -> Result<()> {
+    let source = "target\nsecond\nthird\nfourth\nfifth\n";
+    let mut editor = editor(source, 3, 2)?;
+    editor.handle_key(KeyEvent::new(
+        KeyCode::Char('f'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    for character in "target".chars() {
+        editor.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(editor.text.cursor(), (0, 0));
+    control(&mut editor, 'o');
+    assert_eq!(editor.text.cursor(), (3, 2));
+    control(&mut editor, 'i');
+    assert_eq!(editor.text.cursor(), (0, 0));
+
+    editor.replace_source("Replaced document\n");
+    let cursor = editor.text.cursor();
+    control(&mut editor, 'o');
+    assert_eq!(editor.text.cursor(), cursor);
+    assert_eq!(editor.source(), "Replaced document\n");
+    Ok(())
+}
+
+#[test]
 fn ciw_saves_through_the_native_buffer_without_losing_trailing_newlines() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("resume.tex");
@@ -172,5 +226,26 @@ fn ciw_saves_through_the_native_buffer_without_losing_trailing_newlines() -> Res
     assert_eq!(fs::read_to_string(path)?, "one skill\n\n");
     commands(&mut editor, "uu");
     assert_eq!(editor.source(), source);
+    Ok(())
+}
+
+#[test]
+fn older_jumps_are_bounded_and_locations_clamp_after_text_is_deleted() -> Result<()> {
+    let source = "word\n".repeat(140);
+    let mut editor = editor(&source, 0, 0)?;
+    for row in 0..140 {
+        editor.text.move_cursor(CursorMove::Jump(row, 0));
+        commands(&mut editor, "G");
+    }
+    for _ in 0..150 {
+        control(&mut editor, 'o');
+    }
+    assert_eq!(editor.text.cursor(), (41, 0));
+
+    editor.text.select_all();
+    editor.text.insert_str("李");
+    control(&mut editor, 'i');
+    assert_eq!(editor.text.cursor(), (0, 0));
+    assert_eq!(editor.source(), "李");
     Ok(())
 }

@@ -7,9 +7,12 @@ use ratatui_textarea::{CursorMove, DataCursor, Scrolling, TextArea};
 
 use super::clipboard::ClipboardAction;
 
+#[path = "vim_jumps.rs"]
+mod jumps;
 #[path = "vim_objects.rs"]
 mod objects;
 
+use jumps::JumpList;
 use objects::{ObjectRange, ObjectScope, text_object};
 
 #[derive(Clone, Copy)]
@@ -61,6 +64,7 @@ pub(super) enum VimInput {
 pub(super) struct Vim {
     pub(super) mode: Mode,
     pending: Option<Pending>,
+    jumps: JumpList,
     operator: Option<Operator>,
 }
 
@@ -111,6 +115,17 @@ impl Vim {
         }
         if self.mode == Mode::Insert {
             return VimInput::Insert;
+        }
+
+        if self.mode == Mode::Normal
+            && key.code == KeyCode::Tab
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+        {
+            self.cancel_pending(text);
+            self.visit_jump(text, false);
+            return VimInput::Consumed;
         }
 
         if key
@@ -239,6 +254,32 @@ impl Vim {
         Self::jump(text, range.end);
     }
 
+    pub(super) fn record_jump(&mut self, from: DataCursor, to: DataCursor) {
+        self.jumps.record(from, to);
+    }
+
+    pub(super) fn clear_jump_history(&mut self) {
+        self.jumps = JumpList::default();
+    }
+
+    fn document_jump(&mut self, text: &mut TextArea<'static>, motion: CursorMove) {
+        let from = text.cursor();
+        text.move_cursor(motion);
+        self.record_jump(from, text.cursor());
+    }
+
+    fn visit_jump(&mut self, text: &mut TextArea<'static>, older: bool) {
+        let target = if older {
+            self.jumps.older(text.cursor())
+        } else {
+            self.jumps.newer()
+        };
+        if let Some(target) = target {
+            text.cancel_selection();
+            Self::jump(text, target);
+        }
+    }
+
     fn finish_operator(&mut self, operator: Operator) -> VimInput {
         self.operator = None;
         self.pending = None;
@@ -292,9 +333,9 @@ impl Vim {
         text: &mut TextArea<'static>,
     ) -> VimInput {
         match code {
-            KeyCode::Char('g') if was_pending_g => text.move_cursor(CursorMove::Top),
+            KeyCode::Char('g') if was_pending_g => self.document_jump(text, CursorMove::Top),
             KeyCode::Char('g') => self.pending = Some(Pending::GoToTop),
-            KeyCode::Char('G') => text.move_cursor(CursorMove::Bottom),
+            KeyCode::Char('G') => self.document_jump(text, CursorMove::Bottom),
             KeyCode::Char('i' | 'a' | 'I' | 'A' | 'o' | 'O') if self.mode == Mode::Normal => {
                 self.enter_insert(code, text);
             }
@@ -414,6 +455,8 @@ impl Vim {
         }
 
         match key.code {
+            KeyCode::Char('o') if self.mode == Mode::Normal => self.visit_jump(text, true),
+            KeyCode::Char('i') if self.mode == Mode::Normal => self.visit_jump(text, false),
             KeyCode::Char('e') => text.scroll((1, 0)),
             KeyCode::Char('y') => text.scroll((-1, 0)),
             KeyCode::Char('d') => text.scroll(Scrolling::HalfPageDown),

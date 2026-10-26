@@ -139,7 +139,7 @@ impl Editor {
         }
 
         if self.search.open {
-            self.search.handle_key(key, &mut self.text);
+            self.handle_search_key(key);
             return;
         }
 
@@ -199,6 +199,21 @@ impl Editor {
         }
 
         self.handle_standard_key(key);
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        let before = self.text.cursor();
+        self.search.handle_key(key, &mut self.text);
+
+        // Incremental query updates are one search, rather than a jump for every typed character.
+        let navigated = matches!(key.code, KeyCode::Enter | KeyCode::Esc)
+            || (key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL));
+        if navigated {
+            let from = self.search.take_jump_origin().unwrap_or(before);
+            if let Some(vim) = &mut self.vim {
+                vim.record_jump(from, self.text.cursor());
+            }
+        }
     }
 
     fn handle_editor_command(&mut self, key: KeyEvent) -> bool {
@@ -485,6 +500,9 @@ impl Editor {
 
         self.cancel_pending_commands();
         self.end_drag();
+        if let Some(vim) = &mut self.vim {
+            vim.clear_jump_history();
+        }
         self.text.select_all();
         self.text.insert_str(source);
         true

@@ -5,7 +5,7 @@ use ratatui::{
     style::Style,
     widgets::Paragraph,
 };
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{DataCursor, TextArea};
 use texo::theme;
 
 const SEARCH_LABEL_WIDTH: u16 = 6;
@@ -15,6 +15,7 @@ pub(super) struct Search {
     input: TextArea<'static>,
     pub(super) open: bool,
     notice: &'static str,
+    jump_origin: Option<DataCursor>,
 }
 
 impl Default for Search {
@@ -29,6 +30,7 @@ impl Default for Search {
             input,
             open: false,
             notice: "",
+            jump_origin: None,
         }
     }
 }
@@ -38,6 +40,11 @@ impl Search {
         text.cancel_selection();
         self.input.select_all();
         self.open = true;
+        self.jump_origin = Some(text.cursor());
+    }
+
+    pub(super) fn take_jump_origin(&mut self) -> Option<DataCursor> {
+        self.jump_origin.take()
     }
 
     pub(super) fn handle_key(&mut self, key: KeyEvent, text: &mut TextArea<'static>) {

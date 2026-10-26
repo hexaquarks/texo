@@ -70,6 +70,19 @@ Word objects handle Unicode letters and combining marks. Around-word objects pre
 space, otherwise leading space. Brackets and braces nest and can span source lines; escaped
 delimiters are skipped. Quote objects stay on one line and skip escaped quotes.
 
+### Jump history
+
+In Normal mode, **Ctrl+O** visits an older jump and **Ctrl+I** visits a newer one. Traditional
+terminals send Ctrl+I as **Tab**, so Tab also moves forward in Normal mode. Tab keeps inserting
+text in Standard and Insert modes. The configured application prefix takes precedence.
+
+`gg`, `G`, and search navigation record jumps. Typing a search query records one starting location
+when you navigate or close the search, rather than one entry per keystroke. Ordinary arrow and
+`h/j/k/l` movement does not add entries. Each résumé keeps up to 100 locations during the session.
+Switching résumés preserves its history; accepting an AI replacement or reloading source clears it.
+Locations are saved coordinates, clamped after edits if needed, rather than marks that follow
+inserted or deleted text. History does not navigate between résumés.
+
 `c/cc/C/S` enter Insert mode; deletes and yanks return to Normal. Yanks and cuts also attempt a
 system clipboard copy. The standard clipboard alternatives above work in Vim mode.
 Pending commands clear on Escape, focus changes, prefix commands, résumé switches, and AI edits.
