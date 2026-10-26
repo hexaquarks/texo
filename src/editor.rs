@@ -175,7 +175,7 @@ impl Editor {
         if clipboard_shortcut {
             self.cancel_pending_commands();
             if let Some(vim) = &mut self.vim
-                && vim.mode == vim::Mode::Visual
+                && vim.is_visual()
             {
                 vim.mode = vim::Mode::Normal;
             }
@@ -338,6 +338,9 @@ impl Editor {
                     .selection_range()
                     .is_some_and(|(from, to)| from != to)
                 {
+                    if let Some(vim) = &mut self.vim {
+                        vim.finish_clipboard(&mut self.text);
+                    }
                     return;
                 }
 
@@ -345,6 +348,10 @@ impl Editor {
                     self.text.cut();
                 } else {
                     self.text.copy();
+                }
+
+                if let Some(vim) = &mut self.vim {
+                    vim.finish_clipboard(&mut self.text);
                 }
 
                 self.notice = if self.clipboard.write(self.text.yank_text()).is_err() {
@@ -1264,7 +1271,7 @@ mod vim_editing_tests {
         editor.text.move_cursor(CursorMove::Jump(0, 0));
         commands(&mut editor, "cc");
         assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Insert);
-        editor.paste_text("Replacement\n");
+        editor.paste_text("Replacement");
         editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         editor.save()?;
         assert_eq!(fs::read_to_string(path)?, "Replacement\nSecond\n\n");

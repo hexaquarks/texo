@@ -249,3 +249,56 @@ fn older_jumps_are_bounded_and_locations_clamp_after_text_is_deleted() -> Result
     assert_eq!(editor.source(), "李");
     Ok(())
 }
+
+#[test]
+fn visual_line_keeps_whole_source_lines_selected_in_both_directions() -> Result<()> {
+    let source = "first\n\\section{Résumé 李 with a long wrapped heading}\nthird\nfourth\n";
+    let mut editor = editor(source, 1, 15)?;
+    let mut terminal = Terminal::new(TestBackend::new(22, 14))?;
+    terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+
+    commands(&mut editor, "V");
+    assert_eq!(editor.text.selection_range(), Some(((1, 0), (1, 46))));
+    commands(&mut editor, "k");
+    assert_eq!(editor.text.selection_range(), Some(((0, 0), (1, 46))));
+    terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+    assert_eq!(editor.source(), source);
+
+    commands(&mut editor, "jj");
+    assert_eq!(editor.text.selection_range(), Some(((1, 0), (2, 5))));
+    commands(&mut editor, "y");
+    assert_eq!(
+        editor.text.yank_text(),
+        "\\section{Résumé 李 with a long wrapped heading}\nthird\n"
+    );
+    assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Normal);
+    assert_eq!(editor.text.cursor(), (1, 0));
+    assert_eq!(editor.source(), source);
+    Ok(())
+}
+
+#[test]
+fn visual_line_delete_change_and_linewise_paste_match_source_line_operations() -> Result<()> {
+    let mut editor = editor("first\nsecond\nthird\n", 1, 3)?;
+    commands(&mut editor, "Vkd");
+    assert_eq!(editor.source(), "third\n");
+    assert_eq!(editor.text.yank_text(), "first\nsecond\n");
+    commands(&mut editor, "p");
+    assert_eq!(editor.source(), "third\nfirst\nsecond\n");
+    commands(&mut editor, "uu");
+    assert_eq!(editor.source(), "first\nsecond\nthird\n");
+
+    editor.text.move_cursor(CursorMove::Jump(1, 2));
+    commands(&mut editor, "Vjc");
+    editor.paste_text("replacement");
+    editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(editor.source(), "first\nreplacement\n");
+    assert_eq!(editor.text.cursor(), (1, 10));
+
+    let mut last = self::editor("first\nlast", 1, 2)?;
+    commands(&mut last, "dd");
+    assert_eq!(last.source(), "first");
+    commands(&mut last, "p");
+    assert_eq!(last.source(), "first\nlast");
+    Ok(())
+}
