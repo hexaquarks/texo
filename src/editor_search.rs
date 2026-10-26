@@ -5,7 +5,7 @@ use ratatui::{
     style::Style,
     widgets::Paragraph,
 };
-use ratatui_textarea::{DataCursor, TextArea};
+use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 use texo::theme;
 
 const SEARCH_LABEL_WIDTH: u16 = 6;
@@ -16,6 +16,12 @@ pub(super) struct Search {
     pub(super) open: bool,
     notice: &'static str,
     jump_origin: Option<DataCursor>,
+    vim_prompt: bool,
+    backwards: bool,
+    previous_pattern: String,
+    previous_query: String,
+    previous_backwards: bool,
+    vim_edited: bool,
 }
 
 impl Default for Search {
@@ -31,16 +37,41 @@ impl Default for Search {
             open: false,
             notice: "",
             jump_origin: None,
+            vim_prompt: false,
+            backwards: false,
+            previous_pattern: String::new(),
+            previous_query: String::new(),
+            previous_backwards: false,
+            vim_edited: false,
         }
     }
 }
 
 impl Search {
     pub(super) fn start(&mut self, text: &mut TextArea<'static>) {
+        self.vim_prompt = false;
         text.cancel_selection();
         self.input.select_all();
         self.open = true;
         self.jump_origin = Some(text.cursor());
+    }
+
+    pub(super) fn start_vim(&mut self, text: &mut TextArea<'static>, backwards: bool) {
+        self.start(text);
+        self.vim_prompt = true;
+        self.vim_edited = false;
+        self.previous_query = self.input.lines().join("");
+        self.previous_backwards = self.backwards;
+        self.backwards = backwards;
+        self.previous_pattern = text
+            .search_pattern()
+            .map_or_else(String::new, |pattern| pattern.as_str().to_owned());
+    }
+
+    pub(super) fn repeat_vim(&mut self, text: &mut TextArea<'static>, reverse: bool, count: usize) {
+        for _ in 0..count {
+            self.find(text, self.backwards != reverse, false);
+        }
     }
 
     pub(super) fn take_jump_origin(&mut self) -> Option<DataCursor> {
@@ -49,6 +80,27 @@ impl Search {
 
     pub(super) fn handle_key(&mut self, key: KeyEvent, text: &mut TextArea<'static>) {
         match key.code {
+            KeyCode::Enter if self.vim_prompt => {
+                if !self.vim_edited {
+                    self.find(text, self.backwards, false);
+                }
+                self.open = false;
+                self.vim_prompt = false;
+            }
+            KeyCode::Esc if self.vim_prompt => {
+                self.open = false;
+                self.vim_prompt = false;
+                let _ = text.set_search_pattern(&self.previous_pattern);
+                self.backwards = self.previous_backwards;
+                self.input.select_all();
+                self.input.insert_str(&self.previous_query);
+                if let Some(origin) = self.jump_origin {
+                    text.move_cursor(CursorMove::Jump(
+                        u16::try_from(origin.0).unwrap_or(u16::MAX),
+                        u16::try_from(origin.1).unwrap_or(u16::MAX),
+                    ));
+                }
+            }
             KeyCode::Esc => {
                 self.open = false;
                 self.notice = "";
@@ -77,6 +129,7 @@ impl Search {
     }
 
     fn update_pattern(&mut self, text: &mut TextArea<'static>) {
+        self.vim_edited = true;
         let query = self.input.lines().join("");
         if text.set_search_pattern(regex::escape(&query)).is_err() {
             let _ = text.set_search_pattern("");
@@ -84,7 +137,15 @@ impl Search {
             return;
         }
 
-        self.find(text, false, true);
+        if self.vim_prompt
+            && let Some(origin) = self.jump_origin
+        {
+            text.move_cursor(CursorMove::Jump(
+                u16::try_from(origin.0).unwrap_or(u16::MAX),
+                u16::try_from(origin.1).unwrap_or(u16::MAX),
+            ));
+        }
+        self.find(text, self.vim_prompt && self.backwards, !self.vim_prompt);
     }
 
     pub(super) fn find(
@@ -113,13 +174,20 @@ impl Search {
             Constraint::Length(SEARCH_HINT_WIDTH.min(area.width / 2)),
         ])
         .areas(area);
-        frame.render_widget(Paragraph::new("Find: ").style(theme::muted()), label);
+        let prompt = if self.vim_prompt {
+            if self.backwards { "? " } else { "/ " }
+        } else {
+            "Find: "
+        };
+        frame.render_widget(Paragraph::new(prompt).style(theme::muted()), label);
         frame.render_widget(&self.input, input);
         if focused {
             crate::terminal::show_text_cursor(frame, &self.input, input);
         }
         let hint_text = if !self.notice.is_empty() {
             self.notice
+        } else if focused && self.vim_prompt {
+            "Enter confirm · Esc cancel"
         } else if focused {
             "Enter/⇧Enter next/prev · Esc end"
         } else {

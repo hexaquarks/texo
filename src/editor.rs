@@ -24,12 +24,15 @@ use texo::theme;
 
 #[path = "editor_clipboard.rs"]
 mod clipboard;
+#[path = "vim_repeat.rs"]
+mod repeat;
 #[path = "editor_search.rs"]
 mod search;
 #[path = "editor_vim.rs"]
 mod vim;
 
 use clipboard::{ClipboardAccess, ClipboardAction, SystemClipboard};
+use repeat::{EditInput, Repeat};
 use search::Search;
 use vim::{Vim, VimInput};
 
@@ -55,6 +58,7 @@ pub struct Editor {
     clipboard: Box<dyn ClipboardAccess>,
     notice: String,
     vim: Option<Vim>,
+    repeat: Repeat,
 }
 
 impl Editor {
@@ -100,6 +104,7 @@ impl Editor {
             clipboard: Box::<SystemClipboard>::default(),
             notice: String::new(),
             vim: None,
+            repeat: Repeat::default(),
         })
     }
 
@@ -120,6 +125,7 @@ impl Editor {
             EditingMode::Standard if self.vim.is_some() => {
                 self.text.cancel_selection();
                 self.vim = None;
+                self.repeat = Repeat::default();
             }
             _ => {}
         }
@@ -131,7 +137,59 @@ impl Editor {
         });
     }
 
-    pub fn handle_key(&mut self, mut key: KeyEvent) {
+    pub fn handle_key(&mut self, key: KeyEvent) {
+        if !self.search.open
+            && let Some(vim) = &mut self.vim
+            && let Some(count) = vim.repeat_count(key)
+        {
+            let inputs = self.repeat.for_count(count);
+            self.repeat.cancel();
+            for input in &inputs {
+                match input {
+                    EditInput::Key(key) => self.handle_key_inner(*key),
+                    EditInput::Paste(text) => self.paste_text_inner(text),
+                }
+            }
+            return;
+        }
+
+        let normal = self
+            .vim
+            .as_ref()
+            .is_some_and(|vim| vim.mode == vim::Mode::Normal);
+        let history_command = normal
+            && (key.code == KeyCode::Char('u')
+                || (key.code == KeyCode::Char('r')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)));
+        if history_command {
+            self.repeat.cancel();
+        }
+        let recording = !self.search.open
+            && !history_command
+            && self.vim.as_ref().is_some_and(|vim| {
+                !vim.is_visual() && (vim.mode != vim::Mode::Insert || self.repeat.is_recording())
+            });
+        let before = recording.then(|| self.source());
+        self.handle_key_inner(key);
+        if let Some(before) = before {
+            self.record_vim_edit(EditInput::Key(key), before);
+        }
+    }
+
+    fn record_vim_edit(&mut self, input: EditInput, before: String) {
+        let Some(vim) = &self.vim else {
+            return;
+        };
+        if vim.is_visual() || self.search.open {
+            self.repeat.cancel();
+            return;
+        }
+        let finished = vim.mode != vim::Mode::Insert && !vim.command_pending();
+        let changed = self.source() != before;
+        self.repeat.record(input, changed, finished);
+    }
+
+    fn handle_key_inner(&mut self, mut key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && let KeyCode::Char(character) = key.code
         {
@@ -177,7 +235,7 @@ impl Editor {
             if let Some(vim) = &mut self.vim
                 && vim.is_visual()
             {
-                vim.mode = vim::Mode::Normal;
+                vim.leave_visual();
             }
             self.handle_editor_command(key);
             return;
@@ -188,6 +246,19 @@ impl Editor {
                 VimInput::Consumed => return,
                 VimInput::Clipboard(action) => {
                     self.clipboard_action(action);
+                    return;
+                }
+                VimInput::Search(backwards) => {
+                    self.cancel_pending_commands();
+                    self.search.start_vim(&mut self.text, backwards);
+                    return;
+                }
+                VimInput::SearchNext { reverse, count } => {
+                    let from = self.text.cursor();
+                    self.search.repeat_vim(&mut self.text, reverse, count);
+                    if let Some(vim) = &mut self.vim {
+                        vim.record_jump(from, self.text.cursor());
+                    }
                     return;
                 }
                 VimInput::Insert => {}
@@ -315,16 +386,36 @@ impl Editor {
     }
 
     pub fn paste_text(&mut self, text: &str) {
+        let recording = !self.search.open
+            && self
+                .vim
+                .as_ref()
+                .is_some_and(|vim| vim.mode != vim::Mode::Insert || self.repeat.is_recording());
+        let before = recording.then(|| self.source());
+        self.paste_text_inner(text);
+        if let Some(before) = before {
+            self.record_vim_edit(EditInput::Paste(text.to_owned()), before);
+        }
+    }
+
+    fn paste_text_inner(&mut self, text: &str) {
         if self.search.open {
             self.search.paste(text, &mut self.text);
         } else {
-            // Bracketed paste is literal text in every mode, never a sequence of commands.
-            self.cancel_pending_commands();
+            // Bracketed paste is literal text; keep an active Insert session's repeat recording.
+            if self
+                .vim
+                .as_ref()
+                .is_none_or(|vim| vim.mode != vim::Mode::Insert)
+            {
+                self.cancel_pending_commands();
+            }
             self.text.insert_str(text);
         }
     }
 
     pub fn cancel_pending_commands(&mut self) {
+        self.repeat.cancel();
         if let Some(vim) = &mut self.vim {
             vim.cancel_pending(&mut self.text);
         }
@@ -506,9 +597,10 @@ impl Editor {
         }
 
         self.cancel_pending_commands();
+        self.repeat = Repeat::default();
         self.end_drag();
         if let Some(vim) = &mut self.vim {
-            vim.clear_jump_history();
+            vim.reset_document_state();
         }
         self.text.select_all();
         self.text.insert_str(source);
@@ -1286,7 +1378,7 @@ mod vim_editing_tests {
         let mut editor = vim_editor(path)?;
         editor.text.move_cursor(CursorMove::Jump(0, 2));
         commands(&mut editor, "cw");
-        editor.paste_text("CV ");
+        editor.paste_text("CV");
         editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(editor.source(), "李 CV words\n");
 

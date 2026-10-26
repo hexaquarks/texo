@@ -41,14 +41,27 @@ Search works within individual source lines; newlines pasted into the query beco
 
 | Mode | Commands |
 | --- | --- |
-| Normal and Visual | `h/j/k/l`, arrows, `w/b/e`, `0/^/$`, Home/End, `gg/G`, Page Up/Down |
-| Normal | `i/a/I/A/o/O` enter Insert; `v` enters Visual; `V` initially selects the current source line |
+| Normal and Visual | `h/j/k/l`, arrows, `w/b/e`, `W/B/E`, `0/^/$`, Home/End, `gg/G`, Page Up/Down |
+| Normal | `i/a/I/A/o/O` enter Insert; `v` enters Visual; `V` enters Visual Line; `j/k` extend/shrink the selection by whole source lines |
 | Insert | Ordinary editor input; Escape, Ctrl+[ or Ctrl+C returns to Normal |
 | Normal | `d/c/y` followed by a supported motion, text object, `gg`, or `G`; `dd/cc/yy` operate on a whole source line |
-| Normal | `x` deletes the character under the cursor |
+| Normal | `x` deletes characters; `r` replaces characters; `s` substitutes characters and enters Insert |
 | Visual | `d/c/y` deletes, changes, or yanks the inclusive character range in either direction; `v` or Escape cancels |
-| Normal and Visual | `D/C` delete/change to line end; `S` changes the current line; `D/C/S` act on the selected range in Visual; `J` joins lines; `p` pastes the internal yank buffer at the cursor; `u` undoes; Ctrl+R redoes |
+| Normal and Visual | `D/C` delete/change to line end; `S` changes the current line; `D/C/S` act on the selected range in Visual; `J` joins lines; `p/P` paste after/before the cursor (or below/above for linewise yanks); `u` undoes; Ctrl+R redoes |
 | Normal and Visual | Ctrl+E/Y scroll one row, Ctrl+D/U half a page, Ctrl+F/B a page |
+
+Counts work with motions, operators, find commands, line operations, character edits, paste, and
+Normal-mode undo: for example `3j`, `2dd`, `d2j`, `2d3w`, `3G`, and `2rX`. Counts are bounded by
+the component's 16-bit cursor coordinates. `f/F/t/T` find a character on the source line;
+`;` repeats that find and `,` reverses it. `Y` yanks whole lines.
+
+`/` and `?` open forward/backward **literal** search. Enter confirms, Escape restores the previous
+cursor and search, and `n/N` repeat in the same/opposite direction. Search uses the component's
+existing search engine and records jump history.
+
+`.` repeats the last completed Normal-mode edit, including its Insert session or bracketed paste.
+A count on `.` replaces the original command count. Focus changes cancel incomplete recordings;
+replacing the document clears repeat state. Visual edits are not recorded for dot repeat.
 
 ### Text objects
 
@@ -88,15 +101,18 @@ system clipboard copy. The standard clipboard alternatives above work in Vim mod
 Pending commands clear on Escape, focus changes, prefix commands, résumé switches, and AI edits.
 Unrecognized commands are consumed without inserting them into the source.
 
-This is a small adapter of the upstream example, not full Vim compatibility. Motions use the
-component's behavior: `j/k` follow wrapped display rows, `^` means column zero, `gg/G` retain the
-column where possible, and `h/l` can cross line boundaries. Yanking leaves the cursor at the
-selection endpoint. Whole-line operators include the following newline when it exists; `cc`
-removes that line before entering Insert. `V` does not implement Vim's full Visual Line mode.
-Undo follows component transactions; replacing a selection, including accepting AI edits, may require
-two undos. Counts, registers, sentence/paragraph/tag objects, repeated Visual-object expansion, dot repeat,
-replace modes, and Ex commands are unsupported. Delimiter objects use matching characters rather
-than a TeX parser.
+This is a bounded Vim adapter, not full Vim compatibility. `j/k` move by source lines across
+soft wrapping; `h/l` stay within a line, `^/I` use the first nonblank character, and `gg/G` target
+source lines rather than the textarea's trailing-newline row. `V` retains a whole-line anchor
+when extending, shrinking, or reversing the selection. `cw` leaves following whitespace intact;
+`cc` leaves a line to replace. Source text, selection, rendering, and history remain owned by
+ratatui-textarea.
+
+Undo follows component transactions: an Insert session, selection replacement, or AI replacement
+may require multiple undos. Counts on Insert commands/text objects, Visual dot repeat, named
+registers, macros, marks, Visual Block, replace mode, paragraph/sentence/tag objects, indentation
+operators, and Ex commands are outside this subset. Delimiter objects use matching characters
+rather than a TeX parser.
 
 Mouse selection does not scroll beyond the viewport while dragging. Terminal support determines
 which modified shortcuts are distinguishable; the configured prefix always takes precedence.

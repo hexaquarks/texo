@@ -1178,7 +1178,7 @@ fn vim_objects_and_jumps_respect_focus_resume_sessions_prefixes_and_ai_review() 
     assert_eq!(app.session.editor.text.cursor(), (0, 0));
     pane_prefix(&mut app, 'd', KeyModifiers::NONE, area);
     character(&mut app, 'o', KeyModifiers::CONTROL);
-    assert_eq!(app.session.editor.text.cursor(), (4, 0));
+    assert_eq!(app.session.editor.text.cursor(), (3, 0));
     character(&mut app, 'o', KeyModifiers::CONTROL);
     assert_eq!(app.session.editor.text.cursor(), (2, 1));
 
@@ -1205,5 +1205,63 @@ fn vim_objects_and_jumps_respect_focus_resume_sessions_prefixes_and_ai_review() 
     assert_eq!(app.session.editor.text.cursor(), cursor);
     character(&mut app, 'c', KeyModifiers::NONE);
     assert!(app.focus == Focus::Assistant);
+    Ok(())
+}
+
+#[test]
+fn vim_line_selection_and_pending_commands_remain_scoped_to_the_resume() -> anyhow::Result<()> {
+    use crate::config::{EditingMode, EditorPreferences};
+    use ratatui_textarea::CursorMove;
+
+    let (directory, mut app) = application()?;
+    app.apply_editor_preferences(EditorPreferences {
+        mode: EditingMode::Vim,
+        ..EditorPreferences::default()
+    });
+    let source = "first\nsecond\nthird\nfourth\n";
+    app.session.editor.replace_source(source);
+    app.session.editor.text.move_cursor(CursorMove::Jump(1, 3));
+    let first = app.session.editor.path.clone();
+    let area = Rect::new(0, 0, 100, 30);
+    let key = |app: &mut App, character| {
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+            area,
+        );
+    };
+    key(&mut app, 'V');
+    key(&mut app, 'k');
+    let selection = app.session.editor.text.selection_range();
+
+    app.open_document(directory.path().join("second.tex"));
+    app.open_document(first);
+    assert_eq!(app.session.editor.text.selection_range(), selection);
+    key(&mut app, 'd');
+    assert_eq!(app.session.editor.source(), "third\nfourth\n");
+    key(&mut app, 'u');
+    assert_eq!(app.session.editor.source(), source);
+
+    for character in ['2', 'd', 'f'] {
+        key(&mut app, character);
+    }
+    app.handle_event(Event::FocusLost, area);
+    key(&mut app, 'l');
+    assert_eq!(app.session.editor.source(), source);
+    assert!(!app.session.editor.text.is_selecting());
+
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: source.into(),
+        source_after: "Pending AI proposal".into(),
+    }));
+    for character in ['.', 'V', 'k', 'd'] {
+        key(&mut app, character);
+    }
+    assert_eq!(app.session.editor.source(), source);
+    assert!(app.session.proposal_review.is_some());
+
+    app.focus = Focus::Assistant;
+    key(&mut app, '.');
+    assert_eq!(app.session.assistant.input.lines(), &["."]);
+    assert_eq!(app.session.editor.source(), source);
     Ok(())
 }

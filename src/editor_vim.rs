@@ -9,6 +9,8 @@ use super::clipboard::ClipboardAction;
 
 #[path = "vim_jumps.rs"]
 mod jumps;
+#[path = "vim_motions.rs"]
+mod motions;
 #[path = "vim_objects.rs"]
 mod objects;
 
@@ -19,6 +21,14 @@ use objects::{ObjectRange, ObjectScope, text_object};
 enum Pending {
     GoToTop,
     Object(ObjectScope),
+    Find(FindMotion),
+    Replace,
+}
+
+#[derive(Clone, Copy)]
+struct FindMotion {
+    forward: bool,
+    till: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -59,17 +69,21 @@ pub(super) enum VimInput {
     Consumed,
     Insert,
     Clipboard(ClipboardAction),
+    Search(bool),
+    SearchNext { reverse: bool, count: usize },
 }
 
 #[derive(Clone, Copy)]
 struct LineSelection {
     anchor: DataCursor,
     cursor: DataCursor,
+    moved: bool,
 }
 
 struct CompletedOperator {
     cursor: DataCursor,
     linewise_text: Option<String>,
+    linewise_delete: bool,
 }
 
 #[derive(Default)]
@@ -81,6 +95,10 @@ pub(super) struct Vim {
     visual_lines: Option<LineSelection>,
     completed_operator: Option<CompletedOperator>,
     linewise_register: bool,
+    count: Option<usize>,
+    operator_count: usize,
+    preferred_column: Option<usize>,
+    last_find: Option<(FindMotion, char)>,
 }
 
 impl Vim {
@@ -112,8 +130,15 @@ impl Vim {
         }
     }
 
+    pub(super) fn leave_visual(&mut self) {
+        self.visual_lines = None;
+        self.mode = Mode::Normal;
+    }
+
     pub(super) fn cancel_pending(&mut self, text: &mut TextArea<'static>) {
         self.pending = None;
+        self.count = None;
+        self.operator_count = 1;
         if self.operator.take().is_some() {
             text.cancel_selection();
         }
@@ -160,6 +185,23 @@ impl Vim {
             return VimInput::Consumed;
         }
 
+        if !matches!(
+            self.pending,
+            Some(Pending::Object(_) | Pending::Find(_) | Pending::Replace)
+        ) && let KeyCode::Char(character) = key.code
+            && let Some(digit) = character.to_digit(10)
+            && (digit != 0 || self.count.is_some())
+        {
+            // CursorMove::Jump uses u16 coordinates; bound counts to the same supported range.
+            let count = self
+                .count
+                .unwrap_or(0)
+                .saturating_mul(10)
+                .saturating_add(digit as usize);
+            self.count = Some(count.min(usize::from(u16::MAX)));
+            return VimInput::Consumed;
+        }
+
         if self.mode == Mode::VisualLine {
             return self.handle_visual_line(key.code, text);
         }
@@ -168,7 +210,32 @@ impl Vim {
         if let Some(Pending::Object(scope)) = pending {
             return self.handle_text_object(scope, key.code, text);
         }
+        if let Some(Pending::Find(motion)) = pending {
+            return self.find_character(motion, key.code, false, text);
+        }
+        if matches!(pending, Some(Pending::Replace)) {
+            return self.replace_character(key.code, text);
+        }
         let was_pending_g = matches!(pending, Some(Pending::GoToTop));
+        if was_pending_g && key.code != KeyCode::Char('g') {
+            self.cancel_pending(text);
+            return VimInput::Consumed;
+        }
+        if let Some(motion) = Self::find_motion(key.code) {
+            self.pending = Some(Pending::Find(motion));
+            return VimInput::Consumed;
+        }
+        if matches!(key.code, KeyCode::Char(';' | ','))
+            && let Some((mut motion, character)) = self.last_find
+        {
+            if key.code == KeyCode::Char(',') {
+                motion.forward = !motion.forward;
+            }
+            let saved = self.last_find;
+            let result = self.find_character(motion, KeyCode::Char(character), true, text);
+            self.last_find = saved;
+            return result;
+        }
         if let Some(operator) = self.operator {
             return self.handle_operator(operator, key.code, was_pending_g, text);
         }
@@ -179,8 +246,9 @@ impl Vim {
             self.pending = Some(Pending::Object(scope));
             return VimInput::Consumed;
         }
-        if let Some(motion) = Self::motion(key.code, text) {
-            text.move_cursor(motion);
+        if Self::is_motion(key.code) {
+            let count = self.take_count();
+            self.move_motion(key.code, count, text);
             return VimInput::Consumed;
         }
         if let Some(operator) = Operator::from_key(key.code) {
@@ -191,6 +259,7 @@ impl Vim {
 
             text.cancel_selection();
             text.start_selection();
+            self.operator_count = self.take_count();
             self.operator = Some(operator);
             return VimInput::Consumed;
         }
@@ -217,25 +286,63 @@ impl Vim {
             return VimInput::Consumed;
         }
 
-        if Operator::from_key(code) == Some(operator) {
-            let row = text.cursor().0;
-            return self.line_operator(operator, row, row, text);
-        } else if let Some(motion) = Self::motion(code, text) {
-            text.move_cursor(motion);
-            if matches!(code, KeyCode::Char('e' | '$') | KeyCode::End) {
-                text.move_cursor(CursorMove::Forward);
+        if code == KeyCode::Char('g') && !was_pending_g {
+            self.pending = Some(Pending::GoToTop);
+            return VimInput::Consumed;
+        }
+
+        let explicit_count = self.count.is_some() || self.operator_count > 1;
+        let count = self.take_count().saturating_mul(self.operator_count.max(1));
+        let origin = text.cursor();
+        let row = origin.0;
+        let last = Self::last_source_row(text);
+        let line_target = match code {
+            _ if Operator::from_key(code) == Some(operator) => Some((row + count - 1).min(last)),
+            KeyCode::Char('j') | KeyCode::Down => Some((row + count).min(last)),
+            KeyCode::Char('k') | KeyCode::Up => Some(row.saturating_sub(count)),
+            KeyCode::Char('G') => Some(if explicit_count {
+                count.saturating_sub(1).min(last)
+            } else {
+                last
+            }),
+            KeyCode::Char('g') if was_pending_g => Some(count.saturating_sub(1).min(last)),
+            _ => None,
+        };
+        if let Some(target) = line_target {
+            return self.line_operator(operator, row.min(target), row.max(target), text);
+        }
+
+        if !Self::is_motion(code) {
+            self.cancel_pending(text);
+            return VimInput::Consumed;
+        }
+        if operator == Operator::Change
+            && matches!(code, KeyCode::Char('w' | 'W'))
+            && text.lines()[row]
+                .chars()
+                .nth(origin.1)
+                .is_some_and(|character| !character.is_whitespace())
+        {
+            // Vim treats cw as ce on a word, leaving the following whitespace intact.
+            let object = if code == KeyCode::Char('W') { 'W' } else { 'w' };
+            for _ in 1..count {
+                self.move_motion(code, 1, text);
+            }
+            if let Some(range) = text_object(text, ObjectScope::Inner, object) {
+                Self::jump(text, range.end);
             }
         } else {
-            match code {
-                KeyCode::Char('g') if was_pending_g => text.move_cursor(CursorMove::Top),
-                KeyCode::Char('g') => {
-                    self.pending = Some(Pending::GoToTop);
-                    return VimInput::Consumed;
-                }
-                KeyCode::Char('G') => text.move_cursor(CursorMove::Bottom),
-                _ => {
-                    self.cancel_pending(text);
-                    return VimInput::Consumed;
+            self.move_motion(code, count, text);
+            if matches!(code, KeyCode::Char('e' | 'E' | '$') | KeyCode::End) {
+                text.move_cursor(CursorMove::Forward);
+            } else if matches!(code, KeyCode::Char('w' | 'W')) && text.cursor().0 > row {
+                // A word delete ending at the next line's start leaves the newline intact.
+                let end = text.cursor();
+                if end.1 == Self::first_nonblank(text, end.0) {
+                    Self::jump(
+                        text,
+                        DataCursor(end.0 - 1, text.lines()[end.0 - 1].chars().count()),
+                    );
                 }
             }
         }
@@ -286,13 +393,21 @@ impl Vim {
         self.jumps.record(from, to);
     }
 
-    pub(super) fn clear_jump_history(&mut self) {
+    pub(super) fn reset_document_state(&mut self) {
         self.jumps = JumpList::default();
+        self.visual_lines = None;
+        self.completed_operator = None;
+        self.pending = None;
+        self.operator = None;
+        self.count = None;
+        self.preferred_column = None;
+        self.mode = Mode::Normal;
     }
 
-    fn document_jump(&mut self, text: &mut TextArea<'static>, motion: CursorMove) {
+    fn jump_to_line(&mut self, row: usize, text: &mut TextArea<'static>) {
         let from = text.cursor();
-        text.move_cursor(motion);
+        Self::jump(text, DataCursor(row, Self::first_nonblank(text, row)));
+        self.preferred_column = None;
         self.record_jump(from, text.cursor());
     }
 
@@ -311,6 +426,9 @@ impl Vim {
     fn finish_operator(&mut self, operator: Operator) -> VimInput {
         self.operator = None;
         self.pending = None;
+        self.count = None;
+        self.operator_count = 1;
+        self.preferred_column = None;
         self.mode = if operator == Operator::Change {
             Mode::Insert
         } else {
@@ -318,6 +436,25 @@ impl Vim {
         };
 
         VimInput::Clipboard(operator.clipboard_action())
+    }
+
+    pub(super) fn command_pending(&self) -> bool {
+        self.pending.is_some() || self.operator.is_some() || self.count.is_some()
+    }
+
+    pub(super) fn repeat_count(&mut self, key: KeyEvent) -> Option<Option<usize>> {
+        if self.mode == Mode::Normal
+            && self.pending.is_none()
+            && self.operator.is_none()
+            && key.code == KeyCode::Char('.')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            Some(self.count.take())
+        } else {
+            None
+        }
     }
 
     pub(super) fn is_visual(&self) -> bool {
@@ -357,6 +494,7 @@ impl Vim {
         self.completed_operator = Some(CompletedOperator {
             cursor: start,
             linewise_text: None,
+            linewise_delete: false,
         });
         self.finish_operator(operator)
     }
@@ -373,6 +511,10 @@ impl Vim {
 
         text.cancel_selection();
         Self::jump(text, operation.cursor);
+        if operation.linewise_delete {
+            let row = text.cursor().0.min(Self::last_source_row(text));
+            Self::jump(text, DataCursor(row, Self::first_nonblank(text, row)));
+        }
         if self.mode == Mode::Normal {
             Self::clamp_normal_cursor(text);
         }
@@ -398,10 +540,26 @@ impl Vim {
                 start = DataCursor(first - 1, text.lines()[first - 1].chars().count());
             }
         }
+        let origin = text.cursor();
         Self::select_object(text, &ObjectRange { start, end });
+        let cursor = if operator == Operator::Yank {
+            self.visual_lines.map_or(origin, |selection| {
+                DataCursor(
+                    first,
+                    if selection.cursor.0 < selection.anchor.0 || !selection.moved {
+                        selection.cursor.1
+                    } else {
+                        0
+                    },
+                )
+            })
+        } else {
+            DataCursor(first, 0)
+        };
         self.completed_operator = Some(CompletedOperator {
-            cursor: DataCursor(first, 0),
+            cursor,
             linewise_text: Some(contents),
+            linewise_delete: operator == Operator::Delete,
         });
         self.visual_lines = None;
         self.finish_operator(operator)
@@ -433,6 +591,11 @@ impl Vim {
             self.mode = Mode::Normal;
             return VimInput::Consumed;
         };
+        if matches!(self.pending, Some(Pending::GoToTop)) && code != KeyCode::Char('g') {
+            self.cancel_pending(text);
+            return VimInput::Consumed;
+        }
+
         let operator = match code {
             KeyCode::Char('D' | 'x') => Some(Operator::Delete),
             KeyCode::Char('C' | 'S') => Some(Operator::Change),
@@ -447,7 +610,21 @@ impl Vim {
             );
         }
 
+        let explicit_count = self.count.is_some();
+        let count = if code == KeyCode::Char('g') && self.pending.is_none() {
+            self.count.unwrap_or(1)
+        } else {
+            self.take_count()
+        };
         match code {
+            KeyCode::Char('J') => {
+                self.join_lines(text);
+                return VimInput::Consumed;
+            }
+            KeyCode::Char('p' | 'P') => {
+                self.paste_over_lines(selection, code == KeyCode::Char('P'), count, text);
+                return VimInput::Consumed;
+            }
             KeyCode::Char('V') => {
                 text.cancel_selection();
                 Self::jump(text, selection.cursor);
@@ -465,15 +642,21 @@ impl Vim {
                 return VimInput::Consumed;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                selection.cursor.0 = selection.cursor.0.saturating_sub(1);
+                selection.cursor.0 = selection.cursor.0.saturating_sub(count);
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                selection.cursor.0 = (selection.cursor.0 + 1).min(Self::last_source_row(text));
+                selection.cursor.0 = (selection.cursor.0 + count).min(Self::last_source_row(text));
             }
-            KeyCode::Char('G') => selection.cursor.0 = Self::last_source_row(text),
+            KeyCode::Char('G') => {
+                selection.cursor.0 = if explicit_count {
+                    count.saturating_sub(1).min(Self::last_source_row(text))
+                } else {
+                    Self::last_source_row(text)
+                }
+            }
             KeyCode::Char('g') => {
                 if matches!(self.pending.take(), Some(Pending::GoToTop)) {
-                    selection.cursor.0 = 0;
+                    selection.cursor.0 = count.saturating_sub(1).min(Self::last_source_row(text));
                 } else {
                     self.pending = Some(Pending::GoToTop);
                 }
@@ -482,9 +665,54 @@ impl Vim {
                 self.pending = None;
             }
         }
+        selection.moved = true;
         self.visual_lines = Some(selection);
         self.refresh_line_selection(text);
         VimInput::Consumed
+    }
+
+    fn paste_over_lines(
+        &mut self,
+        selection: LineSelection,
+        preserve_register: bool,
+        count: usize,
+        text: &mut TextArea<'static>,
+    ) {
+        let first = selection.anchor.0.min(selection.cursor.0);
+        let last = selection.anchor.0.max(selection.cursor.0);
+        let old_lines = format!("{}\n", text.lines()[first..=last].join("\n"));
+        let contents = text.yank_text().repeat(count);
+        if contents.is_empty() {
+            return;
+        }
+        let contents = if self.linewise_register {
+            contents.strip_suffix('\n').unwrap_or(&contents)
+        } else {
+            &contents
+        };
+        let (end, replacement) = if last + 1 < text.lines().len() {
+            (DataCursor(last + 1, 0), format!("{contents}\n"))
+        } else {
+            (
+                DataCursor(last, text.lines()[last].chars().count()),
+                contents.to_owned(),
+            )
+        };
+        Self::select_object(
+            text,
+            &ObjectRange {
+                start: DataCursor(first, 0),
+                end,
+            },
+        );
+        text.insert_str(replacement);
+        Self::jump(text, DataCursor(first, 0));
+        if !preserve_register {
+            text.set_yank_text(old_lines);
+            self.linewise_register = true;
+        }
+        self.mode = Mode::Normal;
+        self.visual_lines = None;
     }
 
     fn include_visual_endpoint(text: &mut TextArea<'static>) {
@@ -514,9 +742,35 @@ impl Vim {
         text: &mut TextArea<'static>,
     ) -> VimInput {
         match code {
-            KeyCode::Char('g') if was_pending_g => self.document_jump(text, CursorMove::Top),
+            KeyCode::Char('g') if was_pending_g => {
+                let row = self
+                    .take_count()
+                    .saturating_sub(1)
+                    .min(Self::last_source_row(text));
+                self.jump_to_line(row, text);
+            }
             KeyCode::Char('g') => self.pending = Some(Pending::GoToTop),
-            KeyCode::Char('G') => self.document_jump(text, CursorMove::Bottom),
+            KeyCode::Char('G') => {
+                let row = self
+                    .count
+                    .take()
+                    .map_or(Self::last_source_row(text), |count| {
+                        count.saturating_sub(1).min(Self::last_source_row(text))
+                    });
+                self.jump_to_line(row, text);
+            }
+            KeyCode::Char('/' | '?') if self.mode == Mode::Normal => {
+                return VimInput::Search(code == KeyCode::Char('?'));
+            }
+            KeyCode::Char('n' | 'N') if self.mode == Mode::Normal => {
+                return VimInput::SearchNext {
+                    reverse: code == KeyCode::Char('N'),
+                    count: self.take_count(),
+                };
+            }
+            KeyCode::Char('r') if self.mode == Mode::Normal => {
+                self.pending = Some(Pending::Replace)
+            }
             KeyCode::Char('i' | 'a' | 'I' | 'A' | 'o' | 'O') if self.mode == Mode::Normal => {
                 self.enter_insert(code, text);
             }
@@ -526,9 +780,21 @@ impl Vim {
             }
             KeyCode::Char('V') => {
                 let cursor = text.cursor();
+                let anchor = text.selection_range().map_or(cursor, |(start, end)| {
+                    if cursor == start {
+                        end.into()
+                    } else {
+                        start.into()
+                    }
+                });
+                let count = self.take_count();
                 self.visual_lines = Some(LineSelection {
-                    anchor: cursor,
-                    cursor,
+                    anchor,
+                    cursor: DataCursor(
+                        (cursor.0 + count - 1).min(Self::last_source_row(text)),
+                        cursor.1,
+                    ),
+                    moved: false,
                 });
                 self.mode = Mode::VisualLine;
                 self.refresh_line_selection(text);
@@ -536,6 +802,16 @@ impl Vim {
             KeyCode::Char('v') if self.mode == Mode::Normal => {
                 text.start_selection();
                 self.mode = Mode::Visual;
+            }
+            KeyCode::Char('Y' | 'S') if self.mode == Mode::Normal => {
+                let row = text.cursor().0;
+                let last = (row + self.take_count() - 1).min(Self::last_source_row(text));
+                let operator = if code == KeyCode::Char('Y') {
+                    Operator::Yank
+                } else {
+                    Operator::Change
+                };
+                return self.line_operator(operator, row, last, text);
             }
             KeyCode::Char('D' | 'C' | 'S') => {
                 if self.mode == Mode::Visual {
@@ -545,12 +821,8 @@ impl Vim {
                     if code == KeyCode::Char('S') {
                         text.move_cursor(CursorMove::Head);
                     }
-                    let start = text.cursor();
                     text.start_selection();
                     text.move_cursor(CursorMove::End);
-                    if text.cursor() == start {
-                        text.move_cursor(CursorMove::Forward);
-                    }
                 }
                 let operator = if code == KeyCode::Char('D') {
                     Operator::Delete
@@ -559,20 +831,26 @@ impl Vim {
                 };
                 return self.finish_selection(operator, text);
             }
-            KeyCode::Char('x') if self.mode == Mode::Normal => {
+            KeyCode::Char('x' | 's') if self.mode == Mode::Normal => {
                 let cursor = text.cursor();
-                if cursor.1 < text.lines()[cursor.0].chars().count()
-                    || text.lines()[cursor.0].is_empty()
-                {
+                let count = self.take_count();
+                let length = text.lines()[cursor.0].chars().count();
+                if cursor.1 < length {
                     text.start_selection();
-                    text.move_cursor(CursorMove::Forward);
-                    return self.finish_selection(Operator::Delete, text);
+                    Self::jump(text, DataCursor(cursor.0, (cursor.1 + count).min(length)));
+                    let operator = if code == KeyCode::Char('s') {
+                        Operator::Change
+                    } else {
+                        Operator::Delete
+                    };
+                    return self.finish_selection(operator, text);
                 }
             }
             KeyCode::Char('J') => {
                 self.join_lines(text);
             }
             KeyCode::Char('p' | 'P') => {
+                let count = self.take_count();
                 if self.mode == Mode::Visual {
                     Self::include_visual_endpoint(text);
                 }
@@ -580,11 +858,13 @@ impl Vim {
                     let row = text.cursor().0;
                     if code == KeyCode::Char('P') {
                         Self::jump(text, DataCursor(row, 0));
-                        text.paste();
+                        for _ in 0..count {
+                            text.paste();
+                        }
                         Self::jump(text, DataCursor(row, 0));
                     } else {
                         Self::jump(text, DataCursor(row, text.lines()[row].chars().count()));
-                        let contents = text.yank_text();
+                        let contents = text.yank_text().repeat(count);
                         text.insert_str(format!(
                             "\n{}",
                             contents.strip_suffix('\n').unwrap_or(&contents)
@@ -598,7 +878,9 @@ impl Vim {
                             text.move_cursor(CursorMove::Forward);
                         }
                     }
-                    text.paste();
+                    for _ in 0..count {
+                        text.paste();
+                    }
                     if text.cursor().1 > 0 {
                         text.move_cursor(CursorMove::Back);
                     }
@@ -607,81 +889,60 @@ impl Vim {
                 Self::clamp_normal_cursor(text);
             }
             KeyCode::Char('u') => {
-                text.cancel_selection();
-                text.undo();
-                self.mode = Mode::Normal;
+                let count = self.take_count();
+                self.move_history(text, false, count);
             }
             KeyCode::PageUp => text.scroll(Scrolling::PageUp),
             KeyCode::PageDown => text.scroll(Scrolling::PageDown),
             _ => {}
         }
 
+        if self.pending.is_none() {
+            self.count = None;
+        }
         VimInput::Consumed
     }
 
     fn join_lines(&mut self, text: &mut TextArea<'static>) {
         let row = text.cursor().0;
-        let (start_row, end_row) = if self.mode == Mode::Visual {
+        let (first, last) = if self.is_visual() {
             text.selection_range()
                 .map_or((row, row), |(start, end)| (start.0, end.0))
         } else {
-            let next_row = if row + 1 < text.lines().len() {
-                row + 1
-            } else {
-                row
-            };
-            (row, next_row)
+            let count = self.take_count().max(2);
+            (row, (row + count - 1).min(Self::last_source_row(text)))
         };
-
         text.cancel_selection();
-        Self::jump(text, DataCursor(start_row, 0));
-        for _ in start_row..end_row {
-            text.move_cursor(CursorMove::End);
-            text.delete_next_char();
-            text.insert_char(' ');
+        let mut join_column = text.lines()[first].chars().count();
+        for _ in first..last {
+            let column = text.lines()[first].chars().count();
+            join_column = column;
+            let next = &text.lines()[first + 1];
+            let indentation = next
+                .chars()
+                .take_while(|character| character.is_whitespace())
+                .count();
+            let separator = if text.lines()[first].ends_with(char::is_whitespace)
+                || text.lines()[first].is_empty()
+                || next.trim_start().starts_with(')')
+            {
+                ""
+            } else {
+                " "
+            };
+            Self::select_object(
+                text,
+                &ObjectRange {
+                    start: DataCursor(first, column),
+                    end: DataCursor(first + 1, indentation),
+                },
+            );
+            text.insert_str(separator);
         }
+        Self::jump(text, DataCursor(first, join_column));
+        Self::clamp_normal_cursor(text);
+        self.visual_lines = None;
         self.mode = Mode::Normal;
-    }
-
-    fn motion(code: KeyCode, text: &TextArea<'static>) -> Option<CursorMove> {
-        let cursor = text.cursor();
-        let last_column = text.lines()[cursor.0].chars().count().saturating_sub(1);
-        let target = match code {
-            KeyCode::Char('h') | KeyCode::Left => DataCursor(cursor.0, cursor.1.saturating_sub(1)),
-            KeyCode::Char('l') | KeyCode::Right => {
-                DataCursor(cursor.0, (cursor.1 + 1).min(last_column))
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                let row = (cursor.0 + 1).min(Self::last_source_row(text));
-                DataCursor(
-                    row,
-                    cursor
-                        .1
-                        .min(text.lines()[row].chars().count().saturating_sub(1)),
-                )
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                let row = cursor.0.saturating_sub(1);
-                DataCursor(
-                    row,
-                    cursor
-                        .1
-                        .min(text.lines()[row].chars().count().saturating_sub(1)),
-                )
-            }
-            KeyCode::Char('0') | KeyCode::Home => DataCursor(cursor.0, 0),
-            KeyCode::Char('^') => DataCursor(cursor.0, Self::first_nonblank(text, cursor.0)),
-            KeyCode::Char('$') | KeyCode::End => DataCursor(cursor.0, last_column),
-            KeyCode::Char('w') => return Some(CursorMove::WordForward),
-            KeyCode::Char('b') => return Some(CursorMove::WordBack),
-            KeyCode::Char('e') => return Some(CursorMove::WordEnd),
-            _ => return None,
-        };
-
-        Some(CursorMove::Jump(
-            u16::try_from(target.0).unwrap_or(u16::MAX),
-            u16::try_from(target.1).unwrap_or(u16::MAX),
-        ))
     }
 
     fn handle_control_key(&mut self, key: KeyEvent, text: &mut TextArea<'static>) {
@@ -701,12 +962,50 @@ impl Vim {
             KeyCode::Char('f') => text.scroll(Scrolling::PageDown),
             KeyCode::Char('b') => text.scroll(Scrolling::PageUp),
             KeyCode::Char('r') => {
-                text.cancel_selection();
-                text.redo();
-                self.mode = Mode::Normal;
+                self.move_history(text, true, 1);
             }
             _ => {}
         }
+        if self.mode == Mode::VisualLine
+            && let Some(mut selection) = self.visual_lines
+        {
+            selection.cursor.0 = text.cursor().0.min(Self::last_source_row(text));
+            selection.moved = true;
+            self.visual_lines = Some(selection);
+            self.refresh_line_selection(text);
+        }
+    }
+
+    fn move_history(&mut self, text: &mut TextArea<'static>, redo: bool, count: usize) {
+        text.cancel_selection();
+        for _ in 0..count {
+            let before = text.lines().to_vec();
+            let changed = if redo { text.redo() } else { text.undo() };
+            if !changed {
+                break;
+            }
+            // Native history stores the selection endpoint. Vim places the cursor at
+            // the changed text instead; derive that position without owning undo data.
+            let row = before
+                .iter()
+                .zip(text.lines())
+                .position(|(old, new)| old != new)
+                .unwrap_or(before.len().min(text.lines().len()).saturating_sub(1));
+            let column = before
+                .get(row)
+                .zip(text.lines().get(row))
+                .map_or(0, |(old, new)| {
+                    old.chars()
+                        .zip(new.chars())
+                        .take_while(|(old, new)| old == new)
+                        .count()
+                });
+            Self::jump(text, DataCursor(row, column));
+            Self::clamp_normal_cursor(text);
+        }
+        self.mode = Mode::Normal;
+        self.visual_lines = None;
+        self.preferred_column = None;
     }
 
     fn enter_insert(&mut self, code: KeyCode, text: &mut TextArea<'static>) {
@@ -728,9 +1027,10 @@ impl Vim {
                 text.insert_newline();
             }
             KeyCode::Char('O') => {
+                let row = text.cursor().0;
                 text.move_cursor(CursorMove::Head);
                 text.insert_newline();
-                text.move_cursor(CursorMove::Up);
+                Self::jump(text, DataCursor(row, 0));
             }
             _ => {}
         }
