@@ -14,6 +14,20 @@ pub struct Settings {
     pub resume_folder: Option<PathBuf>,
     #[serde(default)]
     pub keybindings: Keybindings,
+    #[serde(default)]
+    pub editor: EditorPreferences,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EditorPreferences {
+    pub soft_wrap: bool,
+}
+
+impl Default for EditorPreferences {
+    fn default() -> Self {
+        Self { soft_wrap: true }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -81,6 +95,8 @@ impl Settings {
             document["resume_folder"] = toml_edit::value(folder.to_string_lossy().as_ref());
         }
         document["keybindings"]["prefix"] = toml_edit::value(&self.keybindings.prefix);
+
+        document["editor"]["soft_wrap"] = toml_edit::value(self.editor.soft_wrap);
 
         let text = document.to_string();
         ensure!(

@@ -158,12 +158,15 @@ impl App {
 
         if self.focus == Focus::Editor && self.session.proposal_review.is_none() && area.height > 2
         {
-            let hints = theme::shortcuts(&[
+            let mut hints = theme::shortcuts(&[
                 ("Ctrl+Shift+A", "All"),
                 ("Ctrl+Z", "Undo"),
                 ("Ctrl+Y", "Redo"),
                 ("Shift+arrows", "Select"),
             ]);
+            if !self.editor_preferences.soft_wrap {
+                hints.extend(theme::shortcuts(&[("Ctrl+Alt+←/→", "Pan")]).spans);
+            }
             frame.render_widget(
                 Paragraph::new(hints).style(theme::muted()),
                 Rect::new(
