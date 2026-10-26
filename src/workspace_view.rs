@@ -156,28 +156,6 @@ impl App {
                 .draw(frame, area, self.focus == Focus::Editor);
         }
 
-        if self.focus == Focus::Editor && self.session.proposal_review.is_none() && area.height > 2
-        {
-            let mut hints = theme::shortcuts(&[
-                ("Ctrl+Shift+A", "All"),
-                ("Ctrl+Z", "Undo"),
-                ("Ctrl+Y", "Redo"),
-                ("Shift+arrows", "Select"),
-            ]);
-            if !self.editor_preferences.soft_wrap {
-                hints.extend(theme::shortcuts(&[("Ctrl+Alt+←/→", "Pan")]).spans);
-            }
-            frame.render_widget(
-                Paragraph::new(hints).style(theme::muted()),
-                Rect::new(
-                    area.x + theme::PANEL_PADDING,
-                    area.bottom() - 1,
-                    area.width.saturating_sub(theme::PANEL_PADDING * 2),
-                    1,
-                ),
-            );
-        }
-
         if !area.is_empty() {
             let modified = if self.session.editor.is_modified() {
                 " · unsaved"

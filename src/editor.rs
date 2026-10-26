@@ -4,9 +4,9 @@ use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
-    layout::{Position, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Color, Style},
-    widgets::{Block, Padding},
+    widgets::{Block, Padding, Paragraph},
 };
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 
@@ -17,6 +17,14 @@ use syntect::{
     parsing::SyntaxSet,
 };
 use texo::theme;
+
+#[path = "editor_clipboard.rs"]
+mod clipboard;
+#[path = "editor_search.rs"]
+mod search;
+
+use clipboard::{ClipboardAccess, ClipboardAction, SystemClipboard};
+use search::Search;
 
 const TAB_WIDTH: u8 = 4;
 const HORIZONTAL_SCROLL_COLUMNS: i16 = 4;
@@ -36,6 +44,9 @@ pub struct Editor {
     saved_source: Option<String>,
     highlighting: Highlighting,
     dragging: bool,
+    search: Search,
+    clipboard: Box<dyn ClipboardAccess>,
+    notice: String,
 }
 
 impl Editor {
@@ -69,6 +80,7 @@ impl Editor {
         text.set_cursor_line_style(Style::default());
         text.set_cursor_style(Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT));
         text.set_selection_style(Style::default().bg(theme::SELECTION));
+        text.set_search_style(Style::default().bg(theme::KEYCAP));
 
         Ok(Self {
             path,
@@ -76,6 +88,9 @@ impl Editor {
             saved_source,
             highlighting: Highlighting::new()?,
             dragging: false,
+            search: Search::default(),
+            clipboard: Box::<SystemClipboard>::default(),
+            notice: String::new(),
         })
     }
 
@@ -96,6 +111,79 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, mut key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && let KeyCode::Char(character) = key.code
+        {
+            key.code = KeyCode::Char(character.to_ascii_lowercase());
+        }
+
+        if self.search.open {
+            self.search.handle_key(key, &mut self.text);
+            return;
+        }
+
+        self.notice.clear();
+        if self.handle_editor_command(key) {
+            return;
+        }
+
+        self.handle_standard_key(key);
+    }
+
+    fn handle_editor_command(&mut self, key: KeyEvent) -> bool {
+        if key.code == KeyCode::Insert && key.modifiers == KeyModifiers::ALT {
+            self.text.paste();
+            return true;
+        }
+
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+        {
+            match key.code {
+                KeyCode::Char('f') => {
+                    self.search.start(&mut self.text);
+                    return true;
+                }
+                KeyCode::Char('g') => {
+                    self.search.find(
+                        &mut self.text,
+                        key.modifiers.contains(KeyModifiers::SHIFT),
+                        false,
+                    );
+                    return true;
+                }
+                KeyCode::Char('c') | KeyCode::Insert => {
+                    self.clipboard_action(ClipboardAction::Copy);
+                    return true;
+                }
+                KeyCode::Char('x') => {
+                    self.clipboard_action(ClipboardAction::Cut);
+                    return true;
+                }
+                KeyCode::Char('v') => {
+                    self.clipboard_action(ClipboardAction::Paste);
+                    return true;
+                }
+                _ => {}
+            }
+        } else if key.modifiers == KeyModifiers::SHIFT {
+            match key.code {
+                KeyCode::Delete => {
+                    self.clipboard_action(ClipboardAction::Cut);
+                    return true;
+                }
+                KeyCode::Insert => {
+                    self.clipboard_action(ClipboardAction::Paste);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        false
+    }
+
+    fn handle_standard_key(&mut self, mut key: KeyEvent) {
         if key.modifiers == (KeyModifiers::ALT | KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Left | KeyCode::Right)
         {
@@ -104,10 +192,6 @@ impl Editor {
         }
 
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            if let KeyCode::Char(character) = key.code {
-                key.code = KeyCode::Char(character.to_ascii_lowercase());
-            }
-
             match key.code {
                 KeyCode::Char('a') => {
                     self.text.select_all();
@@ -148,6 +232,92 @@ impl Editor {
             self.text.cancel_selection();
         } else {
             self.text.input(key);
+        }
+    }
+
+    pub fn paste_text(&mut self, text: &str) {
+        if self.search.open {
+            self.search.paste(text, &mut self.text);
+        } else {
+            self.text.insert_str(text);
+        }
+    }
+
+    fn clipboard_action(&mut self, action: ClipboardAction) {
+        match action {
+            ClipboardAction::Copy | ClipboardAction::Cut => {
+                if !self
+                    .text
+                    .selection_range()
+                    .is_some_and(|(from, to)| from != to)
+                {
+                    return;
+                }
+
+                if matches!(action, ClipboardAction::Cut) {
+                    self.text.cut();
+                } else {
+                    self.text.copy();
+                }
+
+                self.notice = if self.clipboard.write(self.text.yank_text()).is_err() {
+                    "System copy failed; internal copy retained (Alt+Insert to paste).".into()
+                } else {
+                    "Copied to clipboard".into()
+                };
+            }
+            ClipboardAction::Paste => {
+                let result = self.clipboard.read();
+                match result {
+                    Ok(text) => self.text.set_yank_text(text),
+                    Err(_) => {
+                        self.notice = if self.text.yank_text().is_empty() {
+                            "System paste failed; internal copy is empty.".into()
+                        } else {
+                            "System paste failed; pasted internal copy.".into()
+                        };
+                    }
+                }
+                self.text.paste();
+            }
+        }
+    }
+
+    fn draw_status(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        if area.height < 3 {
+            return;
+        }
+
+        let footer = Rect::new(
+            area.x + theme::PANEL_PADDING,
+            area.bottom() - 1,
+            area.width.saturating_sub(theme::PANEL_PADDING * 2),
+            1,
+        );
+        if self.search.open {
+            self.search.draw(frame, footer, focused);
+            return;
+        }
+
+        let cursor = self.text.cursor();
+        let modified = if self.is_modified() {
+            " · unsaved"
+        } else {
+            ""
+        };
+        let status = format!("{}:{}{}", cursor.0 + 1, cursor.1 + 1, modified);
+        let [position, controls] = Layout::horizontal([
+            Constraint::Length(status.chars().count() as u16 + 2),
+            Constraint::Min(0),
+        ])
+        .areas(footer);
+        frame.render_widget(Paragraph::new(status).style(theme::muted()), position);
+
+        if !self.notice.is_empty() {
+            frame.render_widget(
+                Paragraph::new(self.notice.as_str()).style(theme::muted()),
+                controls,
+            );
         }
     }
 
@@ -315,6 +485,7 @@ impl Editor {
 
         self.highlighting.update(self.text.lines());
         self.draw_highlighting(frame, content, focused);
+        self.draw_status(frame, area, focused);
     }
 
     fn draw_highlighting(&self, frame: &mut Frame, content: Rect, focused: bool) {
@@ -731,6 +902,127 @@ mod viewport_tests {
         terminal.draw(|frame| editor.draw(frame, area, true))?;
         assert_eq!(editor.text.scroll_offset().1, 0);
         assert_eq!(editor.source(), "\\section{Experience} % Notes about work");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod editing_polish_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    struct UnavailableClipboard;
+
+    impl ClipboardAccess for UnavailableClipboard {
+        fn read(&mut self) -> Result<String> {
+            anyhow::bail!("No clipboard in this test")
+        }
+
+        fn write(&mut self, _text: String) -> Result<()> {
+            anyhow::bail!("No clipboard in this test")
+        }
+    }
+
+    #[test]
+    fn unavailable_clipboard_keeps_native_cut_paste_and_history() -> Result<()> {
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        editor.replace_source("Résumé 李\n\n");
+        editor.clipboard = Box::new(UnavailableClipboard);
+        editor.text.select_all();
+        editor.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT));
+        assert_eq!(editor.source(), "");
+        assert!(editor.notice.contains("System copy failed"));
+        assert_eq!(editor.text.yank_text(), "Résumé 李\n\n");
+
+        editor.handle_key(KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT));
+        assert_eq!(editor.source(), "Résumé 李\n\n");
+        assert!(editor.notice.contains("pasted internal copy"));
+        editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(editor.source(), "");
+        editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(editor.source(), "Résumé 李\n\n");
+        Ok(())
+    }
+
+    #[test]
+    fn search_matches_before_wrapped_continuations_survive_redraw_and_resize() -> Result<()> {
+        let source = format!("% Résumé 李 {}\n", "experience ".repeat(20));
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        editor.replace_source(&source);
+        editor.text.move_cursor(CursorMove::Jump(0, 0));
+        editor.handle_key(KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        editor.paste_text("Résumé");
+
+        for width in [40, 24, 60, 16] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 8))?;
+            terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+            let buffer = terminal.backend().buffer();
+            let highlighted = (1..7).any(|row| {
+                (0..width).any(|column| {
+                    let cell = &buffer[(column, row)];
+                    cell.bg == theme::KEYCAP && cell.fg == theme::MUTED
+                })
+            });
+            assert!(
+                highlighted,
+                "The leading match should remain highlighted at width {width}"
+            );
+            assert_eq!(editor.source(), source);
+        }
+
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(editor.text.search_pattern().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn literal_search_wraps_matches_highlights_continuations_and_cancels_without_edits()
+    -> Result<()> {
+        let source = "\\section{Résumé} % [x] and 李 [x]\n";
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        editor.replace_source(source);
+        editor.text.move_cursor(CursorMove::Jump(0, 0));
+        editor.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        editor.paste_text("[x]");
+        assert_eq!(editor.text.cursor(), (0, 19));
+        editor.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(editor.text.cursor(), (0, 29));
+        editor.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(editor.text.cursor(), (0, 19));
+        editor.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert_eq!(editor.text.cursor(), (0, 29));
+
+        let mut terminal = Terminal::new(TestBackend::new(24, 10))?;
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        let buffer = terminal.backend().buffer();
+        let matches: Vec<_> = buffer
+            .content()
+            .iter()
+            .enumerate()
+            .filter(|(index, cell)| {
+                index / 24 > 0
+                    && index / 24 < 9
+                    && (cell.bg == theme::KEYCAP || cell.bg == theme::ACCENT)
+            })
+            .collect();
+        assert_eq!(matches.len(), 6);
+        assert!(
+            matches
+                .iter()
+                .filter(|(_, cell)| cell.bg == theme::KEYCAP)
+                .all(|(_, cell)| cell.fg == theme::MUTED)
+        );
+        assert_eq!(editor.source(), source);
+
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!editor.search.open);
+        assert!(editor.text.search_pattern().is_none());
+        assert!(editor.text.undo());
+        assert!(editor.text.undo());
+        assert_eq!(editor.source(), STARTER_DOCUMENT);
         Ok(())
     }
 }
