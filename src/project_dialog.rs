@@ -171,10 +171,15 @@ impl ProjectDialog {
                 .wrap(ratatui::widgets::Wrap { trim: false }),
             error,
         );
+        let navigation = if self.plan.is_some() {
+            ("↑↓/jk", "navigate")
+        } else {
+            ("Tab", "field")
+        };
         frame.render_widget(
             Paragraph::new(theme::shortcuts(&[
                 ("Enter", "confirm"),
-                ("Tab", "field"),
+                navigation,
                 ("Esc", "cancel"),
             ])),
             help,

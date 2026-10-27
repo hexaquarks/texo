@@ -101,11 +101,12 @@ impl LoginDialog {
             }
         }
         lines.push(Line::default());
-        lines.push(theme::shortcuts(&[
-            ("↑↓", "navigate"),
-            ("Enter", "select"),
-            ("Esc", "cancel"),
-        ]));
+        let mut bindings = Vec::new();
+        if matches!(self.step, Step::Provider | Step::Method | Step::Model) {
+            bindings.push(("↑↓/jk", "navigate"));
+        }
+        bindings.extend([("Enter", "select"), ("Esc", "cancel")]);
+        lines.push(theme::shortcuts(&bindings));
         if !self.error.is_empty() {
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(

@@ -219,8 +219,10 @@ impl LoginDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Result<Option<Profile>> {
         if self.step == Step::Model {
             match key.code {
-                KeyCode::Up => self.selection = self.selection.saturating_sub(1),
-                KeyCode::Down => {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.selection = self.selection.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.selection = (self.selection + 1).min(self.models.len().saturating_sub(1))
                 }
                 KeyCode::Enter => {
@@ -234,8 +236,10 @@ impl LoginDialog {
             }
         } else if matches!(self.step, Step::Provider | Step::Method) {
             match key.code {
-                KeyCode::Up => self.selection = self.selection.saturating_sub(1),
-                KeyCode::Down => {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.selection = self.selection.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.selection = (self.selection + 1).min(self.choices().len() - 1)
                 }
                 KeyCode::Enter => return self.activate(),

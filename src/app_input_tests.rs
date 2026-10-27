@@ -1265,3 +1265,45 @@ fn vim_line_selection_and_pending_commands_remain_scoped_to_the_resume() -> anyh
     assert_eq!(app.session.editor.source(), source);
     Ok(())
 }
+
+#[test]
+fn vim_menu_navigation_leaves_editable_fields_and_document_untouched() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let source = app.session.editor.source();
+    let area = Rect::new(0, 0, 100, 30);
+    let press = |app: &mut App, code| {
+        app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), area);
+    };
+
+    app.actions = Some(ActionMenu::open());
+    press(&mut app, KeyCode::Char('j'));
+    assert!(matches!(
+        app.actions.as_ref().unwrap().selected(),
+        Action::ImportResume
+    ));
+    press(&mut app, KeyCode::Char('k'));
+    assert!(matches!(
+        app.actions.as_ref().unwrap().selected(),
+        Action::NewResume
+    ));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.project_dialog.is_some());
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('k'));
+    assert_eq!(app.project_dialog.as_ref().unwrap().name.lines(), &["jk"]);
+    press(&mut app, KeyCode::Esc);
+
+    app.open_settings();
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('k'));
+    assert_eq!(app.settings.as_ref().unwrap().value(), "jk");
+    press(&mut app, KeyCode::Esc);
+
+    app.focus = Focus::Assistant;
+    app.session.assistant.input.insert_str("/");
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('k'));
+    assert_eq!(app.session.assistant.input.lines(), &["/jk"]);
+    assert_eq!(app.session.editor.source(), source);
+    Ok(())
+}

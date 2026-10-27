@@ -273,11 +273,11 @@ fn model_picker_scrolls_and_saves_the_selected_live_model() {
     dialog.models = (0..40).map(|i| format!("gpt-live-{i}")).collect();
     for _ in 0..25 {
         dialog
-            .handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
             .unwrap();
     }
     dialog
-        .handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
         .unwrap();
     let mut terminal = Terminal::new(TestBackend::new(70, 12)).unwrap();
     terminal
@@ -336,4 +336,30 @@ fn cancelling_and_tiny_terminals_are_safe() {
             .unwrap();
     }
     assert!(saved.borrow().is_none());
+}
+
+#[test]
+fn vim_navigation_moves_login_choices_but_api_keys_keep_literal_letters() {
+    let (_directory, mut dialog, _) = dialog(false);
+    for step in [Step::Provider, Step::Method] {
+        dialog.step = step;
+        dialog.selection = 0;
+        dialog
+            .handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(dialog.selection, 1);
+        dialog
+            .handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(dialog.selection, 0);
+    }
+
+    dialog.step = Step::Key;
+    dialog
+        .handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+        .unwrap();
+    dialog
+        .handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
+        .unwrap();
+    assert_eq!(dialog.key.as_str(), "jk");
 }
