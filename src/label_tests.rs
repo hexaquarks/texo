@@ -122,9 +122,9 @@ fn resume_manage_control_opens_rename_and_label_actions() -> anyhow::Result<()> 
     let source = app.session.editor.source();
     let mut terminal = Terminal::new(TestBackend::new(SCREEN.width, SCREEN.height))?;
     terminal.draw(|frame| app.draw(frame))?;
-    let button = app
-        .projects
-        .manage_button(app.workspace_layout(SCREEN).projects);
+    let resumes = app.workspace_layout(SCREEN).projects;
+    let button = app.projects.manage_button(resumes);
+    assert_eq!(button.y, resumes.bottom() - 2);
     let text: String = (button.x..button.right())
         .map(|x| terminal.backend().buffer()[(x, button.y)].symbol())
         .collect();

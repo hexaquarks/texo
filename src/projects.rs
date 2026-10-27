@@ -19,8 +19,6 @@ const CONTENT_INSET: u16 = 1;
 const ITEM_HEIGHT: u16 = 1;
 const PROJECT_MARKER_WIDTH: u16 = 3;
 const MANAGE_BUTTON_WIDTH: u16 = 10;
-const MANAGE_KEYCAP_WIDTH: u16 = 3;
-const MIN_VISIBLE_NAME_WIDTH: u16 = 8;
 
 pub struct Projects {
     root: PathBuf,
@@ -126,24 +124,17 @@ impl Projects {
     }
 
     pub fn manage_button(&self, area: Rect) -> Rect {
-        let content = list_area(area);
-        let Some(selected) = self.state.selected() else {
-            return Rect::default();
-        };
-        if selected < self.state.offset() || content.width < MANAGE_KEYCAP_WIDTH {
+        let inner = area.inner(Margin::new(CONTENT_INSET, 1));
+        if self.selected_path().is_none() || inner.height <= HEADER_HEIGHT {
             return Rect::default();
         }
 
-        let preceding_height: u16 = self.catalog.projects[self.state.offset()..selected]
-            .iter()
-            .map(project_height)
-            .fold(0, u16::saturating_add);
-        let row = content.y.saturating_add(preceding_height);
-        if row >= content.bottom() {
-            return Rect::default();
-        }
-        let width = manage_button_width(content.width);
-        Rect::new(content.right() - width, row, width, 1)
+        Rect::new(
+            inner.x,
+            inner.bottom() - 1,
+            MANAGE_BUTTON_WIDTH.min(inner.width),
+            1,
+        )
     }
 
     pub fn new_button(area: Rect) -> Rect {
@@ -202,11 +193,6 @@ impl Projects {
             .enumerate()
             .map(|(index, project)| {
                 let selected = self.state.selected() == Some(index);
-                let name_width = if selected {
-                    text_width.saturating_sub(manage_button_width(list_area(resumes).width))
-                } else {
-                    text_width
-                };
                 let name_style = if selected {
                     Style::default().add_modifier(Modifier::BOLD)
                 } else {
@@ -217,7 +203,7 @@ impl Projects {
                         if selected { " ○ " } else { " ● " },
                         Style::default().fg(theme::TEAL),
                     ),
-                    Span::styled(sidebar_text(&project.manifest.name, name_width), name_style),
+                    Span::styled(sidebar_text(&project.manifest.name, text_width), name_style),
                 ])];
                 if let Some(label) = &project.manifest.label {
                     lines.push(Line::from(vec![
@@ -240,26 +226,17 @@ impl Projects {
         );
 
         let manage = self.manage_button(resumes);
-        let manage_hint = if manage.width < MANAGE_BUTTON_WIDTH {
-            Line::from(theme::keycap("m"))
-        } else {
-            theme::shortcuts(&[("m", "Manage")])
-        };
-        frame.render_widget(
-            Paragraph::new(manage_hint).style(theme::text().bg(theme::SELECTION)),
-            manage,
-        );
-
-        let note = if !self.catalog.warnings.is_empty() {
-            format!("{} invalid projects · Actions", self.catalog.warnings.len())
-        } else if self.catalog.projects.is_empty() {
-            "No resumes yet".into()
-        } else if focused && !self.files_focused {
-            "m Manage · + New".into()
-        } else {
-            String::new()
-        };
-        if inner.height > HEADER_HEIGHT {
+        if !manage.is_empty() {
+            frame.render_widget(
+                Paragraph::new(theme::shortcuts(&[("m", "Manage")])).style(theme::text()),
+                manage,
+            );
+        } else if inner.height > HEADER_HEIGHT {
+            let note = if !self.catalog.warnings.is_empty() {
+                format!("{} invalid projects · Actions", self.catalog.warnings.len())
+            } else {
+                "No resumes yet".into()
+            };
             frame.render_widget(
                 Paragraph::new(note).style(theme::muted()),
                 Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
@@ -307,14 +284,6 @@ impl Projects {
                 ),
             );
         }
-    }
-}
-
-fn manage_button_width(width: u16) -> u16 {
-    if width >= PROJECT_MARKER_WIDTH + MIN_VISIBLE_NAME_WIDTH + MANAGE_BUTTON_WIDTH {
-        MANAGE_BUTTON_WIDTH
-    } else {
-        MANAGE_KEYCAP_WIDTH.min(width)
     }
 }
 
@@ -439,7 +408,7 @@ mod tests {
                 .map(|column| buffer[(column, row)].symbol())
                 .collect::<String>()
         };
-        assert_eq!(row_text(list_area(area).y), "  ○ Very lo… m  ");
+        assert_eq!(row_text(list_area(area).y), "  ○ Very long … ");
         assert_eq!(
             row_text(list_area(area).y + ITEM_HEIGHT),
             "    Senior sys… "
