@@ -47,9 +47,9 @@ impl ProjectDialog {
         ]);
         source.select_all();
         for input in [&mut name, &mut source] {
-            input.set_style(theme::text().bg(theme::ELEVATED));
-            input.set_cursor_line_style(theme::text().bg(theme::ELEVATED));
-            input.set_selection_style(theme::text().bg(theme::SELECTION));
+            input.set_style(theme::dialog());
+            input.set_cursor_line_style(theme::dialog());
+            input.set_selection_style(theme::dialog().bg(theme::SELECTION));
         }
 
         Self {
@@ -93,8 +93,8 @@ impl ProjectDialog {
         let block = Block::bordered()
             .title(title)
             .padding(Padding::uniform(1))
-            .style(theme::text())
-            .border_style(theme::pane_title(true));
+            .style(theme::dialog())
+            .border_style(theme::dialog_title());
         let inner = block.inner(area);
         frame.render_widget(Clear, area);
         frame.render_widget(block, area);
@@ -111,9 +111,9 @@ impl ProjectDialog {
             (&mut self.name, !self.source_focused),
         ] {
             let cursor = if focused {
-                theme::text().fg(theme::BACKGROUND).bg(theme::ACCENT)
+                theme::dialog().fg(theme::BACKGROUND).bg(theme::ACCENT)
             } else {
-                theme::text().bg(theme::ELEVATED)
+                theme::dialog()
             };
             input.set_cursor_style(cursor);
         }
@@ -127,7 +127,7 @@ impl ProjectDialog {
             frame.render_stateful_widget(
                 List::new(items)
                     .block(Block::default().title("Choose the TeX entrypoint"))
-                    .highlight_style(theme::text().bg(theme::SELECTION)),
+                    .highlight_style(theme::dialog().bg(theme::SELECTION)),
                 form,
                 &mut self.selection,
             );
@@ -167,7 +167,7 @@ impl ProjectDialog {
 
         frame.render_widget(
             Paragraph::new(self.error.as_str())
-                .style(theme::text().fg(theme::ERROR))
+                .style(theme::dialog().fg(theme::ERROR))
                 .wrap(ratatui::widgets::Wrap { trim: false }),
             error,
         );

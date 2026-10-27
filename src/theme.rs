@@ -8,6 +8,7 @@ pub const EDITOR: Color = BACKGROUND;
 pub const PREVIEW: Color = Color::Rgb(0, 0, 0);
 pub const SIDEBAR: Color = BACKGROUND;
 pub const ELEVATED: Color = Color::Rgb(24, 24, 37);
+pub const DIALOG_BACKGROUND: Color = ELEVATED;
 pub const SELECTION: Color = Color::Rgb(30, 30, 46);
 pub const DIVIDER: Color = Color::Rgb(49, 50, 68);
 pub const TEXT: Color = Color::Rgb(205, 214, 244);
@@ -25,6 +26,14 @@ pub const PANEL_PADDING: u16 = 2;
 
 pub fn text() -> Style {
     Style::default().fg(TEXT).bg(BACKGROUND)
+}
+
+pub fn dialog() -> Style {
+    Style::default().fg(TEXT).bg(DIALOG_BACKGROUND)
+}
+
+pub fn dialog_title() -> Style {
+    dialog().fg(ACCENT)
 }
 
 pub fn muted() -> Style {

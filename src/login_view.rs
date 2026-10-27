@@ -14,7 +14,7 @@ const MASKED_KEY_CHARACTERS: usize = 32;
 
 impl LoginDialog {
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Block::default().style(theme::text()), area);
+        frame.render_widget(Block::default().style(theme::dialog()), area);
         let content = dialog_content(area);
         let title = match self.step {
             Step::Provider => "Connect an assistant",
@@ -23,10 +23,7 @@ impl LoginDialog {
             Step::Model | Step::LoadingModels => "Choose a model",
             Step::Waiting => "Complete sign-in",
         };
-        let mut lines = vec![
-            Line::styled(title, Style::default().fg(theme::LAVENDER)),
-            Line::default(),
-        ];
+        let mut lines = vec![Line::styled(title, theme::dialog_title()), Line::default()];
         if matches!(self.step, Step::Provider | Step::Method) {
             for (index, choice) in self.choices().iter().enumerate() {
                 let selected = index == self.selection;
@@ -37,9 +34,9 @@ impl LoginDialog {
                         choice.label(self.provider)
                     ),
                     if selected {
-                        theme::pane_title(true)
+                        theme::dialog_title()
                     } else {
-                        theme::text()
+                        theme::dialog()
                     },
                 ));
             }
@@ -58,9 +55,9 @@ impl LoginDialog {
                 lines.push(Line::styled(
                     format!("{} {}", if selected { "›" } else { " " }, model),
                     if selected {
-                        theme::pane_title(true)
+                        theme::dialog_title()
                     } else {
-                        theme::text()
+                        theme::dialog()
                     },
                 ));
             }
@@ -91,7 +88,7 @@ impl LoginDialog {
                 }
                 _ => String::new(),
             };
-            lines.push(Line::styled(text, theme::pane_title(true)));
+            lines.push(Line::styled(text, theme::dialog_title()));
             if self.step == Step::Key {
                 lines.push(Line::default());
                 lines.push(Line::styled(
