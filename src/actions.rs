@@ -158,16 +158,8 @@ impl ActionMenu {
     pub fn draw(&mut self, frame: &mut Frame, prefix: &str) {
         let [area, choices, help] = self.layout(frame.area());
         frame.render_widget(Clear, area);
-        let title = Line::styled(
-            format!(" {} ", self.title),
-            theme::text().fg(theme::ACCENT).bg(theme::ELEVATED),
-        );
-        frame.render_widget(
-            dialog_block(title)
-                .border_style(Style::default().fg(theme::ACCENT))
-                .style(theme::text().bg(theme::ELEVATED)),
-            area,
-        );
+        let title = Line::styled(format!(" {} ", self.title), theme::dialog_title());
+        frame.render_widget(dialog_block(title), area);
         let selected = self.state.selected();
         let rows =
             self.entries
@@ -189,16 +181,16 @@ impl ActionMenu {
                         None => Line::from(format!(" {description}")),
                     };
                     let style = if selected == Some(index) {
-                        theme::text().fg(theme::ACCENT).bg(theme::SELECTION)
+                        theme::dialog().fg(theme::ACCENT).bg(theme::SELECTION)
                     } else {
-                        theme::text().bg(theme::ELEVATED)
+                        theme::dialog()
                     };
 
                     // Apply selection before the spans, so it does not overwrite keycap shading.
                     ListItem::new(line).style(style)
                 });
 
-        let list = List::new(rows).style(theme::text().bg(theme::ELEVATED));
+        let list = List::new(rows).style(theme::dialog());
         frame.render_stateful_widget(list, choices, &mut self.state);
         frame.render_widget(
             Paragraph::new(theme::shortcuts(&[
@@ -206,7 +198,7 @@ impl ActionMenu {
                 ("Enter", "select"),
                 ("Esc", "close"),
             ]))
-            .style(theme::text().bg(theme::ELEVATED)),
+            .style(theme::dialog()),
             help,
         );
     }
@@ -223,7 +215,7 @@ impl ExportDialog {
         let stem = document.file_stem().unwrap_or_default().to_string_lossy();
         let destination = document.with_file_name(format!("{stem}-export.pdf"));
         let mut input = TextArea::new(vec![destination.display().to_string()]);
-        input.set_style(theme::text());
+        input.set_style(theme::dialog());
         input.set_cursor_line_style(Style::default());
         input.set_cursor_style(Style::default().bg(theme::ACCENT).fg(theme::BACKGROUND));
         Self {
@@ -284,7 +276,7 @@ impl ExportDialog {
         frame.render_widget(Clear, area);
         let panel = dialog_block(" Export PDF ").padding(Padding::uniform(1));
         let content = panel.inner(area);
-        frame.render_widget(panel.style(theme::text()), area);
+        frame.render_widget(panel, area);
         let [label, input, message] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(2),
@@ -313,7 +305,8 @@ fn dialog_block<'a>(title: impl Into<Line<'a>>) -> Block<'a> {
         .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::DIVIDER))
+        .border_style(theme::dialog_title())
+        .style(theme::dialog())
 }
 
 #[cfg(test)]
@@ -362,7 +355,10 @@ mod tests {
         let description_column = column + "ctrl-x s".len() as u16 + 3;
         assert_eq!(buffer[(description_column, row)].symbol(), "S");
         assert_eq!(buffer[(description_column, row)].bg, theme::SELECTION);
-        assert_eq!(buffer[(area.x + 1, area.y + 1)].bg, theme::ELEVATED);
+        assert_eq!(
+            buffer[(area.x + 1, area.y + 1)].bg,
+            theme::DIALOG_BACKGROUND
+        );
         assert_eq!(buffer[(area.x + 2, area.y)].fg, theme::ACCENT);
         let [_, _, help] = menu.layout(buffer.area);
         assert!(menu.click(buffer.area, help.x, help.y).is_none());

@@ -29,9 +29,9 @@ pub struct SettingsDialog {
 impl SettingsDialog {
     pub fn new(root: &Path, config_path: &Path, prefix_label: String) -> Self {
         let mut input = TextArea::new(vec![crate::workspace::display_path(root)]);
-        input.set_style(theme::text().bg(theme::ELEVATED));
-        input.set_cursor_line_style(theme::text().bg(theme::ELEVATED));
-        input.set_selection_style(theme::text().bg(theme::SELECTION));
+        input.set_style(theme::dialog());
+        input.set_cursor_line_style(theme::dialog());
+        input.set_selection_style(theme::dialog().bg(theme::SELECTION));
         input.select_all();
         Self {
             input,
@@ -62,8 +62,8 @@ impl SettingsDialog {
         Block::default()
             .title(" Settings ")
             .borders(Borders::ALL)
-            .border_style(theme::pane_title(true))
-            .style(theme::text())
+            .border_style(theme::dialog_title())
+            .style(theme::dialog())
             .padding(Padding::uniform(1))
     }
 
@@ -121,9 +121,9 @@ impl SettingsDialog {
             (vim, VIM_LABEL, EditingMode::Vim),
         ] {
             let style = if self.editor_preferences.mode == mode {
-                theme::text().fg(theme::BACKGROUND).bg(theme::ACCENT)
+                theme::dialog().fg(theme::BACKGROUND).bg(theme::ACCENT)
             } else {
-                theme::text().bg(theme::ELEVATED)
+                theme::dialog()
             };
             frame.render_widget(Paragraph::new(text).style(style), area);
         }
@@ -193,7 +193,7 @@ impl SettingsDialog {
         };
         frame.render_widget(
             Paragraph::new(message)
-                .style(theme::text().fg(color))
+                .style(theme::dialog().fg(color))
                 .wrap(Wrap { trim: false }),
             error,
         );

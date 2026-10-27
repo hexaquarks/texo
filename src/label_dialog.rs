@@ -50,7 +50,7 @@ impl LabelDialog {
         let mut name = TextArea::new(vec![
             label.map_or_else(String::new, |label| label.name.clone()),
         ]);
-        name.set_style(theme::text().bg(theme::ELEVATED));
+        name.set_style(theme::dialog());
         name.set_cursor_line_style(Style::default());
         name.set_selection_style(Style::default().bg(theme::SELECTION));
         name.select_all();
@@ -91,8 +91,8 @@ impl LabelDialog {
         Block::bordered()
             .title(" Resume label ")
             .padding(Padding::horizontal(1))
-            .style(theme::text())
-            .border_style(theme::pane_title(true))
+            .style(theme::dialog())
+            .border_style(theme::dialog_title())
     }
 
     fn rows(screen: Rect) -> [Rect; 4] {
@@ -267,7 +267,7 @@ impl LabelDialog {
             self.name.set_cursor_style(if self.color_focused {
                 Style::default()
             } else {
-                theme::text().bg(theme::ACCENT).fg(theme::BACKGROUND)
+                theme::dialog().bg(theme::ACCENT).fg(theme::BACKGROUND)
             });
             frame.render_widget(Paragraph::new("Custom label"), name_label);
             frame.render_widget(&self.name, name);
@@ -315,7 +315,7 @@ impl LabelDialog {
             );
         } else {
             frame.render_widget(
-                Paragraph::new(self.error.as_str()).style(theme::text().fg(theme::ERROR)),
+                Paragraph::new(self.error.as_str()).style(theme::dialog().fg(theme::ERROR)),
                 error,
             );
         }
