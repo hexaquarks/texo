@@ -61,7 +61,6 @@ fn custom_label_dialog_preserves_unsaved_history_review_and_concurrent_rename() 
     )?;
     reopened.open_label_dialog();
     key(&mut reopened, KeyCode::Enter);
-    key(&mut reopened, KeyCode::Enter);
     assert!(reopened.label_dialog.is_none());
     assert_eq!(
         resume_project::Project::load(&root)?.manifest.label,
@@ -157,5 +156,45 @@ fn resume_manage_control_opens_rename_and_label_actions() -> anyhow::Result<()> 
     key(&mut app, KeyCode::Enter);
     assert!(app.label_dialog.is_some());
     assert_eq!(app.session.editor.source(), source);
+    Ok(())
+}
+
+#[test]
+fn saved_custom_labels_remain_choices_after_unassigning_and_restarting() -> anyhow::Result<()> {
+    let (directory, mut app) = managed_application()?;
+    let root = app.session.editor.path.parent().unwrap().to_path_buf();
+    let label = ResumeLabel::new("Systems engineer", LabelColor::Teal)?;
+    // Discover an existing custom label created before the reusable catalog existed.
+    resume_project::Project::load(&root)?.set_label(Some(label.clone()))?;
+    app.refresh_projects();
+    app.open_label_dialog();
+    assert!(app.label_dialog.as_ref().unwrap().choices.contains(&label));
+    key(&mut app, KeyCode::Home);
+    key(&mut app, KeyCode::Enter);
+    assert!(
+        resume_project::Project::load(&root)?
+            .manifest
+            .label
+            .is_none()
+    );
+
+    let second = resume_project::create(directory.path(), "Second")?;
+    let mut reopened = App::with_workspace(
+        Editor::open(second.document())?,
+        Preview::default(),
+        directory.path().to_path_buf(),
+    )?;
+    reopened.open_label_dialog();
+    let choices = &reopened.label_dialog.as_ref().unwrap().choices;
+    assert_eq!(choices.iter().filter(|choice| **choice == label).count(), 1);
+    let index = choices.iter().position(|choice| *choice == label).unwrap();
+    for _ in 0..=index {
+        key(&mut reopened, KeyCode::Char('j'));
+    }
+    key(&mut reopened, KeyCode::Enter);
+    assert_eq!(
+        resume_project::Project::load(&second.root)?.manifest.label,
+        Some(label)
+    );
     Ok(())
 }

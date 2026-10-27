@@ -3,6 +3,7 @@ use ratatui::{crossterm::event::Event, layout::Rect};
 use super::App;
 use crate::{
     label_dialog::{LabelDialog, LabelResult},
+    resume_label::{label_choices, remember_labels},
     resume_project::Project,
 };
 
@@ -13,7 +14,14 @@ impl App {
             return;
         };
 
-        self.label_dialog = Some(LabelDialog::new(project));
+        let choices = match label_choices(self.projects.root(), &self.projects.catalog.projects) {
+            Ok(choices) => choices,
+            Err(error) => {
+                self.report_error(error);
+                return;
+            }
+        };
+        self.label_dialog = Some(LabelDialog::new(project, choices));
         self.actions = None;
         self.prefix.cancel();
     }
@@ -28,7 +36,12 @@ impl App {
             LabelResult::Continue => {}
             LabelResult::Apply(label) => {
                 // Reload metadata so a label edit cannot overwrite a concurrent rename.
-                let result = Project::load(&dialog.project_root)
+                let mut choices = dialog.choices.clone();
+                if let Some(label) = &label {
+                    choices.push(label.clone());
+                }
+                let result = remember_labels(self.projects.root(), &choices)
+                    .and_then(|()| Project::load(&dialog.project_root))
                     .and_then(|mut project| project.set_label(label));
 
                 match result {

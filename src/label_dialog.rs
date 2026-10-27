@@ -12,14 +12,13 @@ use ratatui_textarea::TextArea;
 use texo::theme;
 
 use crate::{
-    resume_label::{LabelColor, MAX_LABEL_CHARS, MAX_LABEL_WORDS, PRESET_LABELS, ResumeLabel},
+    resume_label::{LabelColor, MAX_LABEL_CHARS, MAX_LABEL_WORDS, ResumeLabel},
     resume_project::Project,
 };
 
 const DIALOG_WIDTH: u16 = 52;
 const DIALOG_HEIGHT: u16 = 17;
 const NO_LABEL_INDEX: usize = 0;
-const CUSTOM_LABEL_INDEX: usize = PRESET_LABELS.len() + 1;
 
 pub enum LabelResult {
     Continue,
@@ -30,6 +29,7 @@ pub enum LabelResult {
 pub struct LabelDialog {
     pub project_root: PathBuf,
     project_name: String,
+    pub choices: Vec<ResumeLabel>,
     selection: ListState,
     custom: bool,
     name: TextArea<'static>,
@@ -39,13 +39,13 @@ pub struct LabelDialog {
 }
 
 impl LabelDialog {
-    pub fn new(project: &Project) -> Self {
+    pub fn new(project: &Project, choices: Vec<ResumeLabel>) -> Self {
         let label = project.manifest.label.as_ref();
         let selected = label.map_or(NO_LABEL_INDEX, |label| {
-            PRESET_LABELS
+            choices
                 .iter()
-                .position(|(name, color)| *name == label.name && *color == label.color)
-                .map_or(CUSTOM_LABEL_INDEX, |index| index + 1)
+                .position(|choice| choice == label)
+                .map_or(choices.len() + 1, |index| index + 1)
         });
         let mut name = TextArea::new(vec![
             label.map_or_else(String::new, |label| label.name.clone()),
@@ -66,6 +66,7 @@ impl LabelDialog {
         Self {
             project_root: project.root.clone(),
             project_name: project.manifest.name.clone(),
+            choices,
             selection: ListState::default().with_selected(Some(selected)),
             custom: false,
             name,
@@ -162,8 +163,25 @@ impl LabelDialog {
                     }
                     KeyCode::Down | KeyCode::Char('j') => self
                         .selection
-                        .select(Some((selected + 1).min(CUSTOM_LABEL_INDEX))),
+                        .select(Some((selected + 1).min(self.choices.len() + 1))),
+                    KeyCode::Home => self.selection.select(Some(NO_LABEL_INDEX)),
+                    KeyCode::End => self.selection.select(Some(self.choices.len() + 1)),
+                    KeyCode::PageUp | KeyCode::PageDown => {
+                        let page = usize::from(Self::rows(screen)[1].height.max(1));
+                        self.move_selection(key.code == KeyCode::PageDown, page);
+                    }
                     _ => {}
+                }
+            }
+            Event::Mouse(mouse)
+                if !self.custom
+                    && matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    ) =>
+            {
+                if Self::rows(screen)[1].contains((mouse.column, mouse.row).into()) {
+                    self.move_selection(mouse.kind == MouseEventKind::ScrollDown, 1);
                 }
             }
             Event::Paste(text) if self.custom && !self.color_focused => {
@@ -186,7 +204,7 @@ impl LabelDialog {
                     }
                 } else if form.contains(position) {
                     let index = self.selection.offset() + usize::from(mouse.row - form.y);
-                    if index <= CUSTOM_LABEL_INDEX {
+                    if index <= self.choices.len() + 1 {
                         self.selection.select(Some(index));
                         return self.apply();
                     }
@@ -196,6 +214,16 @@ impl LabelDialog {
         }
 
         LabelResult::Continue
+    }
+
+    fn move_selection(&mut self, down: bool, amount: usize) {
+        let selected = self.selection.selected().unwrap_or(NO_LABEL_INDEX);
+        let next = if down {
+            selected.saturating_add(amount).min(self.choices.len() + 1)
+        } else {
+            selected.saturating_sub(amount)
+        };
+        self.selection.select(Some(next));
     }
 
     fn apply(&mut self) -> LabelResult {
@@ -214,18 +242,12 @@ impl LabelDialog {
 
         match self.selection.selected().unwrap_or(NO_LABEL_INDEX) {
             NO_LABEL_INDEX => LabelResult::Apply(None),
-            CUSTOM_LABEL_INDEX => {
+            index if index == self.choices.len() + 1 => {
                 self.custom = true;
                 self.color_focused = false;
                 LabelResult::Continue
             }
-            index => {
-                let (name, color) = PRESET_LABELS[index - 1];
-                LabelResult::Apply(Some(ResumeLabel {
-                    name: name.into(),
-                    color,
-                }))
-            }
+            index => LabelResult::Apply(Some(self.choices[index - 1].clone())),
         }
     }
 
@@ -269,10 +291,10 @@ impl LabelDialog {
             }
         } else {
             let mut items = vec![ListItem::new("No label")];
-            items.extend(PRESET_LABELS.iter().map(|(name, color)| {
+            items.extend(self.choices.iter().map(|label| {
                 ListItem::new(Line::from(Span::styled(
-                    *name,
-                    Style::default().fg(color.color()),
+                    label.name.as_str(),
+                    Style::default().fg(label.color.color()),
                 )))
             }));
             items.push(ListItem::new("Custom…"));
@@ -283,15 +305,81 @@ impl LabelDialog {
             );
         }
 
-        frame.render_widget(
-            Paragraph::new(self.error.as_str()).style(theme::text().fg(theme::ERROR)),
-            error,
-        );
+        if !self.custom && self.error.is_empty() {
+            let position = self.selection.selected().unwrap_or(0) + 1;
+            let count = self.choices.len() + 2;
+            frame.render_widget(
+                Paragraph::new(format!("{position}/{count} · ↑↓ or j/k · PgUp/PgDn"))
+                    .style(theme::muted()),
+                error,
+            );
+        } else {
+            frame.render_widget(
+                Paragraph::new(self.error.as_str()).style(theme::text().fg(theme::ERROR)),
+                error,
+            );
+        }
         let bindings = if self.custom {
             vec![("Enter", "Save"), ("Tab", "Name/color"), ("Esc", "Back")]
         } else {
             vec![("Enter", "Select"), ("Esc", "Cancel")]
         };
         frame.render_widget(Paragraph::new(theme::shortcuts(&bindings)), help);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{
+        Terminal,
+        backend::TestBackend,
+        crossterm::event::{KeyEvent, MouseEvent},
+    };
+
+    #[test]
+    fn long_label_picker_scrolls_and_clicks_the_visible_choice() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let project = crate::resume_project::create(directory.path(), "General")?;
+        let choices = (0..40)
+            .map(|index| ResumeLabel::new(&format!("Role {index}"), LabelColor::Teal))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut dialog = LabelDialog::new(&project, choices);
+        let screen = Rect::new(0, 0, 60, 20);
+        let mut terminal = Terminal::new(TestBackend::new(screen.width, screen.height))?;
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        dialog.handle_event(key(KeyCode::End), screen);
+        terminal.draw(|frame| dialog.draw(frame))?;
+        assert!(dialog.selection.offset() > 0);
+
+        dialog.handle_event(key(KeyCode::PageUp), screen);
+        assert!(dialog.selection.selected().unwrap() < dialog.choices.len());
+        dialog.handle_event(key(KeyCode::PageDown), screen);
+        let form = LabelDialog::rows(screen)[1];
+        dialog.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: form.x,
+                row: form.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            screen,
+        );
+        assert_eq!(dialog.selection.selected(), Some(dialog.choices.len()));
+        terminal.draw(|frame| dialog.draw(frame))?;
+
+        let offset = dialog.selection.offset();
+        let expected = dialog.choices[offset - 1].clone();
+        let result = dialog.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: form.x,
+                row: form.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            screen,
+        );
+        assert!(matches!(result, LabelResult::Apply(Some(label)) if label == expected));
+        Ok(())
     }
 }

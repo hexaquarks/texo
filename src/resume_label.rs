@@ -1,4 +1,10 @@
-use anyhow::{Result, ensure};
+use std::{
+    fs,
+    io::{ErrorKind, Write},
+    path::Path,
+};
+
+use anyhow::{Context, Result, ensure};
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use texo::theme;
@@ -77,6 +83,70 @@ pub const PRESET_LABELS: [(&str, LabelColor); 8] = [
     ("DevOps", LabelColor::Teal),
     ("Research", LabelColor::Gold),
 ];
+
+const SAVED_LABELS_FILE: &str = ".texo-labels.toml";
+
+#[derive(Default, Serialize, Deserialize)]
+struct SavedLabels {
+    labels: Vec<ResumeLabel>,
+}
+
+impl SavedLabels {
+    fn load(root: &Path) -> Result<Self> {
+        let text = match fs::read_to_string(root.join(SAVED_LABELS_FILE)) {
+            Ok(text) => text,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error).context("Could not read saved labels"),
+        };
+        let mut saved: Self = toml_edit::de::from_str(&text).context("Invalid saved labels")?;
+        for label in &mut saved.labels {
+            *label = ResumeLabel::new(&label.name, label.color)?;
+        }
+        Ok(saved)
+    }
+}
+
+pub fn label_choices(
+    root: &Path,
+    projects: &[crate::resume_project::Project],
+) -> Result<Vec<ResumeLabel>> {
+    let mut choices: Vec<_> = PRESET_LABELS
+        .iter()
+        .map(|(name, color)| ResumeLabel {
+            name: (*name).into(),
+            color: *color,
+        })
+        .collect();
+    let saved = SavedLabels::load(root)?;
+    let assigned = projects
+        .iter()
+        .filter_map(|project| project.manifest.label.clone());
+    for label in saved.labels.into_iter().chain(assigned) {
+        if !choices.contains(&label) {
+            choices.push(label);
+        }
+    }
+    Ok(choices)
+}
+
+pub fn remember_labels(root: &Path, labels: &[ResumeLabel]) -> Result<()> {
+    // Merge the latest catalog so another dialog's saved choices are retained.
+    let mut saved = SavedLabels::load(root)?;
+    for label in labels {
+        let preset = PRESET_LABELS
+            .iter()
+            .any(|(name, color)| *name == label.name && *color == label.color);
+        if !preset && !saved.labels.contains(label) {
+            saved.labels.push(label.clone());
+        }
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(root).context("Could not save labels")?;
+    temporary.write_all(toml_edit::ser::to_string_pretty(&saved)?.as_bytes())?;
+    temporary
+        .persist(root.join(SAVED_LABELS_FILE))
+        .context("Could not save labels")?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
