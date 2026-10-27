@@ -16,6 +16,7 @@ use texo::theme;
 
 const DIALOG_WIDTH: u16 = 64;
 const EXPORT_HEIGHT: u16 = 8;
+const MENU_FRAME_HEIGHT: u16 = 6;
 
 #[derive(Clone, Copy)]
 pub enum Action {
@@ -125,15 +126,28 @@ impl ActionMenu {
         self.entries[self.state.selected().unwrap_or(0)].0
     }
 
+    fn layout(&self, screen: Rect) -> [Rect; 3] {
+        let area = centered(
+            screen,
+            DIALOG_WIDTH,
+            self.entries.len() as u16 + MENU_FRAME_HEIGHT,
+        );
+        let inner = dialog_block("").padding(Padding::uniform(1)).inner(area);
+        let [choices, _, help] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+        [area, choices, help]
+    }
+
     pub fn click(&mut self, screen: Rect, column: u16, row: u16) -> Option<Action> {
-        let area = centered(screen, DIALOG_WIDTH, self.entries.len() as u16 + 4);
-        if column <= area.x || column >= area.right().saturating_sub(1) {
+        let [_, choices, _] = self.layout(screen);
+        if !choices.contains((column, row).into()) {
             return None;
         }
-        if row >= area.bottom().saturating_sub(2) {
-            return None;
-        }
-        let index = self.state.offset() + usize::from(row.checked_sub(area.y + 2)?);
+        let index = self.state.offset() + usize::from(row - choices.y);
         if index >= self.entries.len() {
             return None;
         }
@@ -142,8 +156,18 @@ impl ActionMenu {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, prefix: &str) {
-        let area = centered(frame.area(), DIALOG_WIDTH, self.entries.len() as u16 + 4);
+        let [area, choices, help] = self.layout(frame.area());
         frame.render_widget(Clear, area);
+        let title = Line::styled(
+            format!(" {} ", self.title),
+            theme::text().fg(theme::ACCENT).bg(theme::ELEVATED),
+        );
+        frame.render_widget(
+            dialog_block(title)
+                .border_style(Style::default().fg(theme::ACCENT))
+                .style(theme::text().bg(theme::ELEVATED)),
+            area,
+        );
         let selected = self.state.selected();
         let rows =
             self.entries
@@ -167,22 +191,24 @@ impl ActionMenu {
                     let style = if selected == Some(index) {
                         theme::text().fg(theme::ACCENT).bg(theme::SELECTION)
                     } else {
-                        theme::text()
+                        theme::text().bg(theme::ELEVATED)
                     };
 
                     // Apply selection before the spans, so it does not overwrite keycap shading.
                     ListItem::new(line).style(style)
                 });
 
-        let mut title = Line::from(format!(" {}  ", self.title));
-        title.extend(
-            theme::shortcuts(&[("j/k", "move"), ("Enter", "select"), ("Esc", "close")]).spans,
+        let list = List::new(rows).style(theme::text().bg(theme::ELEVATED));
+        frame.render_stateful_widget(list, choices, &mut self.state);
+        frame.render_widget(
+            Paragraph::new(theme::shortcuts(&[
+                ("j/k", "move"),
+                ("Enter", "select"),
+                ("Esc", "close"),
+            ]))
+            .style(theme::text().bg(theme::ELEVATED)),
+            help,
         );
-
-        let list = List::new(rows)
-            .block(dialog_block(title).padding(Padding::uniform(1)))
-            .style(theme::text());
-        frame.render_stateful_widget(list, area, &mut self.state);
     }
 }
 
@@ -292,7 +318,11 @@ fn dialog_block<'a>(title: impl Into<Line<'a>>) -> Block<'a> {
 
 #[cfg(test)]
 fn menu_area(screen: Rect) -> Rect {
-    centered(screen, DIALOG_WIDTH, ACTIONS.len() as u16 + 4)
+    centered(
+        screen,
+        DIALOG_WIDTH,
+        ACTIONS.len() as u16 + MENU_FRAME_HEIGHT,
+    )
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -332,6 +362,14 @@ mod tests {
         let description_column = column + "ctrl-x s".len() as u16 + 3;
         assert_eq!(buffer[(description_column, row)].symbol(), "S");
         assert_eq!(buffer[(description_column, row)].bg, theme::SELECTION);
+        assert_eq!(buffer[(area.x + 1, area.y + 1)].bg, theme::ELEVATED);
+        assert_eq!(buffer[(area.x + 2, area.y)].fg, theme::ACCENT);
+        let [_, _, help] = menu.layout(buffer.area);
+        assert!(menu.click(buffer.area, help.x, help.y).is_none());
+        assert!(matches!(
+            menu.click(buffer.area, column, row),
+            Some(Action::Settings)
+        ));
         Ok(())
     }
 
