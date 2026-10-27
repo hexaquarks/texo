@@ -988,3 +988,55 @@ fn editor_mouse_drag_requires_an_editor_press_and_releases_outside_the_pane() ->
     assert_eq!(app.session.editor.text.yank_text(), "Résumé");
     Ok(())
 }
+
+#[test]
+fn vim_pending_navigation_clears_on_focus_prefix_document_and_review_changes() -> anyhow::Result<()>
+{
+    use crate::config::{EditingMode, EditorPreferences};
+    use ratatui_textarea::CursorMove;
+
+    let (directory, mut app) = application()?;
+    app.apply_editor_preferences(EditorPreferences {
+        mode: EditingMode::Vim,
+        ..EditorPreferences::default()
+    });
+    app.session.editor.replace_source("First\nSecond\nThird\n");
+    let area = Rect::new(0, 0, 160, 45);
+    let key = |app: &mut App, code| {
+        app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), area);
+    };
+    let first = app.session.editor.path.clone();
+    app.session.editor.text.move_cursor(CursorMove::Jump(2, 0));
+    key(&mut app, KeyCode::Char('g'));
+    app.handle_event(Event::FocusLost, area);
+    key(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.session.editor.text.cursor().0, 2);
+    key(&mut app, KeyCode::Esc);
+
+    key(&mut app, KeyCode::Char('g'));
+    pane_prefix(&mut app, 'c', KeyModifiers::NONE, area);
+    assert!(app.focus == Focus::Assistant);
+    key(&mut app, KeyCode::Char('i'));
+    assert_eq!(app.session.assistant.input.lines(), &["i"]);
+    app.focus = Focus::Editor;
+    key(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.session.editor.text.cursor().0, 2);
+
+    app.open_document(directory.path().join("second.tex"));
+    app.open_document(first);
+    key(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.session.editor.text.cursor().0, 2);
+    key(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.session.editor.text.cursor().0, 0);
+
+    key(&mut app, KeyCode::Char('g'));
+    let before = app.session.editor.source();
+    app.apply_edit(&ProposedEdit {
+        source_before: before.clone(),
+        source_after: format!("{before}Accepted\n"),
+    });
+    app.session.editor.text.move_cursor(CursorMove::Jump(2, 0));
+    key(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.session.editor.text.cursor().0, 2);
+    Ok(())
+}

@@ -96,6 +96,7 @@ impl SettingsDialog {
             Paragraph::new(Line::from(vec![
                 Span::raw("Prefix: "),
                 theme::keycap(&self.prefix_label),
+                Span::raw(format!(" · {}", self.editor_preferences.mode.label())),
                 Span::raw(if self.editor_preferences.soft_wrap {
                     " · Soft wrap: on"
                 } else {

@@ -22,11 +22,32 @@ pub struct Settings {
 #[serde(default, deny_unknown_fields)]
 pub struct EditorPreferences {
     pub soft_wrap: bool,
+    pub mode: EditingMode,
 }
 
 impl Default for EditorPreferences {
     fn default() -> Self {
-        Self { soft_wrap: true }
+        Self {
+            soft_wrap: true,
+            mode: EditingMode::Standard,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EditingMode {
+    #[default]
+    Standard,
+    Vim,
+}
+
+impl EditingMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Standard => "Standard",
+            Self::Vim => "Vim",
+        }
     }
 }
 
@@ -97,6 +118,7 @@ impl Settings {
         document["keybindings"]["prefix"] = toml_edit::value(&self.keybindings.prefix);
 
         document["editor"]["soft_wrap"] = toml_edit::value(self.editor.soft_wrap);
+        document["editor"]["mode"] = toml_edit::value(self.editor.mode.label().to_lowercase());
 
         let text = document.to_string();
         ensure!(
@@ -120,7 +142,12 @@ impl Settings {
         let parent = path.parent().context("Config needs a parent folder")?;
         std::fs::create_dir_all(parent)?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        file.write_all(b"resume_folder = \"~/resumes\"\n\n[keybindings]\nprefix = \"ctrl+x\"\n")?;
+        let defaults = concat!(
+            "resume_folder = \"~/resumes\"\n\n",
+            "[keybindings]\nprefix = \"ctrl+x\"\n\n",
+            "[editor]\nsoft_wrap = true\nmode = \"standard\"\n",
+        );
+        file.write_all(defaults.as_bytes())?;
         file.persist_noclobber(path)
             .context("Could not create config.toml")?;
         Ok(())
@@ -321,6 +348,25 @@ prefix = "ctrl+a"
                 .home_dir()
                 .canonicalize()?
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod editor_preference_tests {
+    use super::*;
+
+    #[test]
+    fn editing_mode_defaults_to_standard_and_vim_round_trips() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("config.toml");
+        let mut settings = Settings::load(&path)?;
+        assert!(settings.editor.mode == EditingMode::Standard);
+        settings.editor.mode = EditingMode::Vim;
+        settings.save(&path)?;
+        assert!(Settings::load(&path)?.editor.mode == EditingMode::Vim);
+        std::fs::write(&path, "[editor]\nmode = \"invalid\"\n")?;
+        assert!(Settings::load(&path).is_err());
         Ok(())
     }
 }
