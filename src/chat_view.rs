@@ -17,6 +17,7 @@ pub(super) const MAX_INPUT_ROWS: u16 = 6;
 const MIN_HISTORY_ROWS: u16 = 2;
 const HEADER_HEIGHT: u16 = 1;
 const HEADER_GAP: u16 = 1;
+const REVIEW_CONTROLS_HEIGHT: u16 = 2;
 
 const CHAT_TITLE_WIDTH: u16 = 13;
 
@@ -42,6 +43,23 @@ fn maximize_hint(maximized: bool, prefix: &str) -> Line<'static> {
 impl Assistant {
     pub fn input_area(&self, area: Rect) -> Rect {
         self.composer_layout(area)
+    }
+
+    pub fn review_area(&self, area: Rect) -> Rect {
+        if area.is_empty() || area.height < MIN_INPUT_HEIGHT + 2 {
+            return Rect::default();
+        }
+
+        let composer = self.input_area(area);
+        Rect::new(
+            composer.x,
+            composer
+                .y
+                .saturating_sub(REVIEW_CONTROLS_HEIGHT)
+                .max(area.y),
+            composer.width,
+            1,
+        )
     }
 
     fn model_label(&self) -> &str {
@@ -92,6 +110,7 @@ impl Assistant {
         focused: bool,
         maximized: bool,
         prefix: &str,
+        reviewing: bool,
     ) {
         if let Some(login) = &self.login
             && !login.is_loading_models()
@@ -116,11 +135,13 @@ impl Assistant {
         let activity_height = self.activity_height();
         let composer_height = self.composer_height(inner);
 
-        let [header, _, history, activity, composer] = Layout::vertical([
+        let review_height = if reviewing { REVIEW_CONTROLS_HEIGHT } else { 0 };
+        let [header, _, history, activity, _, composer] = Layout::vertical([
             Constraint::Length(HEADER_HEIGHT),
             Constraint::Length(HEADER_GAP),
             Constraint::Min(0),
             Constraint::Length(activity_height),
+            Constraint::Length(review_height),
             Constraint::Length(composer_height),
         ])
         .areas(inner);

@@ -67,9 +67,9 @@ fn pending_review_protects_the_editor_and_exposes_controls() -> anyhow::Result<(
         .map(|cell| cell.symbol())
         .collect();
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(text.contains(&format!("{} a Accept", app.prefix.label())));
-    assert!(text.contains(&format!("{} m Modify", app.prefix.label())));
-    assert!(text.contains(&format!("{} d Discard", app.prefix.label())));
+    assert!(text.contains(&format!("Accept {} a", app.prefix.label())));
+    assert!(text.contains(&format!("Modify {} m", app.prefix.label())));
+    assert!(text.contains(&format!("Discard {} d", app.prefix.label())));
     assert!(text.contains("[ Current ]"));
     assert!(text.contains("[ Proposed ]"));
     assert!(text.contains("Changed bullet"));
@@ -120,7 +120,7 @@ fn review_tabs_and_buttons_use_their_visible_hit_areas() -> anyhow::Result<()> {
         assert_eq!(app.session.show_proposed, expected);
     }
 
-    let discard = review_buttons(pane_content(layout.assistant))[2];
+    let discard = app.review_buttons(pane_content(layout.assistant))[2];
     app.handle_event(
         Event::Mouse(event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -308,5 +308,53 @@ fn stale_build_never_publishes_over_a_newer_editor_revision() -> anyhow::Result<
     assert!(app.session.preview.page_status().is_none());
     assert_eq!(app.session.editor.source(), "Newer unsaved text");
     assert!(app.session.status.contains("outdated"));
+    Ok(())
+}
+
+#[test]
+fn review_actions_stay_above_the_composer_when_resized_or_maximized() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let source = app.session.editor.source();
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: source.clone(),
+        source_after: "Pending proposal".into(),
+    }));
+    app.focus = Focus::Assistant;
+
+    for maximized in [false, true] {
+        app.session.chat_maximized = maximized;
+        for (width, height) in [(160, 45), (80, 24), (40, 18)] {
+            for draft in [
+                "",
+                "Please change the heading\nand keep the original details",
+            ] {
+                app.session.assistant.input.select_all();
+                app.session.assistant.input.insert_str(draft);
+                let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+                terminal.draw(|frame| app.draw(frame))?;
+                let area = Rect::new(0, 0, width, height);
+                let pane = pane_content(app.workspace_layout(area).assistant);
+                let composer = app.session.assistant.input_area(pane);
+                let buttons = app.review_buttons(pane);
+                let buffer = terminal.backend().buffer();
+
+                for (button, (label, color)) in buttons.into_iter().zip([
+                    ("Accept", theme::TEAL),
+                    ("Modify", theme::ACCENT),
+                    ("Discard", theme::ERROR),
+                ]) {
+                    assert_eq!(button.bottom() + 1, composer.y);
+                    let text: String = (button.x..button.right())
+                        .map(|x| buffer[(x, button.y)].symbol())
+                        .collect();
+                    assert!(text.contains(label), "{width}x{height}: {text:?}");
+                    assert_eq!(buffer[(button.x, button.y)].fg, color);
+                    assert_eq!(buffer[(button.x, button.y)].bg, theme::SELECTION);
+                }
+                assert_eq!(app.session.editor.source(), source);
+                assert!(app.session.proposal_review.is_some());
+            }
+        }
+    }
     Ok(())
 }
