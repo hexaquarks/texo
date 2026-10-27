@@ -19,8 +19,6 @@ const EDITOR_PERCENT: u16 = 55;
 // Borders, padding, header, and composer must fit even with the status row visible.
 pub(super) const MIN_CHAT_HEIGHT: u16 = 11;
 const DIAGNOSTICS_HEIGHT: u16 = 8;
-const REVIEW_CONTROLS_HEIGHT: u16 = 2;
-const REVIEW_BUTTON_WIDTH: u16 = 22;
 const PREVIEW_TAB_WIDTH: u16 = 13;
 
 impl App {
@@ -194,32 +192,42 @@ impl App {
         }
     }
 
-    pub(super) fn assistant_body(&self, area: Rect) -> Rect {
-        if self.session.proposal_review.is_some() && !self.session.assistant.login_open() {
-            below_header(area, REVIEW_CONTROLS_HEIGHT)
-        } else {
-            area
-        }
+    pub(super) fn review_buttons(&self, area: Rect) -> [Rect; 3] {
+        Layout::horizontal([Constraint::Ratio(1, 3); 3])
+            .areas(self.session.assistant.review_area(area))
     }
 
     pub(super) fn draw_assistant(&mut self, frame: &mut Frame, area: Rect) {
-        let body = self.assistant_body(area);
+        let reviewing =
+            self.session.proposal_review.is_some() && !self.session.assistant.login_open();
         self.session.assistant.draw(
             frame,
-            body,
+            area,
             self.focus == Focus::Assistant,
             self.session.chat_maximized,
             &self.prefix.label(),
+            reviewing,
         );
 
-        if self.session.proposal_review.is_some() && !self.session.assistant.login_open() {
-            for (button, label) in review_buttons(area).into_iter().zip([
-                (&format!("{} a", self.prefix.label()), "Accept"),
-                (&format!("{} m", self.prefix.label()), "Modify"),
-                (&format!("{} d", self.prefix.label()), "Discard"),
-            ]) {
+        if reviewing {
+            let actions = [
+                ('a', "Accept", theme::TEAL),
+                ('m', "Modify", theme::ACCENT),
+                ('d', "Discard", theme::ERROR),
+            ];
+            for (button, (key, label, color)) in self.review_buttons(area).into_iter().zip(actions)
+            {
+                let shortcut = format!("{} {key}", self.prefix.label());
+                let mut text = Line::from(vec![
+                    Span::raw(format!(" {label} ")),
+                    theme::keycap(&shortcut),
+                ]);
+                if text.width() > usize::from(button.width) {
+                    text = Line::from(format!(" {label} "));
+                }
                 frame.render_widget(
-                    Paragraph::new(theme::shortcuts(&[(label.0.as_str(), label.1)])),
+                    Paragraph::new(text)
+                        .style(Style::default().fg(color).bg(theme::SELECTION).bold()),
                     button,
                 );
             }
@@ -383,22 +391,6 @@ pub(super) fn below_header(area: Rect, height: u16) -> Rect {
         height: area.height - height,
         ..area
     }
-}
-
-pub(super) fn review_buttons(area: Rect) -> [Rect; 3] {
-    let row = Rect {
-        x: area.x + theme::PANEL_PADDING.min(area.width),
-        y: area.y + area.height.min(1),
-        width: area.width.saturating_sub(theme::PANEL_PADDING * 2),
-        height: area.height.saturating_sub(1).min(1),
-    };
-
-    Layout::horizontal([
-        Constraint::Length(REVIEW_BUTTON_WIDTH),
-        Constraint::Length(REVIEW_BUTTON_WIDTH),
-        Constraint::Length(REVIEW_BUTTON_WIDTH),
-    ])
-    .areas(row)
 }
 
 pub(super) fn preview_header(area: Rect) -> [Rect; 3] {

@@ -190,5 +190,5 @@ use {
         layout::Rect,
     },
     texo::theme,
-    workspace_view::{WorkspaceLayout, pane_content, preview_header, review_buttons},
+    workspace_view::{WorkspaceLayout, pane_content, preview_header},
 };

@@ -8,7 +8,7 @@ use ratatui::{
 
 use super::{
     App, Focus,
-    workspace_view::{WorkspaceLayout, below_header, pane_content, preview_header, review_buttons},
+    workspace_view::{WorkspaceLayout, below_header, pane_content, preview_header},
 };
 use crate::{
     actions::{Action, ActionMenu},
@@ -171,7 +171,7 @@ impl App {
         }
 
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-            let chat_body = self.assistant_body(pane_content(layout.assistant));
+            let chat_body = pane_content(layout.assistant);
             if Assistant::maximize_button(
                 chat_body,
                 self.session.chat_maximized,
@@ -201,7 +201,7 @@ impl App {
             } else if layout.assistant.contains(position) {
                 self.focus = Focus::Assistant;
                 self.session.assistant.click(
-                    self.assistant_body(pane_content(layout.assistant)),
+                    pane_content(layout.assistant),
                     mouse.column,
                     mouse.row,
                 );
@@ -338,7 +338,11 @@ impl App {
             return false;
         }
 
-        let buttons = review_buttons(pane_content(layout.assistant));
+        let buttons = if self.session.assistant.login_open() {
+            [Rect::default(); 3]
+        } else {
+            self.review_buttons(pane_content(layout.assistant))
+        };
         if let Some(index) = buttons.iter().position(|button| button.contains(position)) {
             match index {
                 0 => self.apply_proposal(),

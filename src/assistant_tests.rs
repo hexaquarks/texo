@@ -70,7 +70,7 @@ fn switching_providers_clears_old_conversation_without_changing_the_document() {
     assistant.input.insert_str("/logi");
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 20)).unwrap();
     terminal
-        .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+x", false))
         .unwrap();
     let text: String = terminal
         .backend()
@@ -95,7 +95,7 @@ fn model_command_completes_and_current_model_renders_below_input() {
     let area = Rect::new(0, 0, 100, 20);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
     terminal
-        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
         .unwrap();
     let input = assistant.input_area(area);
     let buffer = terminal.backend().buffer();
@@ -110,7 +110,7 @@ fn model_command_completes_and_current_model_renders_below_input() {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 10)).unwrap();
         terminal
-            .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+x"))
+            .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+x", false))
             .unwrap();
     }
 }
@@ -197,7 +197,7 @@ fn chat_header_shades_the_configured_shortcut_without_state_labels_or_send_butto
     let mut assistant = Assistant::new();
     let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
     terminal
-        .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+a"))
+        .draw(|frame| assistant.draw(frame, frame.area(), true, false, "Ctrl+a", false))
         .unwrap();
     let buffer = terminal.backend().buffer();
     let header: String = (0..70).map(|column| buffer[(column, 1)].symbol()).collect();
@@ -242,14 +242,14 @@ fn composer_wraps_grows_and_shrinks_without_changing_the_prompt_or_undo() {
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     let mut assistant = Assistant::new();
     terminal
-        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
         .unwrap();
     let empty_height = assistant.input_area(area).height;
     let prompt = "Please improve my backend experience while preserving all dates, technologies, and achievements.";
 
     assistant.input.insert_str(prompt);
     terminal
-        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
         .unwrap();
 
     assert!(assistant.input_area(area).height > empty_height);
@@ -276,7 +276,7 @@ fn composer_wraps_grows_and_shrinks_without_changing_the_prompt_or_undo() {
 
     assistant.input.undo();
     terminal
-        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
         .unwrap();
     assert_eq!(assistant.input.lines(), &[""]);
     assert_eq!(assistant.input_area(area).height, empty_height);
@@ -292,7 +292,7 @@ fn composer_bounds_long_pastes_and_keeps_the_cursor_visible_after_resize() {
     let area = Rect::new(0, 0, 100, 30);
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     terminal
-        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
         .unwrap();
 
     assert_eq!(composer_content(&assistant, area).height, MAX_INPUT_ROWS);
@@ -304,7 +304,7 @@ fn composer_bounds_long_pastes_and_keeps_the_cursor_visible_after_resize() {
         let area = Rect::new(0, 0, width, height);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+            .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
             .unwrap();
         assert_eq!(assistant.input.lines(), &[prompt.as_str()]);
         assert_eq!(assistant.input.scroll_offset().1, 0);
@@ -321,7 +321,7 @@ fn wrapped_composer_clicks_and_navigation_follow_visual_rows() {
     let mut assistant = Assistant::new();
     assistant.input.insert_str("界".repeat(60));
     terminal
-        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
         .unwrap();
     let content = composer_content(&assistant, area);
     let second_row_character = usize::from(content.width / 2) + 1;
@@ -341,7 +341,7 @@ fn wrapped_composer_clicks_and_navigation_follow_visual_rows() {
     assistant.input.select_all();
     assistant.input.insert_str("🙂e\u{301}".repeat(30));
     terminal
-        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
         .unwrap();
     let symbols: Vec<_> = terminal
         .backend()
@@ -366,7 +366,7 @@ fn composer_preserves_explicit_newlines_and_shrinks_after_clear() {
         .input
         .insert_str("First line\nSecond line\n\nFourth line");
     terminal
-        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
         .unwrap();
     assert_eq!(composer_content(&assistant, area).height, 4);
     assert_eq!(
@@ -376,7 +376,7 @@ fn composer_preserves_explicit_newlines_and_shrinks_after_clear() {
 
     assistant.clear_input();
     terminal
-        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x"))
+        .draw(|frame| assistant.draw(frame, area, true, false, "Ctrl+x", false))
         .unwrap();
     assert_eq!(composer_content(&assistant, area).height, 1);
     assert_eq!(
@@ -396,7 +396,7 @@ fn maximize_hitbox_matches_the_rendered_shortcut_and_action() {
                 let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
                 let area = Rect::new(0, 0, width, 20);
                 terminal
-                    .draw(|frame| assistant.draw(frame, area, true, maximized, prefix))
+                    .draw(|frame| assistant.draw(frame, area, true, maximized, prefix, false))
                     .unwrap();
 
                 let button = Assistant::maximize_button(area, maximized, prefix);

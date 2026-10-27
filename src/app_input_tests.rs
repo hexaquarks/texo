@@ -433,7 +433,7 @@ fn clicking_the_composer_right_edge_keeps_typing_and_enter_still_submits_command
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
     terminal.draw(|frame| app.draw(frame))?;
     let layout = app.workspace_layout(area);
-    let chat = app.assistant_body(pane_content(layout.assistant));
+    let chat = pane_content(layout.assistant);
     let input = app.session.assistant.input_area(chat);
 
     app.handle_event(
@@ -545,7 +545,7 @@ fn only_the_visible_chat_maximize_control_handles_clicks() -> anyhow::Result<()>
             app.focus = Focus::Assistant;
             app.session.chat_maximized = maximized;
             let layout = app.workspace_layout(area);
-            let body = app.assistant_body(pane_content(layout.assistant));
+            let body = pane_content(layout.assistant);
             let button = Assistant::maximize_button(body, maximized, &app.prefix.label());
 
             // The title, the gap before the shortcut, and pane padding must not toggle.
