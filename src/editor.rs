@@ -3,9 +3,13 @@ use std::{fs, io::ErrorKind, path::PathBuf, sync::OnceLock};
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
-    crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
+    crossterm::{
+        cursor::SetCursorStyle,
+        event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
+    },
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Style},
+    text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
 };
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
@@ -20,14 +24,17 @@ use texo::theme;
 
 #[path = "editor_clipboard.rs"]
 mod clipboard;
+#[path = "vim_repeat.rs"]
+mod repeat;
 #[path = "editor_search.rs"]
 mod search;
 #[path = "editor_vim.rs"]
 mod vim;
 
 use clipboard::{ClipboardAccess, ClipboardAction, SystemClipboard};
+use repeat::{EditInput, Repeat};
 use search::Search;
-use vim::Vim;
+use vim::{Vim, VimInput};
 
 const TAB_WIDTH: u8 = 4;
 const HORIZONTAL_SCROLL_COLUMNS: i16 = 4;
@@ -51,6 +58,8 @@ pub struct Editor {
     clipboard: Box<dyn ClipboardAccess>,
     notice: String,
     vim: Option<Vim>,
+    repeat: Repeat,
+    viewport_height: u16,
 }
 
 impl Editor {
@@ -82,7 +91,7 @@ impl Editor {
         text.set_style(Style::default().fg(theme::TEXT).bg(theme::EDITOR));
         text.set_line_number_style(theme::muted().bg(theme::EDITOR));
         text.set_cursor_line_style(Style::default());
-        text.set_cursor_style(Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT));
+        text.set_cursor_style(Style::default());
         text.set_selection_style(Style::default().bg(theme::SELECTION));
         text.set_search_style(Style::default().bg(theme::KEYCAP));
 
@@ -96,6 +105,8 @@ impl Editor {
             clipboard: Box::<SystemClipboard>::default(),
             notice: String::new(),
             vim: None,
+            repeat: Repeat::default(),
+            viewport_height: 0,
         })
     }
 
@@ -116,6 +127,7 @@ impl Editor {
             EditingMode::Standard if self.vim.is_some() => {
                 self.text.cancel_selection();
                 self.vim = None;
+                self.repeat = Repeat::default();
             }
             _ => {}
         }
@@ -127,7 +139,59 @@ impl Editor {
         });
     }
 
-    pub fn handle_key(&mut self, mut key: KeyEvent) {
+    pub fn handle_key(&mut self, key: KeyEvent) {
+        if !self.search.open
+            && let Some(vim) = &mut self.vim
+            && let Some(count) = vim.repeat_count(key)
+        {
+            let inputs = self.repeat.for_count(count);
+            self.repeat.cancel();
+            for input in &inputs {
+                match input {
+                    EditInput::Key(key) => self.handle_key_inner(*key),
+                    EditInput::Paste(text) => self.paste_text_inner(text),
+                }
+            }
+            return;
+        }
+
+        let normal = self
+            .vim
+            .as_ref()
+            .is_some_and(|vim| vim.mode == vim::Mode::Normal);
+        let history_command = normal
+            && (key.code == KeyCode::Char('u')
+                || (key.code == KeyCode::Char('r')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)));
+        if history_command {
+            self.repeat.cancel();
+        }
+        let recording = !self.search.open
+            && !history_command
+            && self.vim.as_ref().is_some_and(|vim| {
+                !vim.is_visual() && (vim.mode != vim::Mode::Insert || self.repeat.is_recording())
+            });
+        let before = recording.then(|| self.source());
+        self.handle_key_inner(key);
+        if let Some(before) = before {
+            self.record_vim_edit(EditInput::Key(key), before);
+        }
+    }
+
+    fn record_vim_edit(&mut self, input: EditInput, before: String) {
+        let Some(vim) = &self.vim else {
+            return;
+        };
+        if vim.is_visual() || self.search.open {
+            self.repeat.cancel();
+            return;
+        }
+        let finished = vim.mode != vim::Mode::Insert && !vim.command_pending();
+        let changed = self.source() != before;
+        self.repeat.record(input, changed, finished);
+    }
+
+    fn handle_key_inner(&mut self, mut key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && let KeyCode::Char(character) = key.code
         {
@@ -135,7 +199,7 @@ impl Editor {
         }
 
         if self.search.open {
-            self.search.handle_key(key, &mut self.text);
+            self.handle_search_key(key);
             return;
         }
 
@@ -151,14 +215,60 @@ impl Editor {
         if key.modifiers == (KeyModifiers::ALT | KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Left | KeyCode::Right)
         {
+            self.cancel_pending_commands();
             self.scroll_horizontal(key.code == KeyCode::Left);
             return;
         }
 
-        if let Some(vim) = &mut self.vim
-            && vim.handle_key(key, &mut self.text)
-        {
+        let insert_clipboard_shortcut = key.code == KeyCode::Insert
+            && [
+                KeyModifiers::CONTROL,
+                KeyModifiers::SHIFT,
+                KeyModifiers::ALT,
+            ]
+            .contains(&key.modifiers);
+        let shifted_clipboard_shortcut = (key.code == KeyCode::Delete
+            && key.modifiers == KeyModifiers::SHIFT)
+            || (key.modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                && matches!(key.code, KeyCode::Char('c' | 'x' | 'v')));
+        let clipboard_shortcut = insert_clipboard_shortcut || shifted_clipboard_shortcut;
+        if clipboard_shortcut {
+            self.cancel_pending_commands();
+            if let Some(vim) = &mut self.vim
+                && vim.is_visual()
+            {
+                vim.leave_visual();
+            }
+            self.handle_editor_command(key);
             return;
+        }
+
+        if let Some(vim) = &mut self.vim {
+            match vim.handle_key(key, &mut self.text) {
+                VimInput::Consumed => return,
+                VimInput::Center => {
+                    self.center_cursor();
+                    return;
+                }
+                VimInput::Clipboard(action) => {
+                    self.clipboard_action(action);
+                    return;
+                }
+                VimInput::Search(backwards) => {
+                    self.cancel_pending_commands();
+                    self.search.start_vim(&mut self.text, backwards);
+                    return;
+                }
+                VimInput::SearchNext { reverse, count } => {
+                    let from = self.text.cursor();
+                    self.search.repeat_vim(&mut self.text, reverse, count);
+                    if let Some(vim) = &mut self.vim {
+                        vim.record_jump(from, self.text.cursor());
+                    }
+                    return;
+                }
+                VimInput::Insert => {}
+            }
         }
 
         if self.handle_editor_command(key) {
@@ -166,6 +276,21 @@ impl Editor {
         }
 
         self.handle_standard_key(key);
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        let before = self.text.cursor();
+        self.search.handle_key(key, &mut self.text);
+
+        // Incremental query updates are one search, rather than a jump for every typed character.
+        let navigated = matches!(key.code, KeyCode::Enter | KeyCode::Esc)
+            || (key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL));
+        if navigated {
+            let from = self.search.take_jump_origin().unwrap_or(before);
+            if let Some(vim) = &mut self.vim {
+                vim.record_jump(from, self.text.cursor());
+            }
+        }
     }
 
     fn handle_editor_command(&mut self, key: KeyEvent) -> bool {
@@ -267,18 +392,38 @@ impl Editor {
     }
 
     pub fn paste_text(&mut self, text: &str) {
+        let recording = !self.search.open
+            && self
+                .vim
+                .as_ref()
+                .is_some_and(|vim| vim.mode != vim::Mode::Insert || self.repeat.is_recording());
+        let before = recording.then(|| self.source());
+        self.paste_text_inner(text);
+        if let Some(before) = before {
+            self.record_vim_edit(EditInput::Paste(text.to_owned()), before);
+        }
+    }
+
+    fn paste_text_inner(&mut self, text: &str) {
         if self.search.open {
             self.search.paste(text, &mut self.text);
         } else {
-            // Bracketed paste is literal text in every mode, never a sequence of commands.
-            self.cancel_pending_commands();
+            // Bracketed paste is literal text; keep an active Insert session's repeat recording.
+            if self
+                .vim
+                .as_ref()
+                .is_none_or(|vim| vim.mode != vim::Mode::Insert)
+            {
+                self.cancel_pending_commands();
+            }
             self.text.insert_str(text);
         }
     }
 
     pub fn cancel_pending_commands(&mut self) {
+        self.repeat.cancel();
         if let Some(vim) = &mut self.vim {
-            vim.cancel_pending();
+            vim.cancel_pending(&mut self.text);
         }
     }
 
@@ -290,6 +435,9 @@ impl Editor {
                     .selection_range()
                     .is_some_and(|(from, to)| from != to)
                 {
+                    if let Some(vim) = &mut self.vim {
+                        vim.finish_clipboard(&mut self.text);
+                    }
                     return;
                 }
 
@@ -297,6 +445,10 @@ impl Editor {
                     self.text.cut();
                 } else {
                     self.text.copy();
+                }
+
+                if let Some(vim) = &mut self.vim {
+                    vim.finish_clipboard(&mut self.text);
                 }
 
                 self.notice = if self.clipboard.write(self.text.yank_text()).is_err() {
@@ -344,10 +496,16 @@ impl Editor {
         } else {
             ""
         };
-        let mode = self.vim.as_ref().map_or("STANDARD", Vim::label);
-        let status = format!("{mode} {}:{}{}", cursor.0 + 1, cursor.1 + 1, modified);
+        let position = format!("{}:{}{}", cursor.0 + 1, cursor.1 + 1, modified);
+        let status = match &self.vim {
+            Some(vim) => Line::from(vec![
+                Span::styled("VIM", Style::default().fg(theme::GREEN)),
+                Span::raw(format!(" {} {position}", vim.label())),
+            ]),
+            None => Line::from(position),
+        };
         let [position, controls] = Layout::horizontal([
-            Constraint::Length(status.chars().count() as u16 + 2),
+            Constraint::Length(status.width() as u16 + 2),
             Constraint::Min(0),
         ])
         .areas(footer);
@@ -358,22 +516,6 @@ impl Editor {
                 Paragraph::new(self.notice.as_str()).style(theme::muted()),
                 controls,
             );
-        } else if focused {
-            let mut hints = if let Some(vim) = &self.vim {
-                vim.hints()
-            } else {
-                theme::shortcuts(&[
-                    ("Ctrl+Shift+F", "Find"),
-                    ("Ctrl+Z/Y", "Undo/redo"),
-                    ("Ctrl+Shift+A", "All"),
-                    ("Ctrl+Insert", "Copy"),
-                    ("Shift+Del/Ins", "Cut/paste"),
-                ])
-            };
-            if self.text.wrap_mode() == WrapMode::None {
-                hints.extend(theme::shortcuts(&[("Ctrl+Alt+←/→", "Pan")]).spans);
-            }
-            frame.render_widget(Paragraph::new(hints).style(theme::muted()), controls);
         }
     }
 
@@ -438,7 +580,7 @@ impl Editor {
             self.text.cancel_selection();
         }
         if was_dragging && let Some(vim) = &mut self.vim {
-            vim.finish_mouse_selection(self.text.is_selecting());
+            vim.finish_mouse_selection(&mut self.text);
         }
     }
 
@@ -461,7 +603,11 @@ impl Editor {
         }
 
         self.cancel_pending_commands();
+        self.repeat = Repeat::default();
         self.end_drag();
+        if let Some(vim) = &mut self.vim {
+            vim.reset_document_state();
+        }
         self.text.select_all();
         self.text.insert_str(source);
         true
@@ -527,6 +673,40 @@ impl Editor {
         Ok(())
     }
 
+    fn center_cursor(&mut self) {
+        if self.viewport_height == 0 {
+            return;
+        }
+
+        // Use display rows from the component so wrapped text and tabs share its mapping.
+        let cursor = self.text.cursor();
+        let screen_row = self.text.screen_cursor().row;
+        let target_top = screen_row.saturating_sub(usize::from(self.viewport_height / 2));
+        let mut delta = target_top as i64 - i64::from(self.text.scroll_offset().0);
+        while delta != 0 {
+            let step = delta.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
+            self.text.scroll((step, 0));
+            delta -= i64::from(step);
+        }
+        self.text.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor.0).unwrap_or(u16::MAX),
+            u16::try_from(cursor.1).unwrap_or(u16::MAX),
+        ));
+    }
+
+    pub fn terminal_cursor_style(&self) -> SetCursorStyle {
+        if self.search.open
+            || self
+                .vim
+                .as_ref()
+                .is_none_or(|vim| vim.mode == vim::Mode::Insert)
+        {
+            SetCursorStyle::BlinkingBar
+        } else {
+            SetCursorStyle::SteadyBlock
+        }
+    }
+
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
         let panel = Block::default()
             .style(Style::default().bg(theme::EDITOR))
@@ -537,25 +717,23 @@ impl Editor {
                 1,
             ));
         let content = panel.inner(area);
+        self.viewport_height = content.height;
         self.text.set_block(panel);
-        self.text.set_cursor_style(if focused {
-            Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT)
-        } else {
-            Style::default()
-        });
         frame.render_widget(&self.text, area);
+        if focused && !self.search.open {
+            crate::terminal::show_text_cursor(frame, &self.text, area);
+        }
 
         self.highlighting.update(self.text.lines());
-        self.draw_highlighting(frame, content, focused);
+        self.draw_highlighting(frame, content);
         self.draw_status(frame, area, focused);
     }
 
-    fn draw_highlighting(&self, frame: &mut Frame, content: Rect, focused: bool) {
+    fn draw_highlighting(&self, frame: &mut Frame, content: Rect) {
         let (scroll_row, scroll_column) = self.text.scroll_offset();
         let number_width = self.text.line_number_width();
-        let cursor = self.text.cursor();
 
-        // Let the editor own glyphs, scrolling, tabs, selection, and cursor backgrounds.
+        // Let the textarea own glyphs, scrolling, tabs, and selection backgrounds.
         // Only recolor the text cells, using its screen mapping for wide Unicode characters.
         for y in 0..content.height {
             let row = usize::from(scroll_row) + usize::from(y);
@@ -565,10 +743,6 @@ impl Editor {
                     continue;
                 };
                 let position = self.text.screen_to_data(row, column);
-                if focused && position == cursor {
-                    continue;
-                }
-
                 if let Some(color) = self
                     .highlighting
                     .colors
@@ -1076,7 +1250,10 @@ mod editing_polish_tests {
                     && (cell.bg == theme::KEYCAP || cell.bg == theme::ACCENT)
             })
             .collect();
-        assert_eq!(matches.len(), 6);
+        // The component leaves its source cursor cell unshaded; the terminal caret is in the query.
+        assert_eq!(matches.len(), 5);
+        assert!(terminal.backend().cursor_visible());
+        assert_eq!(terminal.backend().cursor_position().y, 9);
         assert!(
             matches
                 .iter()
@@ -1145,3 +1322,225 @@ mod vim_navigation_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod vim_editing_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    struct UnavailableClipboard;
+
+    impl ClipboardAccess for UnavailableClipboard {
+        fn read(&mut self) -> Result<String> {
+            anyhow::bail!("Clipboard unavailable in this test")
+        }
+
+        fn write(&mut self, _text: String) -> Result<()> {
+            anyhow::bail!("Clipboard unavailable in this test")
+        }
+    }
+
+    fn vim_editor(path: PathBuf) -> Result<Editor> {
+        let mut editor = Editor::open(path)?;
+        editor.apply_preferences(EditorPreferences {
+            mode: EditingMode::Vim,
+            ..EditorPreferences::default()
+        });
+        editor.clipboard = Box::new(UnavailableClipboard);
+        Ok(editor)
+    }
+
+    fn commands(editor: &mut Editor, keys: &str) {
+        for character in keys.chars() {
+            editor.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+    }
+
+    #[test]
+    fn wrapped_line_operators_share_standard_history_and_preserve_saved_newlines() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        let first_line = "\\section{Résumé 李 and a very long description of experience}";
+        let source = format!("{first_line}\nSecond\n\n");
+        fs::write(&path, &source)?;
+        let mut editor = vim_editor(path.clone())?;
+        let mut terminal = Terminal::new(TestBackend::new(24, 12))?;
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+
+        editor.text.move_cursor(CursorMove::Jump(0, 12));
+        commands(&mut editor, "dd");
+        assert_eq!(editor.source(), "Second\n\n");
+        assert_eq!(editor.text.yank_text(), format!("{first_line}\n"));
+        assert!(editor.notice.contains("System copy failed"));
+        commands(&mut editor, "u");
+        assert_eq!(editor.source(), source);
+        editor.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(editor.source(), "Second\n\n");
+        editor.apply_preferences(EditorPreferences::default());
+        editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(editor.source(), source);
+
+        editor.apply_preferences(EditorPreferences {
+            mode: EditingMode::Vim,
+            ..EditorPreferences::default()
+        });
+        editor.text.move_cursor(CursorMove::Jump(0, 0));
+        commands(&mut editor, "yyp");
+        assert_eq!(editor.source(), format!("{first_line}\n{source}"));
+        commands(&mut editor, "u");
+        editor.text.move_cursor(CursorMove::Jump(0, 0));
+        commands(&mut editor, "cc");
+        assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Insert);
+        editor.paste_text("Replacement");
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        editor.save()?;
+        assert_eq!(fs::read_to_string(path)?, "Replacement\nSecond\n\n");
+        Ok(())
+    }
+
+    #[test]
+    fn unicode_word_changes_and_reversed_visual_yanks_use_native_character_ranges() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        fs::write(&path, "李 résumé words\n")?;
+        let mut editor = vim_editor(path)?;
+        editor.text.move_cursor(CursorMove::Jump(0, 2));
+        commands(&mut editor, "cw");
+        editor.paste_text("CV");
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(editor.source(), "李 CV words\n");
+
+        editor.text.move_cursor(CursorMove::Jump(0, 3));
+        commands(&mut editor, "vhy");
+        assert_eq!(editor.text.yank_text(), "CV");
+        assert!(!editor.text.is_selecting());
+        editor.text.move_cursor(CursorMove::End);
+        commands(&mut editor, "p");
+        assert_eq!(editor.source(), "李 CV wordsCV\n");
+        commands(&mut editor, "u");
+        editor.text.move_cursor(CursorMove::Jump(0, 2));
+        commands(&mut editor, "de");
+        assert_eq!(editor.source(), "李  words\n");
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_and_cancelled_operators_never_turn_commands_into_source_text() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resume.tex");
+        fs::write(&path, "Résumé 李\n")?;
+        let mut editor = vim_editor(path)?;
+        let source = editor.source();
+        commands(&mut editor, "dgi");
+        assert_eq!(editor.source(), source);
+        assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Normal);
+        assert!(!editor.text.is_selecting());
+        commands(&mut editor, "d");
+        editor.cancel_pending_commands();
+        commands(&mut editor, "w");
+        assert_eq!(editor.source(), source);
+        commands(&mut editor, "c");
+        editor.paste_text("?\n");
+        assert!(editor.source().contains("?\n"));
+        assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Normal);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod caret_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn footer(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let row = buffer.area.bottom() - 1;
+        (0..buffer.area.width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn status_and_terminal_caret_follow_standard_and_vim_modes() -> Result<()> {
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        editor.replace_source("李\t\\section{Résumé}");
+        editor.text.move_cursor(CursorMove::Jump(0, 3));
+        let mut terminal = Terminal::new(TestBackend::new(60, 8))?;
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        assert!(!footer(&terminal).contains("STANDARD"));
+        assert!(!footer(&terminal).contains("VIM"));
+        assert!(footer(&terminal).contains("1:4"));
+        assert_eq!(editor.terminal_cursor_style(), SetCursorStyle::BlinkingBar);
+        assert!(terminal.backend().cursor_visible());
+        let position = terminal.backend().cursor_position();
+        assert_eq!(
+            position,
+            Position::new(
+                theme::PANEL_PADDING + editor.text.line_number_width() + u16::from(TAB_WIDTH) + 1,
+                1
+            )
+        );
+        assert_eq!(
+            terminal.backend().buffer()[position].fg,
+            theme::SYNTAX_COMMAND
+        );
+        assert_eq!(terminal.backend().buffer()[position].bg, theme::EDITOR);
+
+        editor.apply_preferences(EditorPreferences {
+            mode: EditingMode::Vim,
+            ..EditorPreferences::default()
+        });
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        assert!(footer(&terminal).contains("VIM NORMAL"));
+        assert_eq!(editor.terminal_cursor_style(), SetCursorStyle::SteadyBlock);
+        editor.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        assert!(footer(&terminal).contains("VIM INSERT"));
+        assert_eq!(editor.terminal_cursor_style(), SetCursorStyle::BlinkingBar);
+        editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        editor.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+        assert!(footer(&terminal).contains("VIM VISUAL"));
+        assert_eq!(editor.terminal_cursor_style(), SetCursorStyle::SteadyBlock);
+        terminal.draw(|frame| editor.draw(frame, frame.area(), false))?;
+        assert!(!terminal.backend().cursor_visible());
+        Ok(())
+    }
+
+    #[test]
+    fn caret_stays_on_rendered_unicode_after_wrapping_scrolling_and_resize() -> Result<()> {
+        let mut editor = Editor::placeholder(PathBuf::from("unused.tex"))?;
+        let source = format!("李\t{}§XY", "experience ".repeat(12));
+        editor.replace_source(&source);
+        let target = u16::try_from(
+            source
+                .chars()
+                .position(|character| character == '§')
+                .unwrap(),
+        )?;
+        editor.text.move_cursor(CursorMove::Jump(0, target));
+
+        for (width, soft_wrap) in [(24, true), (40, true), (18, true), (24, false)] {
+            editor.apply_preferences(EditorPreferences {
+                soft_wrap,
+                ..EditorPreferences::default()
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, 6))?;
+            terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+            let position = terminal.backend().cursor_position();
+            assert!(terminal.backend().cursor_visible());
+            assert_eq!(terminal.backend().buffer()[position].symbol(), "§");
+            if soft_wrap {
+                assert!(editor.text.scroll_offset().0 > 0);
+            } else {
+                assert!(editor.text.scroll_offset().1 > 0);
+            }
+            assert_eq!(editor.source(), source);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "vim_features_tests.rs"]
+mod vim_features_tests;

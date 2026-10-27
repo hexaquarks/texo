@@ -121,6 +121,14 @@ impl App {
         }
     }
 
+    fn editor_has_focus(&self) -> bool {
+        self.focus == Focus::Editor
+            && !self.session.empty_workspace
+            && self.session.proposal_review.is_none()
+            && !self.overlay_open()
+            && !self.session.assistant.login_open()
+    }
+
     fn overlay_open(&self) -> bool {
         self.project_dialog.is_some()
             || self.actions.is_some()

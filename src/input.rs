@@ -72,7 +72,7 @@ impl App {
         }
 
         if self.settings.is_some() {
-            self.handle_settings_event(event);
+            self.handle_settings_event(event, area);
             return false;
         }
 

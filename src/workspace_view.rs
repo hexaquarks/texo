@@ -151,9 +151,8 @@ impl App {
         if let Some(review) = &self.session.proposal_review {
             review.draw(frame, area);
         } else {
-            self.session
-                .editor
-                .draw(frame, area, self.focus == Focus::Editor);
+            let focused = self.editor_has_focus();
+            self.session.editor.draw(frame, area, focused);
         }
 
         if !area.is_empty() {

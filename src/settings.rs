@@ -2,15 +2,20 @@ use std::path::{Path, PathBuf};
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea;
 use texo::theme;
 
+use crate::config::EditingMode;
+
 const DIALOG_WIDTH: u16 = 72;
-const DIALOG_HEIGHT: u16 = 17;
+const DIALOG_HEIGHT: u16 = 19;
+const MODE_LABEL: &str = "Editor mode";
+const STANDARD_LABEL: &str = " Standard ";
+const VIM_LABEL: &str = " Vim ";
 
 pub struct SettingsDialog {
     pub input: TextArea<'static>,
@@ -53,18 +58,18 @@ impl SettingsDialog {
         )
     }
 
-    pub fn draw(&self, frame: &mut Frame) {
-        let area = Self::area(frame.area());
-        let panel = Block::default()
+    fn panel() -> Block<'static> {
+        Block::default()
             .title(" Settings ")
             .borders(Borders::ALL)
             .border_style(theme::pane_title(true))
             .style(theme::text())
-            .padding(Padding::uniform(1));
-        let content = panel.inner(area);
-        frame.render_widget(Clear, area);
-        frame.render_widget(panel, area);
-        let [label, input, warning, config, prefix, actions, error, hint] = Layout::vertical([
+            .padding(Padding::uniform(1))
+    }
+
+    fn content_rows(screen: Rect) -> [Rect; 9] {
+        Layout::vertical([
+            Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Length(2),
             Constraint::Length(2),
@@ -74,7 +79,77 @@ impl SettingsDialog {
             Constraint::Min(0),
             Constraint::Length(1),
         ])
-        .areas(content);
+        .areas(Self::panel().inner(Self::area(screen)))
+    }
+
+    fn mode_controls(screen: Rect) -> [Rect; 4] {
+        let row = Self::content_rows(screen)[0];
+        Layout::horizontal([
+            Constraint::Length(MODE_LABEL.len() as u16),
+            Constraint::Length(STANDARD_LABEL.len() as u16),
+            Constraint::Length(VIM_LABEL.len() as u16),
+            Constraint::Min(0),
+        ])
+        .spacing(1)
+        .areas(Rect {
+            height: row.height.min(1),
+            ..row
+        })
+    }
+
+    pub fn toggle_mode(&mut self) {
+        self.editor_preferences.mode = match self.editor_preferences.mode {
+            EditingMode::Standard => EditingMode::Vim,
+            EditingMode::Vim => EditingMode::Standard,
+        };
+    }
+
+    pub fn select_mode_at(&mut self, screen: Rect, position: Position) {
+        let [_, standard, vim, _] = Self::mode_controls(screen);
+        if standard.contains(position) {
+            self.editor_preferences.mode = EditingMode::Standard;
+        } else if vim.contains(position) {
+            self.editor_preferences.mode = EditingMode::Vim;
+        }
+    }
+
+    fn draw_mode_controls(&self, frame: &mut Frame) {
+        let [label, standard, vim, hint] = Self::mode_controls(frame.area());
+        frame.render_widget(Paragraph::new(MODE_LABEL), label);
+        for (area, text, mode) in [
+            (standard, STANDARD_LABEL, EditingMode::Standard),
+            (vim, VIM_LABEL, EditingMode::Vim),
+        ] {
+            let style = if self.editor_preferences.mode == mode {
+                theme::text().fg(theme::BACKGROUND).bg(theme::ACCENT)
+            } else {
+                theme::text().bg(theme::ELEVATED)
+            };
+            frame.render_widget(Paragraph::new(text).style(style), area);
+        }
+        frame.render_widget(
+            Paragraph::new(theme::shortcuts(&[("Ctrl+V", "toggle")])),
+            hint,
+        );
+    }
+
+    pub fn draw(&self, frame: &mut Frame) {
+        let area = Self::area(frame.area());
+        frame.render_widget(Clear, area);
+        frame.render_widget(Self::panel(), area);
+        let rows = Self::content_rows(frame.area());
+        let [
+            _,
+            label,
+            input,
+            warning,
+            config,
+            prefix,
+            actions,
+            error,
+            hint,
+        ] = rows;
+        self.draw_mode_controls(frame);
         frame.render_widget(Paragraph::new("Resume folder"), label);
         frame.render_widget(&self.input, input);
         frame.render_widget(
@@ -96,7 +171,6 @@ impl SettingsDialog {
             Paragraph::new(Line::from(vec![
                 Span::raw("Prefix: "),
                 theme::keycap(&self.prefix_label),
-                Span::raw(format!(" · {}", self.editor_preferences.mode.label())),
                 Span::raw(if self.editor_preferences.soft_wrap {
                     " · Soft wrap: on"
                 } else {

@@ -4,7 +4,9 @@ use ratatui::{
     DefaultTerminal,
     crossterm::{
         SynchronizedUpdate,
+        cursor::SetCursorStyle,
         event::{self, Event},
+        execute,
     },
 };
 
@@ -18,6 +20,7 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 impl App {
     pub(super) fn run_event_loop(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         let mut repaint = false;
+        let mut cursor_style = SetCursorStyle::DefaultUserShape;
 
         loop {
             let was_proposed_loading = self.session.proposed_job.is_some();
@@ -35,6 +38,12 @@ impl App {
                 if repaint {
                     terminal.clear()?;
                 }
+                let next_cursor_style = self.terminal_cursor_style();
+                if next_cursor_style != cursor_style {
+                    execute!(terminal.backend_mut(), next_cursor_style)?;
+                    cursor_style = next_cursor_style;
+                }
+
                 terminal.draw(|frame| self.draw(frame))?;
                 Ok(())
             })??;
@@ -80,6 +89,14 @@ impl App {
                         || projects_was_visible != self.projects_visible
                         || previous_document != self.session.editor.path
                         || preview_was_loading != self.session.job.is_some()));
+        }
+    }
+
+    pub(super) fn terminal_cursor_style(&self) -> SetCursorStyle {
+        if self.editor_has_focus() {
+            self.session.editor.terminal_cursor_style()
+        } else {
+            SetCursorStyle::DefaultUserShape
         }
     }
 
