@@ -193,7 +193,13 @@ impl App {
                 return;
             }
 
-            if Projects::new_button(layout.projects).contains(position) {
+            if self
+                .projects
+                .manage_button(layout.projects)
+                .contains(position)
+            {
+                self.open_resume_menu();
+            } else if Projects::new_button(layout.projects).contains(position) {
                 self.open_project_dialog(Action::NewResume);
             } else if layout.files.contains(position) {
                 self.focus = Focus::Projects;
@@ -553,6 +559,7 @@ impl App {
 
     pub(super) fn handle_projects_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Char('m') if !self.projects.files_focused => self.open_resume_menu(),
             KeyCode::Char('l') if !self.projects.files_focused => self.open_label_dialog(),
             KeyCode::Tab => self.projects.files_focused = !self.projects.files_focused,
             KeyCode::Up | KeyCode::Char('k') => {

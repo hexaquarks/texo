@@ -114,3 +114,48 @@ fn label_shortcut_is_scoped_and_invalid_or_cancelled_labels_do_not_save() -> any
     );
     Ok(())
 }
+
+#[test]
+fn resume_manage_control_opens_rename_and_label_actions() -> anyhow::Result<()> {
+    let (_directory, mut app) = managed_application()?;
+    app.focus = Focus::Projects;
+    let source = app.session.editor.source();
+    let mut terminal = Terminal::new(TestBackend::new(SCREEN.width, SCREEN.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    let button = app
+        .projects
+        .manage_button(app.workspace_layout(SCREEN).projects);
+    let text: String = (button.x..button.right())
+        .map(|x| terminal.backend().buffer()[(x, button.y)].symbol())
+        .collect();
+    assert!(text.contains("Manage"));
+    assert_eq!(
+        terminal.backend().buffer()[(button.x, button.y)].bg,
+        theme::KEYCAP
+    );
+
+    app.handle_event(
+        Event::Mouse(event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: button.x,
+            row: button.y,
+            modifiers: KeyModifiers::NONE,
+        }),
+        SCREEN,
+    );
+    assert!(matches!(
+        app.actions.as_ref().unwrap().selected(),
+        Action::RenameResume
+    ));
+    key(&mut app, KeyCode::Enter);
+    assert!(app.project_dialog.is_some());
+    key(&mut app, KeyCode::Esc);
+
+    app.focus = Focus::Projects;
+    key(&mut app, KeyCode::Char('m'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.label_dialog.is_some());
+    assert_eq!(app.session.editor.source(), source);
+    Ok(())
+}
