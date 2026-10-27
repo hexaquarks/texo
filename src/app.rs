@@ -11,6 +11,7 @@ use crate::{
     config::Settings,
     editor::Editor,
     keybindings::Prefix,
+    label_dialog::LabelDialog,
     project_dialog::ProjectDialog,
     projects::Projects,
     settings::SettingsDialog,
@@ -38,6 +39,7 @@ struct App {
     projects_visible: bool,
     actions: Option<ActionMenu>,
     project_dialog: Option<ProjectDialog>,
+    label_dialog: Option<LabelDialog>,
     sessions: HashMap<PathBuf, ResumeSession>,
     settings: Option<SettingsDialog>,
     settings_path: PathBuf,
@@ -90,6 +92,7 @@ impl App {
             projects_visible: true,
             actions: None,
             project_dialog: None,
+            label_dialog: None,
             sessions: HashMap::new(),
             settings: None,
             settings_path: Settings::path()?,
@@ -131,6 +134,7 @@ impl App {
 
     fn overlay_open(&self) -> bool {
         self.project_dialog.is_some()
+            || self.label_dialog.is_some()
             || self.actions.is_some()
             || self.export.is_some()
             || self.settings.is_some()
@@ -147,6 +151,8 @@ impl App {
 mod event_loop;
 #[path = "input.rs"]
 mod input;
+#[path = "label_actions.rs"]
+mod label_actions;
 #[path = "layout_state.rs"]
 mod layout_state;
 #[path = "pane_navigation.rs"]
@@ -161,6 +167,9 @@ mod workspace_view;
 #[cfg(test)]
 #[path = "app_input_tests.rs"]
 mod app_input_tests;
+#[cfg(test)]
+#[path = "label_tests.rs"]
+mod label_tests;
 #[cfg(test)]
 #[path = "modal_preview_tests.rs"]
 mod modal_preview_tests;

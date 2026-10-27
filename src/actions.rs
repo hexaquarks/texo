@@ -16,6 +16,7 @@ use texo::theme;
 
 const DIALOG_WIDTH: u16 = 64;
 const EXPORT_HEIGHT: u16 = 8;
+const MENU_FRAME_HEIGHT: u16 = 6;
 
 #[derive(Clone, Copy)]
 pub enum Action {
@@ -23,6 +24,7 @@ pub enum Action {
     NewResume,
     ImportResume,
     RenameResume,
+    LabelResume,
     DuplicateResume,
     FocusResumes,
     FocusFiles,
@@ -43,7 +45,7 @@ pub enum Action {
     Quit,
 }
 
-const ACTIONS: [(Action, &str, Option<&str>); 22] = [
+const ACTIONS: [(Action, &str, Option<&str>); 23] = [
     (Action::NewResume, "New resume", None),
     (
         Action::ImportResume,
@@ -51,6 +53,7 @@ const ACTIONS: [(Action, &str, Option<&str>); 22] = [
         None,
     ),
     (Action::RenameResume, "Rename resume", None),
+    (Action::LabelResume, "Set resume label", None),
     (Action::DuplicateResume, "Duplicate resume", None),
     (Action::FocusResumes, "Focus resumes", None),
     (Action::FocusFiles, "Focus files", None),
@@ -80,22 +83,39 @@ const ACTIONS: [(Action, &str, Option<&str>); 22] = [
     (Action::Quit, "Quit", Some("Ctrl+Q")),
 ];
 
-#[derive(Default)]
+const RESUME_ACTIONS: [(Action, &str, Option<&str>); 3] = [
+    (Action::RenameResume, "Rename resume", None),
+    (Action::LabelResume, "Set or change label", None),
+    (Action::DuplicateResume, "Duplicate resume", None),
+];
+
 pub struct ActionMenu {
     state: ListState,
+    entries: &'static [(Action, &'static str, Option<&'static str>)],
+    title: String,
 }
 
 impl ActionMenu {
     pub fn open() -> Self {
         Self {
             state: ListState::default().with_selected(Some(0)),
+            entries: &ACTIONS,
+            title: "Actions".into(),
+        }
+    }
+
+    pub fn for_resume(name: &str) -> Self {
+        Self {
+            state: ListState::default().with_selected(Some(0)),
+            entries: &RESUME_ACTIONS,
+            title: format!("Manage {name}"),
         }
     }
 
     pub fn move_selection(&mut self, down: bool) {
         let current = self.state.selected().unwrap_or(0);
         let next = if down {
-            (current + 1).min(ACTIONS.len() - 1)
+            (current + 1).min(self.entries.len() - 1)
         } else {
             current.saturating_sub(1)
         };
@@ -103,16 +123,32 @@ impl ActionMenu {
     }
 
     pub fn selected(&self) -> Action {
-        ACTIONS[self.state.selected().unwrap_or(0)].0
+        self.entries[self.state.selected().unwrap_or(0)].0
+    }
+
+    fn layout(&self, screen: Rect) -> [Rect; 3] {
+        let area = centered(
+            screen,
+            DIALOG_WIDTH,
+            self.entries.len() as u16 + MENU_FRAME_HEIGHT,
+        );
+        let inner = dialog_block("").padding(Padding::uniform(1)).inner(area);
+        let [choices, _, help] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+        [area, choices, help]
     }
 
     pub fn click(&mut self, screen: Rect, column: u16, row: u16) -> Option<Action> {
-        let area = menu_area(screen);
-        if column <= area.x || column >= area.right().saturating_sub(1) {
+        let [_, choices, _] = self.layout(screen);
+        if !choices.contains((column, row).into()) {
             return None;
         }
-        let index = usize::from(row.checked_sub(area.y + 2)?);
-        if index >= ACTIONS.len() {
+        let index = self.state.offset() + usize::from(row - choices.y);
+        if index >= self.entries.len() {
             return None;
         }
         self.state.select(Some(index));
@@ -120,46 +156,59 @@ impl ActionMenu {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, prefix: &str) {
-        let area = menu_area(frame.area());
+        let [area, choices, help] = self.layout(frame.area());
         frame.render_widget(Clear, area);
-        let selected = self.state.selected();
-        let rows = ACTIONS
-            .iter()
-            .enumerate()
-            .map(|(index, (action, description, shortcut))| {
-                let prefix_action = match action {
-                    Action::Settings => Some('s'),
-                    Action::Build => Some('b'),
-                    Action::Export => Some('e'),
-                    Action::Save => Some('w'),
-                    Action::ToggleProjects => Some('t'),
-                    _ => None,
-                };
-                let configured_shortcut = prefix_action.map(|key| format!("{prefix} {key}"));
-                let shortcut = configured_shortcut.as_deref().or(*shortcut);
-                let line = match shortcut {
-                    Some(key) => theme::shortcuts(&[(key, description)]),
-                    None => Line::from(format!(" {description}")),
-                };
-                let style = if selected == Some(index) {
-                    theme::text().fg(theme::ACCENT).bg(theme::SELECTION)
-                } else {
-                    theme::text()
-                };
-
-                // Apply selection before the spans, so it does not overwrite keycap shading.
-                ListItem::new(line).style(style)
-            });
-
-        let mut title = Line::from(" Actions  ");
-        title.extend(
-            theme::shortcuts(&[("j/k", "move"), ("Enter", "select"), ("Esc", "close")]).spans,
+        let title = Line::styled(
+            format!(" {} ", self.title),
+            theme::text().fg(theme::ACCENT).bg(theme::ELEVATED),
         );
+        frame.render_widget(
+            dialog_block(title)
+                .border_style(Style::default().fg(theme::ACCENT))
+                .style(theme::text().bg(theme::ELEVATED)),
+            area,
+        );
+        let selected = self.state.selected();
+        let rows =
+            self.entries
+                .iter()
+                .enumerate()
+                .map(|(index, (action, description, shortcut))| {
+                    let prefix_action = match action {
+                        Action::Settings => Some('s'),
+                        Action::Build => Some('b'),
+                        Action::Export => Some('e'),
+                        Action::Save => Some('w'),
+                        Action::ToggleProjects => Some('t'),
+                        _ => None,
+                    };
+                    let configured_shortcut = prefix_action.map(|key| format!("{prefix} {key}"));
+                    let shortcut = configured_shortcut.as_deref().or(*shortcut);
+                    let line = match shortcut {
+                        Some(key) => theme::shortcuts(&[(key, description)]),
+                        None => Line::from(format!(" {description}")),
+                    };
+                    let style = if selected == Some(index) {
+                        theme::text().fg(theme::ACCENT).bg(theme::SELECTION)
+                    } else {
+                        theme::text().bg(theme::ELEVATED)
+                    };
 
-        let list = List::new(rows)
-            .block(dialog_block(title).padding(Padding::uniform(1)))
-            .style(theme::text());
-        frame.render_stateful_widget(list, area, &mut self.state);
+                    // Apply selection before the spans, so it does not overwrite keycap shading.
+                    ListItem::new(line).style(style)
+                });
+
+        let list = List::new(rows).style(theme::text().bg(theme::ELEVATED));
+        frame.render_stateful_widget(list, choices, &mut self.state);
+        frame.render_widget(
+            Paragraph::new(theme::shortcuts(&[
+                ("j/k", "move"),
+                ("Enter", "select"),
+                ("Esc", "close"),
+            ]))
+            .style(theme::text().bg(theme::ELEVATED)),
+            help,
+        );
     }
 }
 
@@ -267,8 +316,13 @@ fn dialog_block<'a>(title: impl Into<Line<'a>>) -> Block<'a> {
         .border_style(Style::default().fg(theme::DIVIDER))
 }
 
+#[cfg(test)]
 fn menu_area(screen: Rect) -> Rect {
-    centered(screen, DIALOG_WIDTH, ACTIONS.len() as u16 + 4)
+    centered(
+        screen,
+        DIALOG_WIDTH,
+        ACTIONS.len() as u16 + MENU_FRAME_HEIGHT,
+    )
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -308,6 +362,14 @@ mod tests {
         let description_column = column + "ctrl-x s".len() as u16 + 3;
         assert_eq!(buffer[(description_column, row)].symbol(), "S");
         assert_eq!(buffer[(description_column, row)].bg, theme::SELECTION);
+        assert_eq!(buffer[(area.x + 1, area.y + 1)].bg, theme::ELEVATED);
+        assert_eq!(buffer[(area.x + 2, area.y)].fg, theme::ACCENT);
+        let [_, _, help] = menu.layout(buffer.area);
+        assert!(menu.click(buffer.area, help.x, help.y).is_none());
+        assert!(matches!(
+            menu.click(buffer.area, column, row),
+            Some(Action::Settings)
+        ));
         Ok(())
     }
 

@@ -10,6 +10,7 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::resume_label::ResumeLabel;
 use texo::sandbox::MAX_PROJECT_MANIFEST_BYTES;
 pub use texo::sandbox::PROJECT_MANIFEST_FILE as MANIFEST_FILE;
 
@@ -24,6 +25,8 @@ pub struct Manifest {
     pub id: Uuid,
     pub name: String,
     pub entrypoint: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<ResumeLabel>,
 }
 
 #[derive(Clone)]
@@ -63,15 +66,30 @@ impl Project {
             text.len() as u64 <= MAX_PROJECT_MANIFEST_BYTES,
             "Manifest is too large"
         );
-        let manifest: Manifest = toml_edit::de::from_str(&text)
+        let mut manifest: Manifest = toml_edit::de::from_str(&text)
             .map_err(|_| anyhow::anyhow!("Invalid texo.toml manifest"))?;
         validate_name(&manifest.name)?;
+        if let Some(label) = &manifest.label {
+            manifest.label = Some(ResumeLabel::new(&label.name, label.color)?);
+        }
         validate_entrypoint(root, &manifest.entrypoint)?;
 
         Ok(Self {
             root: root.to_path_buf(),
             manifest,
         })
+    }
+
+    pub fn set_label(&mut self, label: Option<ResumeLabel>) -> Result<()> {
+        let label = label
+            .map(|label| ResumeLabel::new(&label.name, label.color))
+            .transpose()?;
+        let mut manifest = self.manifest.clone();
+        manifest.label = label;
+
+        write_manifest(&self.root, &manifest)?;
+        self.manifest = manifest;
+        Ok(())
     }
 
     pub fn rename(&mut self, name: &str) -> Result<()> {
@@ -219,7 +237,7 @@ fn reserve_directory(workspace: &Path, name: &str) -> Result<PathBuf> {
 }
 
 pub fn create(workspace: &Path, name: &str) -> Result<Project> {
-    create_project(workspace, name, Path::new("main.tex"), |root| {
+    create_project(workspace, name, Path::new("main.tex"), None, |root| {
         fs::write(root.join("main.tex"), crate::editor::STARTER_DOCUMENT)?;
         Ok(())
     })
@@ -229,6 +247,7 @@ fn create_project(
     workspace: &Path,
     name: &str,
     entrypoint: &Path,
+    label: Option<ResumeLabel>,
     populate: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<Project> {
     let name = validate_name(name)?;
@@ -237,6 +256,7 @@ fn create_project(
         id: Uuid::new_v4(),
         name,
         entrypoint: entrypoint.to_path_buf(),
+        label,
     };
 
     let result = (|| {
@@ -260,6 +280,7 @@ fn create_project(
 pub struct ImportPlan {
     pub source: PathBuf,
     pub candidates: Vec<PathBuf>,
+    label: Option<ResumeLabel>,
 }
 
 impl ImportPlan {
@@ -279,6 +300,7 @@ impl ImportPlan {
                     .context("Source needs a parent folder")?
                     .to_path_buf(),
                 candidates: vec![PathBuf::from(path.file_name().unwrap())],
+                label: None,
             });
         }
 
@@ -287,6 +309,7 @@ impl ImportPlan {
             return Ok(Self {
                 source: path,
                 candidates: vec![project.manifest.entrypoint],
+                label: project.manifest.label,
             });
         }
 
@@ -319,6 +342,7 @@ impl ImportPlan {
         Ok(Self {
             source: path,
             candidates,
+            label: None,
         })
     }
 
@@ -353,18 +377,24 @@ impl ImportPlan {
         );
 
         let files = source_files(&self.source)?;
-        create_project(&workspace, name, entrypoint, |destination| {
-            for relative in &files {
-                let target = destination.join(relative);
-                fs::create_dir_all(target.parent().unwrap())?;
-                fs::copy(self.source.join(relative), target)?;
-            }
+        create_project(
+            &workspace,
+            name,
+            entrypoint,
+            self.label.clone(),
+            |destination| {
+                for relative in &files {
+                    let target = destination.join(relative);
+                    fs::create_dir_all(target.parent().unwrap())?;
+                    fs::copy(self.source.join(relative), target)?;
+                }
 
-            if let Some(source) = current_source {
-                fs::write(destination.join(entrypoint), source)?;
-            }
-            Ok(())
-        })
+                if let Some(source) = current_source {
+                    fs::write(destination.join(entrypoint), source)?;
+                }
+                Ok(())
+            },
+        )
     }
 }
 
@@ -424,6 +454,7 @@ pub fn duplicate(
     let plan = ImportPlan {
         source: project.root.clone(),
         candidates: vec![project.manifest.entrypoint.clone()],
+        label: project.manifest.label.clone(),
     };
     plan.copy_project(
         workspace,
@@ -436,6 +467,70 @@ pub fn duplicate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_survive_reload_rename_duplicate_and_managed_import() -> Result<()> {
+        use crate::resume_label::LabelColor;
+
+        let workspace = tempfile::tempdir()?;
+        let other_workspace = tempfile::tempdir()?;
+        let mut project = create(workspace.path(), "Original")?;
+        assert!(project.manifest.label.is_none());
+        let source = fs::read_to_string(project.document())?;
+        let label = ResumeLabel::new("Systems engineer", LabelColor::Teal)?;
+        project.set_label(Some(label.clone()))?;
+        project.rename("Renamed")?;
+        let project = Project::load(&project.root)?;
+        assert_eq!(project.manifest.label, Some(label.clone()));
+        assert_eq!(fs::read_to_string(project.document())?, source);
+
+        let copy = duplicate(workspace.path(), &project, "Copy", "unsaved source")?;
+        assert_eq!(copy.manifest.label, Some(label.clone()));
+        assert_ne!(copy.manifest.id, project.manifest.id);
+        assert_eq!(fs::read_to_string(copy.document())?, "unsaved source");
+
+        let plan = ImportPlan::inspect(&project.root)?;
+        let imported = plan.import(
+            other_workspace.path(),
+            "Imported",
+            &project.manifest.entrypoint,
+        )?;
+        assert_eq!(imported.manifest.label, Some(label));
+        assert_ne!(imported.manifest.id, project.manifest.id);
+
+        let mut project = project;
+        project.set_label(None)?;
+        assert!(Project::load(&project.root)?.manifest.label.is_none());
+        assert!(!fs::read_to_string(project.root.join(MANIFEST_FILE))?.contains("[label]"));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_label_changes_preserve_metadata_and_invalid_disk_labels_are_reported() -> Result<()>
+    {
+        use crate::resume_label::LabelColor;
+
+        let workspace = tempfile::tempdir()?;
+        let mut project = create(workspace.path(), "Original")?;
+        let path = project.root.join(MANIFEST_FILE);
+        let before = fs::read_to_string(&path)?;
+        let invalid = ResumeLabel {
+            name: "one two three four".into(),
+            color: LabelColor::Blue,
+        };
+        assert!(project.set_label(Some(invalid)).is_err());
+        assert_eq!(fs::read_to_string(&path)?, before);
+        assert!(project.manifest.label.is_none());
+
+        fs::write(
+            &path,
+            format!("{before}\n[label]\nname = 'one two three four'\ncolor = 'blue'\n"),
+        )?;
+        let catalog = discover(workspace.path())?;
+        assert!(catalog.projects.is_empty());
+        assert_eq!(catalog.warnings.len(), 1);
+        Ok(())
+    }
 
     #[test]
     fn projects_keep_identity_across_rename_and_use_unique_safe_directories() -> Result<()> {
@@ -535,6 +630,7 @@ mod tests {
             workspace.path(),
             "Incomplete",
             Path::new("main.tex"),
+            None,
             |root| {
                 fs::write(root.join("asset.txt"), "partial copy")?;
                 anyhow::bail!("simulated copy failure")

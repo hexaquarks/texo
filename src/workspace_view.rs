@@ -120,6 +120,9 @@ impl App {
         if let Some(settings) = &self.settings {
             settings.draw(frame);
         }
+        if let Some(dialog) = &mut self.label_dialog {
+            dialog.draw(frame);
+        }
         if let Some(dialog) = &mut self.project_dialog {
             dialog.draw(frame);
         }

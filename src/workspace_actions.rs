@@ -9,7 +9,7 @@ use ratatui::{
 
 use super::{App, Focus, resume_session::ResumeSession};
 use crate::{
-    actions::{Action, ExportDialog},
+    actions::{Action, ActionMenu, ExportDialog},
     config::Settings,
     editor::Editor,
     keybindings::Prefix,
@@ -297,6 +297,10 @@ impl App {
                 self.session.diagnostics = Some(self.projects.catalog.warnings.join("\n"));
                 return false;
             }
+            Action::LabelResume => {
+                self.open_label_dialog();
+                return false;
+            }
             Action::Settings => {
                 self.open_settings();
                 return false;
@@ -364,6 +368,15 @@ impl App {
             Ok(None) => {}
             Err(error) => dialog.message = format!("{error:#}"),
         }
+    }
+
+    pub(super) fn open_resume_menu(&mut self) {
+        self.activate_projects();
+        let Some(project) = self.projects.project_for(&self.session.editor.path) else {
+            return;
+        };
+        self.actions = Some(ActionMenu::for_resume(&project.manifest.name));
+        self.prefix.cancel();
     }
 
     pub(super) fn open_project_dialog(&mut self, action: Action) {
