@@ -54,6 +54,7 @@ Counts work with motions, operators, find commands, line operations, character e
 Normal-mode undo: for example `3j`, `2dd`, `d2j`, `2d3w`, `3G`, and `2rX`. Counts are bounded by
 the component's 16-bit cursor coordinates. `f/F/t/T` find a character on the source line;
 `;` repeats that find and `,` reverses it. `Y` yanks whole lines.
+`zz` centers the cursor vertically without changing its source position.
 
 `/` and `?` open forward/backward **literal** search. Enter confirms, Escape restores the previous
 cursor and search, and `n/N` repeat in the same/opposite direction. Search uses the component's

@@ -19,6 +19,7 @@ use objects::{ObjectRange, ObjectScope, text_object};
 
 #[derive(Clone, Copy)]
 enum Pending {
+    Center,
     GoToTop,
     Object(ObjectScope),
     Find(FindMotion),
@@ -69,6 +70,7 @@ pub(super) enum VimInput {
     Consumed,
     Insert,
     Clipboard(ClipboardAction),
+    Center,
     Search(bool),
     SearchNext { reverse: bool, count: usize },
 }
@@ -199,6 +201,19 @@ impl Vim {
                 .saturating_mul(10)
                 .saturating_add(digit as usize);
             self.count = Some(count.min(usize::from(u16::MAX)));
+            return VimInput::Consumed;
+        }
+
+        if matches!(self.pending, Some(Pending::Center)) {
+            self.cancel_pending(text);
+            return if key.code == KeyCode::Char('z') {
+                VimInput::Center
+            } else {
+                VimInput::Consumed
+            };
+        }
+        if key.code == KeyCode::Char('z') && self.pending.is_none() && self.operator.is_none() {
+            self.pending = Some(Pending::Center);
             return VimInput::Consumed;
         }
 

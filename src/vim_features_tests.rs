@@ -548,3 +548,33 @@ fn dot_records_literal_paste_but_document_replacement_clears_it() -> Result<()> 
     assert!(editor.vim.as_ref().unwrap().mode == vim::Mode::Normal);
     Ok(())
 }
+
+#[test]
+fn zz_centers_wrapped_and_unwrapped_views_without_editing() -> Result<()> {
+    let source = "\\section{Résumé 李 with a longer heading}\n".repeat(80);
+    for wrap in [true, false] {
+        let mut editor = editor(&source, 30, 20)?;
+        editor.apply_preferences(crate::config::EditorPreferences {
+            mode: crate::config::EditingMode::Vim,
+            soft_wrap: wrap,
+        });
+        for (width, height) in [(28, 14), (45, 20)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+            terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+            let cursor = editor.text.cursor();
+            commands(&mut editor, "zz");
+            terminal.draw(|frame| editor.draw(frame, frame.area(), true))?;
+            assert_eq!(editor.text.cursor(), cursor);
+            assert_eq!(
+                editor.text.screen_cursor().row - usize::from(editor.text.scroll_offset().0),
+                usize::from(editor.viewport_height / 2),
+            );
+            assert_eq!(editor.source(), source);
+        }
+        commands(&mut editor, "z");
+        editor.cancel_pending_commands();
+        commands(&mut editor, "ziX");
+        assert_eq!(editor.source(), source);
+    }
+    Ok(())
+}

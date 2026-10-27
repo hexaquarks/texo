@@ -59,6 +59,7 @@ pub struct Editor {
     notice: String,
     vim: Option<Vim>,
     repeat: Repeat,
+    viewport_height: u16,
 }
 
 impl Editor {
@@ -105,6 +106,7 @@ impl Editor {
             notice: String::new(),
             vim: None,
             repeat: Repeat::default(),
+            viewport_height: 0,
         })
     }
 
@@ -244,6 +246,10 @@ impl Editor {
         if let Some(vim) = &mut self.vim {
             match vim.handle_key(key, &mut self.text) {
                 VimInput::Consumed => return,
+                VimInput::Center => {
+                    self.center_cursor();
+                    return;
+                }
                 VimInput::Clipboard(action) => {
                     self.clipboard_action(action);
                     return;
@@ -667,6 +673,27 @@ impl Editor {
         Ok(())
     }
 
+    fn center_cursor(&mut self) {
+        if self.viewport_height == 0 {
+            return;
+        }
+
+        // Use display rows from the component so wrapped text and tabs share its mapping.
+        let cursor = self.text.cursor();
+        let screen_row = self.text.screen_cursor().row;
+        let target_top = screen_row.saturating_sub(usize::from(self.viewport_height / 2));
+        let mut delta = target_top as i64 - i64::from(self.text.scroll_offset().0);
+        while delta != 0 {
+            let step = delta.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
+            self.text.scroll((step, 0));
+            delta -= i64::from(step);
+        }
+        self.text.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor.0).unwrap_or(u16::MAX),
+            u16::try_from(cursor.1).unwrap_or(u16::MAX),
+        ));
+    }
+
     pub fn terminal_cursor_style(&self) -> SetCursorStyle {
         if self.search.open
             || self
@@ -690,6 +717,7 @@ impl Editor {
                 1,
             ));
         let content = panel.inner(area);
+        self.viewport_height = content.height;
         self.text.set_block(panel);
         frame.render_widget(&self.text, area);
         if focused && !self.search.open {
