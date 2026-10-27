@@ -152,7 +152,9 @@ impl ActionMenu {
             });
 
         let mut title = Line::from(" Actions  ");
-        title.extend(theme::shortcuts(&[("Enter", "select"), ("Esc", "close")]).spans);
+        title.extend(
+            theme::shortcuts(&[("j/k", "move"), ("Enter", "select"), ("Esc", "close")]).spans,
+        );
 
         let list = List::new(rows)
             .block(dialog_block(title).padding(Padding::uniform(1)))

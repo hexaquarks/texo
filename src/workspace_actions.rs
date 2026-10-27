@@ -239,8 +239,8 @@ impl App {
                     self.export = None;
                 } else if let Some(menu) = &mut self.actions {
                     match key.code {
-                        KeyCode::Up => menu.move_selection(false),
-                        KeyCode::Down => menu.move_selection(true),
+                        KeyCode::Up | KeyCode::Char('k') => menu.move_selection(false),
+                        KeyCode::Down | KeyCode::Char('j') => menu.move_selection(true),
                         KeyCode::Enter => {
                             let action = menu.selected();
                             self.actions = None;
@@ -400,11 +400,15 @@ impl App {
                 }
             }
             Event::Key(key)
-                if dialog.plan.is_some() && matches!(key.code, KeyCode::Up | KeyCode::Down) =>
+                if dialog.plan.is_some()
+                    && matches!(
+                        key.code,
+                        KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
+                    ) =>
             {
                 let current = dialog.selection.selected().unwrap_or(0);
                 let count = dialog.plan.as_ref().unwrap().candidates.len();
-                let next = if key.code == KeyCode::Up {
+                let next = if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
                     current.saturating_sub(1)
                 } else {
                     (current + 1).min(count - 1)

@@ -250,8 +250,23 @@ fn ambiguous_import_requires_selection_and_preserves_originals() -> anyhow::Resu
     assert!(app.projects.catalog.projects.is_empty());
     assert_eq!(dialog.plan.as_ref().unwrap().candidates.len(), 2);
 
-    dialog.selection.select(Some(1));
-    assert!(app.finish_project_dialog(&mut dialog)?);
+    app.project_dialog = Some(dialog);
+    let area = Rect::new(0, 0, 100, 30);
+    for character in ['j', 'k', 'j'] {
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+            area,
+        );
+    }
+    assert_eq!(
+        app.project_dialog.as_ref().unwrap().selection.selected(),
+        Some(1)
+    );
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        area,
+    );
+    assert!(app.project_dialog.is_none());
     app.session.job = None;
     assert_eq!(app.session.editor.path.file_name().unwrap(), "second.tex");
     assert_eq!(
