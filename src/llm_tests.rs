@@ -390,3 +390,74 @@ fn cancelling_a_pending_network_request_returns_promptly() {
     );
     assert!(started.elapsed() < Duration::from_secs(2));
 }
+
+#[test]
+fn tool_turns_reuse_the_http_connection() {
+    use std::io::{BufRead, BufReader};
+
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/responses", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(REQUEST_TIMEOUT)).unwrap();
+        let mut connection = BufReader::new(stream);
+
+        // Both requests must arrive on the same socket, across separate block_on calls.
+        for _ in 0..2 {
+            let mut content_length = None;
+            loop {
+                let mut line = String::new();
+                assert!(connection.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                    content_length = Some(value.trim().parse::<usize>().unwrap());
+                }
+            }
+
+            let mut body = vec![0; content_length.unwrap()];
+            connection.read_exact(&mut body).unwrap();
+            let request: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request["reasoning"]["effort"], "low");
+
+            let response = json!({
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": r#"{"reply":"Advice","proposed_tex":null}"#
+                    }]
+                }]
+            })
+            .to_string();
+            write!(
+                connection.get_mut(),
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{response}",
+                response.len()
+            ).unwrap();
+            connection.get_mut().flush().unwrap();
+        }
+    });
+
+    let client = TurnClient::with_timeout(REQUEST_TIMEOUT).unwrap();
+    let context = TurnContext {
+        prompt: "synthetic resume",
+        tools: &[],
+        history: &[],
+    };
+    let profile = Profile::new(Provider::OpenAi);
+    let key = SecretString::from("synthetic-key");
+
+    for _ in 0..2 {
+        let turn = client
+            .request_turn_at(&profile, &key, &context, &AtomicBool::new(false), &endpoint)
+            .unwrap();
+        assert!(matches!(turn, AgentTurn::Complete(_)));
+    }
+
+    server.join().unwrap();
+}

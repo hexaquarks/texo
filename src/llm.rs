@@ -69,18 +69,64 @@ pub struct TurnContext<'a> {
     pub history: &'a [ToolExchange],
 }
 
-pub fn request_turn(
-    profile: &Profile,
-    key: SecretString,
-    context: &TurnContext<'_>,
-    cancelled: &AtomicBool,
-) -> Result<AgentTurn> {
-    let endpoint = match profile.provider {
-        Provider::OpenAi => OPENAI_ENDPOINT,
-        Provider::Anthropic => ANTHROPIC_ENDPOINT,
-        _ => bail!("Choose an API provider with /login"),
-    };
-    request_turn_at(profile, key, context, cancelled, endpoint, REQUEST_TIMEOUT)
+/// Keep the runtime alive with its HTTP pool throughout a task's tool turns.
+pub struct TurnClient {
+    client: Client,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl TurnClient {
+    pub fn new() -> Result<Self> {
+        Self::with_timeout(REQUEST_TIMEOUT)
+    }
+
+    fn with_timeout(timeout: Duration) -> Result<Self> {
+        let client = provider_client(timeout)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+
+        Ok(Self { client, runtime })
+    }
+
+    pub fn request_turn(
+        &self,
+        profile: &Profile,
+        key: &SecretString,
+        context: &TurnContext<'_>,
+        cancelled: &AtomicBool,
+    ) -> Result<AgentTurn> {
+        let endpoint = match profile.provider {
+            Provider::OpenAi => OPENAI_ENDPOINT,
+            Provider::Anthropic => ANTHROPIC_ENDPOINT,
+            _ => bail!("Choose an API provider with /login"),
+        };
+
+        self.request_turn_at(profile, key, context, cancelled, endpoint)
+    }
+
+    fn request_turn_at(
+        &self,
+        profile: &Profile,
+        key: &SecretString,
+        context: &TurnContext<'_>,
+        cancelled: &AtomicBool,
+        endpoint: &str,
+    ) -> Result<AgentTurn> {
+        profile.validate()?;
+        ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
+
+        self.runtime.block_on(async {
+            tokio::select! {
+                result = send_request(&self.client, profile, key, context, endpoint) => result,
+                _ = async {
+                    while !cancelled.load(Ordering::Relaxed) {
+                        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+                    }
+                } => Err(anyhow!("Assistant cancelled")),
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -103,6 +149,7 @@ fn request_at(
     }
 }
 
+#[cfg(test)]
 fn request_turn_at(
     profile: &Profile,
     key: SecretString,
@@ -111,24 +158,7 @@ fn request_turn_at(
     endpoint: &str,
     timeout: Duration,
 ) -> Result<AgentTurn> {
-    profile.validate()?;
-    ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
-
-    let client = provider_client(timeout)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
-    runtime.block_on(async {
-        tokio::select! {
-            result = send_request(&client, profile, &key, context, endpoint) => result,
-            _ = async {
-                while !cancelled.load(Ordering::Relaxed) {
-                    tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
-                }
-            } => Err(anyhow!("Assistant cancelled")),
-        }
-    })
+    TurnClient::with_timeout(timeout)?.request_turn_at(profile, &key, context, cancelled, endpoint)
 }
 
 async fn send_request(
