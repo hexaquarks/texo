@@ -409,7 +409,15 @@ impl App {
                 match self.finish_project_dialog(&mut dialog) {
                     Ok(true) => return,
                     Ok(false) => {}
-                    Err(error) => dialog.error = error.to_string(),
+                    Err(error) => {
+                        // Let the user correct the fields and inspect the source again on retry.
+                        if matches!(dialog.action, Action::ImportResume) {
+                            dialog.plan = None;
+                            dialog.selection.select(Some(0));
+                        }
+
+                        dialog.error = error.to_string();
+                    }
                 }
             }
             Event::Key(key)

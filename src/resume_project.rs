@@ -94,7 +94,9 @@ impl Project {
 
     pub fn rename(&mut self, name: &str) -> Result<()> {
         let name = validate_name(name)?;
-        let mut manifest = self.manifest.clone();
+
+        // A dialog may hold an older project; preserve metadata changed since it opened.
+        let mut manifest = Self::load(&self.root)?.manifest;
         manifest.name = name;
 
         write_manifest(&self.root, &manifest)?;

@@ -174,6 +174,9 @@ mod label_tests;
 #[path = "modal_preview_tests.rs"]
 mod modal_preview_tests;
 #[cfg(test)]
+#[path = "project_dialog_tests.rs"]
+mod project_dialog_tests;
+#[cfg(test)]
 #[path = "resume_review_tests.rs"]
 mod resume_review_tests;
 #[cfg(test)]
