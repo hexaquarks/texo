@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join, delimiter } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -15,9 +15,10 @@ async function prepare(root) {
     const bin = join(root, 'bin');
     await mkdir(bin);
 
-    const executable = join(bin, 'codex');
-    await copyFile(new URL('./fixtures/codex.py', import.meta.url), executable);
+    const executable = join(bin, 'codex.mjs');
+    await copyFile(new URL('./fixtures/codex.mjs', import.meta.url), executable);
     await run('chmod', ['u+x', executable]);
+    await symlink(executable, join(bin, 'codex'));
 
     return { PATH: bin + delimiter + process.env.PATH };
 }
@@ -66,7 +67,7 @@ test('AI proposals refine the pending draft, protect the buffer, accept, save, a
         await ask(terminal, 'first');
         await terminal.getByText('Unapproved changes').expect();
         await terminal.getByText('PDF current').expect();
-        await terminal.mouse.click(35, 6);
+        await terminal.getByText('First draft').first().click();
         await paste(terminal, 'BLOCKED EDIT');
         assert.equal(await readFile(document, 'utf8'), original);
         await prefix(terminal, 'm');
@@ -104,7 +105,7 @@ test('late AI replies preserve newer local edits across a resize', async () => {
 
         await ask(terminal, 'hold');
         await waitStarted(root);
-        await terminal.mouse.click(35, 6);
+        await terminal.getByText('\\documentclass').first().click();
         await terminal.press('Ctrl+End');
         await paste(terminal, '\n% Local edit wins');
         await terminal.resize(60, 16);

@@ -1,8 +1,12 @@
 import AppKit
 import Foundation
 
-// Preserve every pasteboard format in memory, including images and rich text.
-// The child tests use the real OS clipboard; never write its original contents to disk.
+// macOS-only wrapper for `npm run test:clipboard`. Texo writes to the real system
+// clipboard, so the test would otherwise replace whatever the user had copied.
+// Swift gives us AppKit's pasteboard API to save and restore images, rich text,
+// and other available formats; a plain-text clipboard backup would lose them.
+// Keep the original contents in memory and restore them when the child exits,
+// including when a test fails. Never write the user's clipboard contents to disk.
 func runGuardedTests() throws -> Int32 {
     let pasteboard = NSPasteboard.general
     let savedItems = (pasteboard.pasteboardItems ?? []).map { item in
