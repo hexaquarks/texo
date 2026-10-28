@@ -29,6 +29,9 @@ jobs:
       - name: Install LaTeX and PDF tools
         run: brew install tectonic poppler
 
+      - name: Install headless terminal renderer
+        run: brew install --cask kitty
+
       - name: Prepare offline LaTeX resources
         run: tectonic --outdir "$RUNNER_TEMP" tests/fixtures/two-pages.tex
 
