@@ -520,7 +520,7 @@ impl Editor {
     }
 
     // Adapted from ratatui-textarea 0.9.3 examples/minimal.rs (MIT).
-    // See THIRD_PARTY_LICENSES/ratatui-textarea.txt for attribution.
+    // See LICENSE for attribution.
     fn clicked_cursor(&self, area: Rect, column: u16, row: u16) -> Option<CursorMove> {
         let content = self.text.block().map_or(area, |block| block.inner(area));
         if !content.contains(Position::new(column, row)) {
