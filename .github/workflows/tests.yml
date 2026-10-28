@@ -33,7 +33,9 @@ jobs:
         run: brew install --cask kitty
 
       - name: Prepare offline LaTeX resources
-        run: tectonic --outdir "$RUNNER_TEMP" tests/fixtures/two-pages.tex
+        run: |
+          tectonic --outdir "$RUNNER_TEMP" tests/fixtures/two-pages.tex
+          tectonic --outdir "$RUNNER_TEMP" tests/fixtures/resume.tex
 
       - name: Check formatting
         run: cargo fmt --check

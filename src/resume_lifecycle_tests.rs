@@ -13,22 +13,7 @@ use texo::{
 };
 
 const SCREEN: Rect = Rect::new(0, 0, 160, 45);
-const FULL_RESUME: &str = r"\documentclass{article}
-\begin{document}
-\section*{Alex Example}
-Software engineer. alex@example.test
-\section*{Experience}
-Example Company, 2022--2025.
-\begin{itemize}
-\item Built reporting tools.
-\item Maintained automated tests.
-\end{itemize}
-\section*{Education}
-BSc Computer Science, Example University, 2022.
-\section*{Skills}
-Rust, Python, SQL.
-\end{document}
-";
+const FULL_RESUME: &str = include_str!("../tests/fixtures/resume.tex");
 
 fn press(app: &mut App, code: KeyCode) {
     app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), SCREEN);
