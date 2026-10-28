@@ -1,6 +1,6 @@
 // Adapted from ratatui-textarea 0.9.3 examples/vim.rs (MIT).
 // Copyright (c) 2022 rhysd; Copyright (c) The Ratatui Developers.
-// See THIRD_PARTY_LICENSES/ratatui-textarea.txt for the license.
+// See LICENSE for the license.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui_textarea::{CursorMove, DataCursor, Scrolling, TextArea};
