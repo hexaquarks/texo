@@ -207,25 +207,37 @@ impl App {
     }
 
     pub(super) fn open_export(&mut self) {
-        if self.session.proposal_review.is_some() {
-            self.session.status = "Accept or discard the proposal before exporting.".into();
+        if let Err(error) = self.ensure_export_ready() {
+            self.session.status = error.to_string();
             return;
         }
 
-        if self.session.job.is_some() {
-            self.session.status = "Wait for the build to finish before exporting.".into();
-            return;
-        }
-        if self.session.rendered_source.as_deref() != Some(self.session.editor.source().as_str())
-            || self.session.rendered_pdf.is_none()
-        {
-            self.session.status = format!(
-                "Build the current document with {} b before exporting.",
-                self.prefix.label()
-            );
-            return;
-        }
         self.export = Some(ExportDialog::new(&self.session.editor.path));
+    }
+
+    fn ensure_export_ready(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.session.proposal_review.is_none(),
+            "Accept or discard the proposal before exporting."
+        );
+        anyhow::ensure!(
+            self.session.job.is_none(),
+            "Wait for the build to finish before exporting."
+        );
+
+        // Included files can break a rebuild without changing the editor's source text.
+        anyhow::ensure!(
+            !self.session.render_failed,
+            "The latest build failed. Rebuild successfully before exporting."
+        );
+        anyhow::ensure!(
+            self.session.rendered_source.as_deref() == Some(self.session.editor.source().as_str())
+                && self.session.rendered_pdf.is_some(),
+            "Build the current document with {} b before exporting.",
+            self.prefix.label()
+        );
+
+        Ok(())
     }
 
     pub(super) fn handle_overlay(&mut self, event: Event, area: Rect) -> bool {
@@ -347,18 +359,20 @@ impl App {
     }
 
     pub(super) fn finish_export(&mut self) {
-        if self.session.rendered_source.as_deref() != Some(self.session.editor.source().as_str()) {
+        // Background completions can change review/build state while the dialog is open.
+        if let Err(error) = self.ensure_export_ready() {
             self.export = None;
-            self.session.status =
-                "PDF changed while exporting. Build the current document and try again.".into();
+            self.session.status = format!("PDF changed while exporting. {error}");
             return;
         }
+
         let Some(dialog) = &mut self.export else {
             return;
         };
         let Some(source) = &self.session.rendered_pdf else {
             return;
         };
+
         match dialog.export(source, &self.session.editor.path) {
             Ok(Some(path)) => {
                 self.session.status = format!("Exported {}", path.display());
