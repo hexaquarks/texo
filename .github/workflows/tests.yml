@@ -47,7 +47,7 @@ jobs:
         run: >-
           cargo llvm-cov --locked --all-targets --lcov
           --output-path target/lcov.info
-          -- --include-ignored
+          -- --include-ignored --test-threads=1
           --skip live_dummy_edit_latency
           --skip live_agent_latency_comparison
 
