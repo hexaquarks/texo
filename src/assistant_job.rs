@@ -531,3 +531,7 @@ mod tests {
 #[cfg(test)]
 #[path = "assistant_latency_tests.rs"]
 mod latency_tests;
+
+#[cfg(test)]
+#[path = "assistant_job_tests.rs"]
+mod job_tests;
