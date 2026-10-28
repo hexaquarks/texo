@@ -205,10 +205,10 @@ fn empty_workspaces_require_project_creation_and_missing_sources_require_confirm
         app.project_dialog.as_ref().unwrap().action,
         Action::NewResume
     ));
-    app.handle_project_dialog(Event::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
+    app.handle_project_dialog(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        area,
+    );
     app.session.job = None;
     assert!(!app.session.empty_workspace);
     assert_ne!(app.session.editor.path, loose);
@@ -224,14 +224,17 @@ fn empty_workspaces_require_project_creation_and_missing_sources_require_confirm
     ));
     assert!(!app.session.editor.path.exists());
 
-    app.handle_project_dialog(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    app.handle_project_dialog(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        area,
+    );
     assert_eq!(app.session.editor.source(), source);
     assert!(!app.session.editor.path.exists());
     app.open_project_dialog(Action::RecoverSource);
-    app.handle_project_dialog(Event::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
+    app.handle_project_dialog(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        area,
+    );
     app.session.job = None;
     assert_eq!(std::fs::read_to_string(&app.session.editor.path)?, source);
     Ok(())

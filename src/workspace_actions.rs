@@ -413,11 +413,15 @@ impl App {
         ));
     }
 
-    pub(super) fn handle_project_dialog(&mut self, event: Event) {
+    pub(super) fn handle_project_dialog(&mut self, event: Event, area: Rect) {
         let Some(mut dialog) = self.project_dialog.take() else {
             return;
         };
+
         match event {
+            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                dialog.click(area, Position::new(mouse.column, mouse.row));
+            }
             Event::Key(key) if key.code == KeyCode::Esc => return,
             Event::Key(key) if key.code == KeyCode::Enter => {
                 match self.finish_project_dialog(&mut dialog) {
