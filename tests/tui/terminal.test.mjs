@@ -1,80 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { TuiTest } from '@microsoft/tui-test';
+import { ARTIFACTS, RESUME, UI_TIMEOUT_MS, withTexo, paste, prefix, createResume, documentPath } from './helpers.mjs';
 
-const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const BACKEND = process.env.TEXO_TUI_BACKEND ?? 'alacritty';
-const ARTIFACTS = join(REPOSITORY, 'target/tui-artifacts', BACKEND);
-const UI_TIMEOUT_MS = 15_000;
-const PDF_INSPECTION_TIMEOUT_MS = 10_000;
 const executeFile = promisify(execFile);
-
-// tui-test exposes raw writes but no paste operation. These xterm bracketed-paste
-// delimiters make multiline text one paste event rather than editor key commands.
-const PASTE_START = '\x1b[200~';
-const PASTE_END = '\x1b[201~';
-const RESUME = '\\documentclass{article}\n\\begin{document}\nTerminal workflow resume.\n\\end{document}\n';
-
-async function withTexo(name, scenario) {
-    const root = await mkdtemp(join(tmpdir(), 'texo-terminal-'));
-    const workspace = join(root, 'resumes');
-    await mkdir(workspace);
-    await mkdir(ARTIFACTS, { recursive: true });
-
-    const terminal = TuiTest.ephemeral(name, {
-        backend: BACKEND,
-        timeouts: { text: UI_TIMEOUT_MS },
-        recording: { directory: ARTIFACTS },
-        artifacts: { dir: ARTIFACTS, onFailure: 'all' },
-    });
-
-    try {
-        await terminal.run(join(REPOSITORY, 'target/debug/texo'), [workspace], {
-            cols: 120,
-            rows: 35,
-            env: { XDG_CONFIG_HOME: join(root, 'config'), TERM: 'xterm-256color' },
-        });
-        await terminal.getByText('No resumes yet').expect();
-        await scenario({ terminal, root, workspace });
-    } catch (error) {
-        await writeFile(join(ARTIFACTS, `${name}-failure.txt`), await terminal.text());
-        await terminal.screenshot(join(ARTIFACTS, `${name}-failure.png`));
-        throw error;
-    } finally {
-        await terminal.closeQuiet();
-        await rm(root, { recursive: true, force: true });
-    }
-}
-
-async function paste(terminal, text) {
-    await terminal.write(`${PASTE_START}${text}${PASTE_END}`);
-}
-
-async function prefix(terminal, key) {
-    await terminal.press('Ctrl+x', key);
-}
-
-async function createResume(terminal, name) {
-    await prefix(terminal, 'n');
-    await terminal.getByText('New resume').first().expect();
-    await paste(terminal, name);
-    await terminal.press('Enter');
-    await terminal.getByText('PDF current').expect();
-    await terminal.getByText(name).first().expect();
-}
-
-async function documentPath(workspace) {
-    const entries = await readdir(workspace, { withFileTypes: true });
-    const project = entries.find(entry => entry.isDirectory());
-    assert.ok(project, 'Creating a resume must create a project directory');
-    return join(workspace, project.name, 'main.tex');
-}
+const PDF_INSPECTION_TIMEOUT_MS = 10_000;
 
 test('create, paste Unicode, save, build, and export through the terminal', async () => {
     await withTexo('edit-export', async ({ terminal, workspace, root }) => {

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "pretest": "cargo build --manifest-path ../../Cargo.toml",
-    "test": "node --test --test-concurrency=1 terminal.test.mjs"
+    "test": "node --test --test-concurrency=1 *.test.mjs"
   },
   "devDependencies": {
     "@microsoft/tui-test": "0.1.1"
