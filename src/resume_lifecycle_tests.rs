@@ -34,16 +34,10 @@ fn tool_call(id: &str, name: &str, arguments: Value) -> ToolCall {
     }
 }
 
-// Script model responses and deliver results through the assistant's completion channel.
-// Run real tool dispatch, sandbox compilation, proposal review, and PDF rendering.
-fn request_revision(app: &mut App, expected_context: &str, edit: ToolCall) -> Result<()> {
-    let context = app.assistant_source();
-    assert_eq!(context, expected_context);
-    let live_source = app.session.editor.source();
-    let saved_source = fs::read_to_string(&app.session.editor.path)?;
-    let sender = app.session.assistant.pending_request(context.clone());
-    let mut tools = ResumeTools::new("resume.tex".into(), context)
-        .in_directory(app.session.editor.path.parent().unwrap().to_owned());
+// Script model responses while running real tools and sandbox compilation.
+fn scripted_revision(context: &str, document: &Path, edit: ToolCall) -> Result<CompletedTask> {
+    let mut tools = ResumeTools::new("resume.tex".into(), context.into())
+        .in_directory(document.parent().unwrap().to_owned());
 
     let reply = agent::run(
         "Revise the synthetic resume using the supplied facts",
@@ -59,7 +53,7 @@ fn request_revision(app: &mut App, expected_context: &str, edit: ToolCall) -> Re
             Ok(match history.len() {
                 0 => tool_turn(vec![tool_call("read", "read_resume", json!({}))]),
                 1 => {
-                    assert_eq!(history[0].results[0].output["tex"], expected_context);
+                    assert_eq!(history[0].results[0].output["tex"], context);
                     tool_turn(vec![
                         edit.clone(),
                         tool_call("compile", "compile_resume", json!({})),
@@ -73,10 +67,21 @@ fn request_revision(app: &mut App, expected_context: &str, edit: ToolCall) -> Re
         },
     )?;
 
-    sender.send(Ok(CompletedTask {
+    Ok(CompletedTask {
         reply,
         build: tools.take_build(),
-    }))?;
+    })
+}
+
+fn request_revision(app: &mut App, expected_context: &str, edit: ToolCall) -> Result<()> {
+    let context = app.assistant_source();
+    assert_eq!(context, expected_context);
+    let live_source = app.session.editor.source();
+    let saved_source = fs::read_to_string(&app.session.editor.path)?;
+    let sender = app.session.assistant.pending_request(context.clone());
+    let completed = scripted_revision(&context, &app.session.editor.path, edit)?;
+
+    sender.send(Ok(completed))?;
     app.receive_assistant();
     wait_for_reviews(app)?;
 
@@ -209,5 +214,278 @@ fn empty_workspace_to_revised_resume_export_and_reopen() -> Result<()> {
         "Alex's resume"
     );
     assert_eq!(pdf_text(&exported)?, text);
+    Ok(())
+}
+
+fn built_resume() -> Result<(tempfile::TempDir, App)> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().canonicalize()?;
+    let project = resume_project::create(&root, "Lifecycle resume")?;
+    fs::write(project.document(), FULL_RESUME)?;
+    let mut app = App::start(Editor::open(project.document())?, Preview::default(), root)?;
+    wait_for_reviews(&mut app)?;
+    ensure!(
+        app.session.rendered_pdf.is_some(),
+        "Initial PDF did not build"
+    );
+    Ok((directory, app))
+}
+
+#[test]
+#[ignore = "requires macOS, Tectonic cache, and Poppler"]
+fn export_rechecks_pending_review_before_overwriting_an_existing_pdf() -> Result<()> {
+    let (directory, mut app) = built_resume()?;
+    let exported = directory.path().join("application.pdf");
+    fs::write(&exported, "Existing application")?;
+    let sender = app.session.assistant.pending_request(FULL_RESUME.into());
+    app.open_export();
+    app.export.as_mut().unwrap().input.select_all();
+    app.handle_event(
+        Event::Paste(exported.to_string_lossy().into_owned()),
+        SCREEN,
+    );
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.export.as_ref().unwrap().message, "File exists.");
+
+    // A reply can arrive between the overwrite warning and its confirmation.
+    let completed = scripted_revision(
+        FULL_RESUME,
+        &app.session.editor.path,
+        replace_text("Software engineer.", "Backend engineer."),
+    )?;
+    sender.send(Ok(completed))?;
+    app.receive_assistant();
+    wait_for_reviews(&mut app)?;
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        fs::read(&exported)? == b"Existing application",
+        "The existing export must survive until the new proposal is reviewed"
+    );
+    assert!(app.session.status.contains("Accept or discard"));
+
+    app.discard_proposal();
+    app.open_export();
+    assert!(app.export.is_some());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires macOS, Tectonic cache, and Poppler"]
+fn failed_asset_rebuild_blocks_export_until_a_successful_retry() -> Result<()> {
+    let (_directory, mut app) = built_resume()?;
+    let asset = app
+        .session
+        .editor
+        .path
+        .parent()
+        .unwrap()
+        .join("experience.tex");
+    fs::write(&asset, "Original experience")?;
+    let source = FULL_RESUME.replace("Built reporting tools.", r"\input{experience}");
+    app.session.editor.replace_source(&source);
+    app.start_render();
+    wait_for_reviews(&mut app)?;
+    let published = app.session.rendered_pdf.clone().unwrap();
+    let previous_pdf = fs::read(&published)?;
+
+    fs::write(&asset, r"\undefinedResumeCommand")?;
+    app.start_render();
+    wait_for_reviews(&mut app)?;
+    assert!(app.session.render_failed);
+    assert_eq!(fs::read(&published)?, previous_pdf);
+    app.open_export();
+    assert!(app.export.is_none());
+
+    fs::write(&asset, "Repaired experience")?;
+    app.start_render();
+    wait_for_reviews(&mut app)?;
+    assert!(!app.session.render_failed);
+    app.open_export();
+    assert!(app.export.is_some());
+    assert!(pdf_text(&published)?.contains("Repaired experience"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires macOS, Tectonic cache, and Poppler"]
+fn failed_pdf_publish_preserves_the_review_and_can_be_retried() -> Result<()> {
+    let (_directory, mut app) = built_resume()?;
+    let document = app.session.editor.path.clone();
+    let published = document.with_extension("pdf");
+    request_revision(
+        &mut app,
+        FULL_RESUME,
+        replace_text("Software engineer.", "Backend engineer."),
+    )?;
+    let draft_pdf = app
+        .session
+        .proposed_build
+        .as_ref()
+        .unwrap()
+        .pdf_path
+        .clone();
+
+    // Simulate an output-path conflict that appears after the draft compiled.
+    fs::remove_file(&published)?;
+    fs::create_dir(&published)?;
+    app.apply_proposal();
+    assert_eq!(app.session.editor.source(), FULL_RESUME);
+    assert_eq!(fs::read_to_string(&document)?, FULL_RESUME);
+    assert!(app.session.proposal_review.is_some());
+    assert!(draft_pdf.is_file());
+    assert!(app.session.diagnostics.is_some());
+
+    fs::remove_dir(&published)?;
+    app.apply_proposal();
+    assert!(app.session.proposal_review.is_none());
+    assert!(app.session.diagnostics.is_none());
+    assert!(!draft_pdf.exists());
+    assert!(pdf_text(&published)?.contains("Backend engineer"));
+    app.perform_action(Action::Save);
+    assert!(fs::read_to_string(&document)?.contains("Backend engineer"));
+    app.open_export();
+    assert!(app.export.is_some());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires macOS, Tectonic cache, and Poppler"]
+fn late_refinement_follows_its_project_and_preserves_the_other_resume() -> Result<()> {
+    let (directory, mut app) = built_resume()?;
+    let first = app.session.editor.path.clone();
+    let second = resume_project::create(&directory.path().canonicalize()?, "Other resume")?;
+    request_revision(
+        &mut app,
+        FULL_RESUME,
+        replace_text("Software engineer.", "Backend engineer."),
+    )?;
+    let pending = FULL_RESUME.replace("Software engineer.", "Backend engineer.");
+    let sender = app.session.assistant.pending_request(pending.clone());
+    let completed = scripted_revision(
+        &pending,
+        &first,
+        replace_text("Rust, Python, SQL.", "Rust, Python, SQL, Git."),
+    )?;
+    app.open_document(second.document());
+    wait_for_reviews(&mut app)?;
+    let second_pdf = fs::read(second.document().with_extension("pdf"))?;
+    sender.send(Ok(completed))?;
+    app.receive_assistant();
+    assert!(app.session.proposal_review.is_none());
+    assert_eq!(app.session.editor.source(), crate::editor::STARTER_DOCUMENT);
+
+    app.open_document(first.clone());
+    app.receive_assistant();
+    wait_for_reviews(&mut app)?;
+    assert_eq!(app.session.editor.source(), FULL_RESUME);
+    app.apply_proposal();
+    let accepted = pending.replace("Rust, Python, SQL.", "Rust, Python, SQL, Git.");
+    assert_eq!(app.session.editor.source(), accepted);
+    assert_eq!(fs::read_to_string(&first)?, FULL_RESUME);
+    let text = pdf_text(&first.with_extension("pdf"))?;
+    assert!(text.contains("Backend engineer") && text.contains("Git"));
+
+    app.open_document(second.document());
+    assert_eq!(
+        fs::read(second.document().with_extension("pdf"))?,
+        second_pdf
+    );
+    assert_eq!(
+        fs::read_to_string(second.document())?,
+        crate::editor::STARTER_DOCUMENT
+    );
+    app.open_document(first);
+    assert_eq!(app.session.editor.source(), accepted);
+    assert!(app.session.editor.is_modified());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires macOS, Tectonic cache, and Poppler"]
+fn failed_refinement_and_cancelled_reply_cannot_destroy_an_existing_draft() -> Result<()> {
+    let (_directory, mut app) = built_resume()?;
+    let document = app.session.editor.path.clone();
+    let published_pdf = fs::read(document.with_extension("pdf"))?;
+    request_revision(
+        &mut app,
+        FULL_RESUME,
+        replace_text("Software engineer.", "Backend engineer."),
+    )?;
+    let pending = app.assistant_source();
+    let draft_pdf = app
+        .session
+        .proposed_build
+        .as_ref()
+        .unwrap()
+        .pdf_path
+        .clone();
+    let sender = app.session.assistant.pending_request(pending.clone());
+    let failed = scripted_revision(
+        &pending,
+        &document,
+        replace_text("Backend engineer.", r"\undefinedResumeCommand"),
+    );
+    assert!(failed.is_err());
+    sender.send(failed)?;
+    app.receive_assistant();
+    assert_eq!(app.assistant_source(), pending);
+    assert!(draft_pdf.is_file());
+    assert_eq!(fs::read(document.with_extension("pdf"))?, published_pdf);
+
+    let sender = app.session.assistant.pending_request(pending.clone());
+    let late_reply = scripted_revision(
+        &pending,
+        &document,
+        replace_text("Rust, Python, SQL.", "Rust, Python, SQL, Git."),
+    )?;
+    app.discard_proposal();
+    assert!(sender.send(Ok(late_reply)).is_err());
+    app.receive_assistant();
+    assert!(!draft_pdf.exists());
+    assert!(app.session.proposal_review.is_none());
+    assert_eq!(app.session.editor.source(), FULL_RESUME);
+    assert_eq!(fs::read_to_string(&document)?, FULL_RESUME);
+    assert_eq!(fs::read(document.with_extension("pdf"))?, published_pdf);
+
+    request_revision(
+        &mut app,
+        FULL_RESUME,
+        replace_text("Software engineer.", "Fresh request."),
+    )?;
+    app.apply_proposal();
+    assert!(pdf_text(&document.with_extension("pdf"))?.contains("Fresh request"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires macOS, Tectonic cache, and Poppler"]
+fn external_source_change_blocks_save_and_reload_cancels_pending_work() -> Result<()> {
+    let (_directory, mut app) = built_resume()?;
+    let document = app.session.editor.path.clone();
+    request_revision(
+        &mut app,
+        FULL_RESUME,
+        replace_text("Software engineer.", "Backend engineer."),
+    )?;
+    app.apply_proposal();
+    let accepted = app.session.editor.source();
+    let external = FULL_RESUME.replace("Software engineer.", "External edit.");
+    fs::write(&document, &external)?;
+    app.perform_action(Action::Save);
+    assert_eq!(fs::read_to_string(&document)?, external);
+    assert_eq!(app.session.editor.source(), accepted);
+    assert!(app.session.editor.is_modified());
+
+    let sender = app.session.assistant.pending_request(accepted);
+    app.perform_action(Action::ReloadSource);
+    press(&mut app, KeyCode::Enter);
+    wait_for_reviews(&mut app)?;
+    assert!(sender.send(Err(anyhow::anyhow!("Late result"))).is_err());
+    assert!(!app.session.assistant.is_running());
+    assert!(!app.session.editor.is_modified());
+    assert_eq!(app.session.editor.source(), external);
+    assert!(pdf_text(&document.with_extension("pdf"))?.contains("External edit"));
+    app.open_export();
+    assert!(app.export.is_some());
     Ok(())
 }

@@ -72,7 +72,7 @@ impl App {
         }
 
         if self.project_dialog.is_some() {
-            self.handle_project_dialog(event);
+            self.handle_project_dialog(event, area);
             return false;
         }
 

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph},
 };
 use ratatui_textarea::TextArea;
@@ -71,8 +71,33 @@ impl ProjectDialog {
         }
     }
 
-    pub fn draw(&mut self, frame: &mut Frame) {
-        let screen = frame.area();
+    pub fn click(&mut self, screen: Rect, position: Position) {
+        let [_, form, _, _] = Self::layout(screen);
+
+        if let Some(plan) = &self.plan {
+            let choices = Block::default()
+                .title("Choose the TeX entrypoint")
+                .inner(form);
+            if choices.contains(position) {
+                let index = self.selection.offset() + usize::from(position.y - choices.y);
+                if index < plan.candidates.len() {
+                    self.selection.select(Some(index));
+                }
+            }
+            return;
+        }
+
+        if matches!(self.action, Action::ImportResume) {
+            let [_, source, _, name, _] = Self::import_layout(form);
+            if source.contains(position) {
+                self.source_focused = true;
+            } else if name.contains(position) {
+                self.source_focused = false;
+            }
+        }
+    }
+
+    fn layout(screen: Rect) -> [Rect; 4] {
         let width = screen.width.min(DIALOG_WIDTH);
         let height = screen.height.min(DIALOG_HEIGHT);
         let area = Rect::new(
@@ -81,6 +106,30 @@ impl ProjectDialog {
             width,
             height,
         );
+        let inner = Block::bordered().padding(Padding::uniform(1)).inner(area);
+        let [form, error, help] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(2),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+
+        [area, form, error, help]
+    }
+
+    fn import_layout(form: Rect) -> [Rect; 5] {
+        Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Min(0),
+        ])
+        .areas(form)
+    }
+
+    pub fn draw(&mut self, frame: &mut Frame) {
+        let [area, form, error, help] = Self::layout(frame.area());
         let title = match self.action {
             Action::ImportResume => " Import resume ",
             Action::RenameResume => " Rename resume ",
@@ -95,16 +144,8 @@ impl ProjectDialog {
             .padding(Padding::uniform(1))
             .style(theme::dialog())
             .border_style(theme::dialog_title());
-        let inner = block.inner(area);
         frame.render_widget(Clear, area);
         frame.render_widget(block, area);
-
-        let [form, error, help] = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(2),
-            Constraint::Length(1),
-        ])
-        .areas(inner);
 
         for (input, focused) in [
             (&mut self.source, self.source_focused),
@@ -132,14 +173,7 @@ impl ProjectDialog {
                 &mut self.selection,
             );
         } else if matches!(self.action, Action::ImportResume) {
-            let [source_label, source, name_label, name, note] = Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Length(2),
-                Constraint::Length(1),
-                Constraint::Length(2),
-                Constraint::Min(0),
-            ])
-            .areas(form);
+            let [source_label, source, name_label, name, note] = Self::import_layout(form);
             frame.render_widget(
                 Paragraph::new("Source .tex file or project folder"),
                 source_label,
