@@ -290,3 +290,38 @@ fn focused_pdf_keeps_zoom_and_fit_hints_in_split_and_full_width_layouts() -> any
     }
     Ok(())
 }
+
+#[test]
+fn review_keeps_operation_errors_visible_and_prefix_help_accessible() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: app.session.editor.source(),
+        source_after: "Pending draft".into(),
+    }));
+    app.session.status = "Accept or discard the proposal before exporting.".into();
+    let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+
+    terminal.draw(|frame| app.draw(frame))?;
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(screen.contains("Unapproved changes"));
+    assert!(screen.contains(&app.session.status));
+
+    app.prefix.armed = true;
+    terminal.draw(|frame| app.draw(frame))?;
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(screen.contains("Select pane"));
+    assert!(!screen.contains(&app.session.status));
+    Ok(())
+}

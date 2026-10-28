@@ -104,10 +104,18 @@ impl App {
         } else {
             theme::shortcuts(&[(&prefix, "Prefix"), (&format!("{prefix} s"), "Settings")])
         };
+
+        // The review title replaces the usual status title. Keep operation results visible below it.
+        let show_review_status = self.session.proposal_review.is_some()
+            && !self.session.status.is_empty()
+            && !self.prefix.armed;
+        let footer = if show_review_status {
+            Paragraph::new(self.session.status.as_str())
+        } else {
+            Paragraph::new(settings_hint).alignment(ratatui::layout::Alignment::Right)
+        };
         frame.render_widget(
-            Paragraph::new(settings_hint)
-                .alignment(ratatui::layout::Alignment::Right)
-                .style(theme::muted().bg(theme::ELEVATED)),
+            footer.style(theme::muted().bg(theme::ELEVATED)),
             layout.status,
         );
 

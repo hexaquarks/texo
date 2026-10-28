@@ -30,12 +30,18 @@ export async function withTexo(name, scenario, options = {}) {
     });
 
     try {
+        const preparedEnvironment = options.prepare ? await options.prepare(root, workspace) : {};
         const restart = async ({ configuredWorkspace = false } = {}) => {
             await terminal.closeQuiet();
             await terminal.run(join(REPOSITORY, 'target/debug/texo'), configuredWorkspace ? [] : [workspace], {
                 cols: 120,
                 rows: 35,
-                env: { XDG_CONFIG_HOME: join(root, 'config'), TERM: 'xterm-256color', ...options.env },
+                env: {
+                    XDG_CONFIG_HOME: join(root, 'config'),
+                    TERM: 'xterm-256color',
+                    ...preparedEnvironment,
+                    ...options.env,
+                },
             });
         };
         await restart();
