@@ -761,7 +761,7 @@ fn a_cached_native_page_stays_inside_a_resized_pane() -> anyhow::Result<()> {
 #[ignore = "measures complete retained-image draw and terminal output latency"]
 fn high_resolution_native_zoom_draws_without_reuploading_pixels() -> anyhow::Result<()> {
     use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::{BufWriter, Read, Seek, SeekFrom};
 
     const INTERACTIVE_FRAME_BUDGET: Duration = Duration::from_millis(50);
     let area = Rect::new(0, 0, 160, 60);
@@ -770,8 +770,10 @@ fn high_resolution_native_zoom_draws_without_reuploading_pixels() -> anyhow::Res
     preview.set_source(Some(patterned_page(1200, 1600)));
     finish_viewport(&mut preview, preview_content(area));
     let mut wire = tempfile::tempfile()?;
+
+    // Match buffered stdout; unbuffered file writes distort the rendering latency.
     let mut terminal = Terminal::with_options(
-        CrosstermBackend::new(wire.try_clone()?),
+        CrosstermBackend::new(BufWriter::new(wire.try_clone()?)),
         TerminalOptions {
             viewport: Viewport::Fixed(area),
         },
