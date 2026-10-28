@@ -1,0 +1,55 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Install coverage tool
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install LaTeX and PDF tools
+        run: brew install tectonic poppler
+
+      - name: Prepare offline LaTeX resources
+        run: tectonic --outdir "$RUNNER_TEMP" tests/fixtures/two-pages.tex
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests with coverage
+        run: >-
+          cargo llvm-cov --locked --all-targets --lcov
+          --output-path target/lcov.info
+          -- --include-ignored
+          --skip live_dummy_edit_latency
+          --skip live_agent_latency_comparison
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: target/lcov.info
+          disable_search: true
+          fail_ci_if_error: true
