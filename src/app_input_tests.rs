@@ -1307,3 +1307,34 @@ fn vim_menu_navigation_leaves_editable_fields_and_document_untouched() -> anyhow
     assert_eq!(app.session.editor.source(), source);
     Ok(())
 }
+
+#[test]
+fn vim_escape_finishes_repeatable_edits_and_cancels_pending_operators() -> anyhow::Result<()> {
+    use crate::config::{EditingMode, EditorPreferences};
+
+    let (_directory, mut app) = application()?;
+    app.apply_editor_preferences(EditorPreferences {
+        mode: EditingMode::Vim,
+        ..EditorPreferences::default()
+    });
+    app.session.editor.replace_source("one two three");
+    let area = Rect::new(0, 0, 100, 30);
+    let press = |app: &mut App, code| {
+        app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), area);
+    };
+
+    for character in ['g', 'g', 'c', 'i', 'w'] {
+        press(&mut app, KeyCode::Char(character));
+    }
+    app.handle_event(Event::Paste("NEW".into()), area);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Char('.'));
+    assert_eq!(app.session.editor.source(), "NEW NEW three");
+
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('w'));
+    assert_eq!(app.session.editor.source(), "NEW NEW three");
+    Ok(())
+}
