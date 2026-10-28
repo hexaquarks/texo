@@ -23,15 +23,9 @@ impl App {
     pub(super) fn handle_event(&mut self, event: Event, area: Rect) -> bool {
         let previous_focus = self.focus;
         let had_overlay = self.overlay_open() || self.session.assistant.login_open();
-        let cancelled = matches!(
-            &event,
-            Event::FocusLost
-                | Event::Key(KeyEvent {
-                    code: KeyCode::Esc,
-                    ..
-                })
-        );
-        if cancelled {
+
+        // Escape must reach the editor so leaving insert mode can finish a repeatable edit.
+        if matches!(&event, Event::FocusLost) {
             self.session.editor.cancel_pending_commands();
         }
 
