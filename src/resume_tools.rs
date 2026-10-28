@@ -34,6 +34,24 @@ impl ResumeTools {
         }
     }
 
+    fn stage(&mut self, draft: String) -> Result<Value> {
+        ensure!(
+            !draft.trim().is_empty(),
+            "The proposed resume cannot be empty"
+        );
+        ensure!(
+            draft.len() <= MAX_DRAFT_BYTES,
+            "The proposed resume is too large"
+        );
+
+        self.draft = draft;
+        self.proposed = true;
+        // Every edit invalidates the PDF, including targeted replacements.
+        self.build = None;
+
+        Ok(json!({"staged": true, "saved": false, "bytes": self.draft.len()}))
+    }
+
     pub fn take_build(&mut self) -> Option<crate::sandbox::CompiledDraft> {
         self.build.take()
     }
@@ -54,13 +72,35 @@ struct ProposedEdit {
     tex: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextReplacement {
+    old_text: String,
+    new_text: String,
+}
+
 impl ToolSet for ResumeTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
+                name: "replace_text".into(),
+                description: "Stage a targeted edit by replacing one exact, unique old_text with new_text. \
+                    Include enough surrounding text to identify a single match. Prefer this for small edits; \
+                    unchanged text is preserved. Call compile_resume after editing.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "old_text": {"type": "string", "minLength": 1, "maxLength": MAX_DRAFT_BYTES},
+                        "new_text": {"type": "string", "maxLength": MAX_DRAFT_BYTES}
+                    },
+                    "required": ["old_text", "new_text"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDefinition {
                 name: "compile_resume".into(),
                 description: "Compile the current draft offline in an OS sandbox. Errors are returned so you can revise \
-                    and retry. Must succeed after the last propose_edit before finishing. Does not publish the PDF.".into(),
+                    and retry. Must succeed after the last edit before finishing. Does not publish the PDF.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {},
@@ -99,6 +139,28 @@ impl ToolSet for ResumeTools {
         ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
 
         match name {
+            "replace_text" => {
+                let edit: TextReplacement =
+                    serde_json::from_value(arguments.clone()).map_err(|_| {
+                        anyhow!("replace_text requires only old_text and new_text strings")
+                    })?;
+                ensure!(!edit.old_text.is_empty(), "old_text cannot be empty");
+                ensure!(
+                    edit.old_text.len() <= MAX_DRAFT_BYTES
+                        && edit.new_text.len() <= MAX_DRAFT_BYTES,
+                    "The replacement is too large"
+                );
+
+                // Checking both ends also rejects overlapping matches, such as "aa" in "aaa".
+                let first_match = self.draft.find(&edit.old_text);
+                ensure!(
+                    first_match.is_some() && first_match == self.draft.rfind(&edit.old_text),
+                    "old_text must match exactly once in the current draft; include more context"
+                );
+
+                let draft = self.draft.replacen(&edit.old_text, &edit.new_text, 1);
+                self.stage(draft)
+            }
             "compile_resume" => {
                 serde_json::from_value::<NoArguments>(arguments.clone())
                     .map_err(|_| anyhow!("compile_resume accepts no arguments"))?;
@@ -130,21 +192,7 @@ impl ToolSet for ResumeTools {
                 let edit: ProposedEdit = serde_json::from_value(arguments.clone())
                     .map_err(|_| anyhow!("propose_edit requires only a tex string"))?;
 
-                ensure!(
-                    !edit.tex.trim().is_empty(),
-                    "The proposed resume cannot be empty"
-                );
-                ensure!(
-                    edit.tex.len() <= MAX_DRAFT_BYTES,
-                    "The proposed resume is too large"
-                );
-
-                self.draft = edit.tex;
-                self.proposed = true;
-
-                self.build = None;
-
-                Ok(json!({"staged":true, "saved":false, "bytes":self.draft.len()}))
+                self.stage(edit.tex)
             }
             _ => bail!("Unknown resume tool"),
         }
@@ -168,7 +216,7 @@ impl ToolSet for ResumeTools {
         } else {
             ensure!(
                 reply.proposed_tex.is_none(),
-                "Use propose_edit before completing an edit"
+                "Use replace_text or propose_edit before completing an edit"
             );
         }
 
@@ -375,6 +423,130 @@ mod tests {
         );
 
         assert_eq!(tools.draft, "original");
+    }
+
+    #[test]
+    fn targeted_edits_preserve_other_text_and_require_compilation() {
+        let original = "Résumé: original bullet. Other content.";
+        let mut tools = ResumeTools::new("resume.tex".into(), original.into());
+        let cancelled = AtomicBool::new(false);
+
+        tools
+            .execute(
+                "replace_text",
+                &json!({"old_text": "original bullet", "new_text": "improved bullet"}),
+                &cancelled,
+            )
+            .unwrap();
+
+        assert_eq!(tools.draft, "Résumé: improved bullet. Other content.");
+        assert!(tools.proposed);
+        assert!(
+            tools
+                .finish(AssistantReply {
+                    reply: "Done".into(),
+                    proposed_tex: None,
+                })
+                .is_err()
+        );
+
+        tools
+            .execute(
+                "replace_text",
+                &json!({"old_text": " Other content.", "new_text": ""}),
+                &cancelled,
+            )
+            .unwrap();
+        assert_eq!(tools.draft, "Résumé: improved bullet.");
+    }
+
+    #[test]
+    fn rejected_replacements_leave_the_draft_unchanged() {
+        let original = "aaa repeated repeated";
+        let mut tools = ResumeTools::new("resume.tex".into(), original.into());
+        let cancelled = AtomicBool::new(false);
+
+        for arguments in [
+            json!({"old_text": "", "new_text": "new"}),
+            json!({"old_text": "missing", "new_text": "new"}),
+            json!({"old_text": "repeated", "new_text": "new"}),
+            json!({"old_text": "aa", "new_text": "new"}),
+            json!({"old_text": original, "new_text": " "}),
+            json!({"old_text": "aaa", "new_text": "x".repeat(MAX_DRAFT_BYTES)}),
+            json!({"old_text": "aaa", "new_text": "new", "path": "/other"}),
+            json!({"old_text": "aaa"}),
+        ] {
+            assert!(
+                tools
+                    .execute("replace_text", &arguments, &cancelled)
+                    .is_err()
+            );
+            assert_eq!(tools.draft, original);
+            assert!(!tools.proposed);
+        }
+
+        assert!(
+            tools
+                .execute(
+                    "replace_text",
+                    &json!({"old_text": "aaa", "new_text": "new"}),
+                    &AtomicBool::new(true),
+                )
+                .is_err()
+        );
+        assert_eq!(tools.draft, original);
+    }
+
+    #[test]
+    #[ignore = "requires macOS and cached Tectonic"]
+    fn targeted_edit_invalidates_the_compiled_pdf() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source = r"\documentclass{article}\begin{document}Original\end{document}";
+        let mut tools = ResumeTools::new("resume.tex".into(), source.into())
+            .in_directory(directory.path().to_owned());
+        let cancelled = AtomicBool::new(false);
+        tools.execute("compile_resume", &json!({}), &cancelled)?;
+        let previous_pdf = tools.build.as_ref().unwrap().pdf_path.clone();
+
+        assert!(
+            tools
+                .execute(
+                    "replace_text",
+                    &json!({"old_text": "Missing", "new_text": "Revised"}),
+                    &cancelled,
+                )
+                .is_err()
+        );
+        assert!(tools.build.is_some());
+        assert!(previous_pdf.exists());
+
+        tools.execute(
+            "replace_text",
+            &json!({"old_text": "Original", "new_text": "Revised"}),
+            &cancelled,
+        )?;
+
+        assert!(tools.build.is_none());
+        assert!(!previous_pdf.exists());
+        assert!(
+            tools
+                .finish(AssistantReply {
+                    reply: "Done".into(),
+                    proposed_tex: None,
+                })
+                .is_err()
+        );
+
+        tools.execute("compile_resume", &json!({}), &cancelled)?;
+        let reply = tools.finish(AssistantReply {
+            reply: "Revised".into(),
+            proposed_tex: None,
+        })?;
+        assert_eq!(
+            reply.proposed_tex,
+            Some(source.replace("Original", "Revised"))
+        );
+        Ok(())
     }
 
     #[test]
