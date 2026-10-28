@@ -177,6 +177,9 @@ mod modal_preview_tests;
 #[path = "project_dialog_tests.rs"]
 mod project_dialog_tests;
 #[cfg(test)]
+#[path = "resume_lifecycle_tests.rs"]
+mod resume_lifecycle_tests;
+#[cfg(test)]
 #[path = "resume_review_tests.rs"]
 mod resume_review_tests;
 #[cfg(test)]
