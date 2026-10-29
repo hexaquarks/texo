@@ -9,6 +9,8 @@ pub(super) const PANE_RESIZE_CELLS: u16 = 10;
 
 impl App {
     pub(super) fn select_directional_pane(&mut self, direction: char, area: Rect) {
+        self.workspace_expansion = None;
+
         // Navigation toward a hidden sibling first restores the column.
         let hidden_sibling = match (self.session.column_expansion, self.focus, direction) {
             (Some(Focus::Assistant), Focus::Assistant, 'k') => Some(Focus::Editor),
@@ -28,7 +30,25 @@ impl App {
         }
     }
 
+    pub(super) fn toggle_workspace_expansion(&mut self) {
+        if self.focus == Focus::Projects {
+            return;
+        }
+
+        self.workspace_expansion = if self.workspace_expansion == Some(self.focus) {
+            None
+        } else {
+            Some(self.focus)
+        };
+    }
+
+    pub(super) fn restore_workspace_panes(&mut self) {
+        self.workspace_expansion = None;
+        self.session.column_expansion = None;
+    }
+
     pub(super) fn toggle_column_expansion(&mut self) {
+        self.workspace_expansion = None;
         if !matches!(self.focus, Focus::Editor | Focus::Assistant) {
             return;
         }
@@ -50,6 +70,7 @@ impl App {
     }
 
     pub(super) fn resize_directional_pane(&mut self, direction: char, area: Rect) {
+        self.workspace_expansion = None;
         let previous_sizes = self.pane_sizes;
         let layout = self.workspace_layout(area);
 

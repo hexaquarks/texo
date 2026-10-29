@@ -23,11 +23,14 @@ impl App {
         let mut cursor_style = SetCursorStyle::DefaultUserShape;
 
         loop {
+            let area = terminal.get_frame().area();
+            let previous_preview_area = self.preview_area(area);
             let was_proposed_loading = self.session.proposed_job.is_some();
             self.receive_render();
             self.receive_assistant();
             self.receive_proposed_render();
-            repaint |= was_proposed_loading != self.session.proposed_job.is_some()
+            repaint |= (was_proposed_loading != self.session.proposed_job.is_some()
+                || previous_preview_area != self.preview_area(area))
                 && self.active_preview().uses_inline_graphics();
 
             // Flush graphics cleanup and the replacement frame as one synchronized update.

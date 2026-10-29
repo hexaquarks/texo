@@ -331,6 +331,7 @@ impl App {
                 return false;
             }
             Action::ReviewEdit => {
+                self.restore_workspace_panes();
                 if self.session.proposal_review.is_some() {
                     self.focus = Focus::Editor;
                 } else {
@@ -601,6 +602,9 @@ impl App {
         self.projects = projects;
         self.projects.files_focused = files_focused;
         self.prefix.cancel();
+
+        self.restore_workspace_panes();
+        target.column_expansion = None;
 
         // Late results stay with the editor, undo stack, chat, and preview that requested them.
         let previous = std::mem::replace(&mut self.session, target);

@@ -49,6 +49,7 @@ struct App {
     layout_state_path: Option<PathBuf>,
     export: Option<ExportDialog>,
     focus: Focus,
+    workspace_expansion: Option<Focus>,
 }
 
 pub fn run(
@@ -102,6 +103,7 @@ impl App {
             layout_state_path: None,
             export: None,
             focus: Focus::Editor,
+            workspace_expansion: None,
         })
     }
 
@@ -181,6 +183,9 @@ mod label_tests;
 #[cfg(test)]
 #[path = "modal_preview_tests.rs"]
 mod modal_preview_tests;
+#[cfg(test)]
+#[path = "pane_expansion_tests.rs"]
+mod pane_expansion_tests;
 #[cfg(test)]
 #[path = "project_dialog_tests.rs"]
 mod project_dialog_tests;
