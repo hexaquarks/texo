@@ -4,6 +4,7 @@ import { createResume, prefix, withTexo } from './helpers.mjs';
 
 test('TeX expansion keeps the PDF and tree and restores chat on navigation', async () => {
     await withTexo('editor-expansion', async ({ terminal }) => {
+        await terminal.resize(160, 45);
         await createResume(terminal, 'Pane layout');
         await prefix(terminal, 'u');
         await terminal.getByText('Restore').expect();

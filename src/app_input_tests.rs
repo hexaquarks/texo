@@ -1504,3 +1504,42 @@ fn editor_expansion_preserves_other_panes_and_restores_for_chat() -> anyhow::Res
     }
     Ok(())
 }
+
+#[test]
+fn compact_editor_control_preserves_status_text_and_click_target() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 40, 10);
+    app.session.status = "Saved TeX document.".into();
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal
+        .draw(|frame| app.draw_editor(frame, area, &Ok(crate::editor::DiskState::Unchanged)))?;
+    let header: String = (0..area.width)
+        .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+        .collect();
+    assert!(header.contains("Saved TeX document."));
+    assert!(header.contains("Ctrl-x u"));
+
+    let button = app.editor_maximize_button(area);
+    let control: String = (button.x..button.right())
+        .map(|x| terminal.backend().buffer()[(x, button.y)].symbol())
+        .collect();
+    assert!(control.contains("Ctrl-x u"));
+    assert!(!control.contains("Saved"));
+    Ok(())
+}
+
+#[test]
+fn narrow_editor_prioritizes_status_over_the_expansion_control() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 26, 10);
+    app.session.status = "Proposal is stale".into();
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal
+        .draw(|frame| app.draw_editor(frame, area, &Ok(crate::editor::DiskState::Unchanged)))?;
+    let header: String = (0..area.width)
+        .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+        .collect();
+    assert!(header.contains("Proposal is stale"));
+    assert!(app.editor_maximize_button(area).is_empty());
+    Ok(())
+}

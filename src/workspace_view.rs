@@ -19,6 +19,7 @@ const EDITOR_PERCENT: u16 = 55;
 // Borders, padding, header, and composer must fit even with the status row visible.
 pub(super) const MIN_CHAT_HEIGHT: u16 = 11;
 const INLINE_PROBLEM_HEIGHT: u16 = 5;
+const MIN_EDITOR_TITLE_WIDTH: u16 = 20;
 const PREVIEW_TAB_WIDTH: u16 = 13;
 
 impl App {
@@ -241,20 +242,14 @@ impl App {
                 Paragraph::new(label).style(theme::pane_title(self.focus == Focus::Editor)),
                 label_area,
             );
-            let action = if self.session.column_expansion == Some(Focus::Editor) {
-                "Restore"
-            } else {
-                "Maximize"
-            };
-            let shortcut = format!("{} u", self.prefix.label());
             frame.render_widget(
-                Paragraph::new(theme::shortcuts(&[(&shortcut, action)])).style(theme::muted()),
+                Paragraph::new(self.editor_maximize_hint(area)).style(theme::muted()),
                 button,
             );
         }
     }
 
-    pub(super) fn editor_maximize_button(&self, area: Rect) -> Rect {
+    fn editor_maximize_hint(&self, area: Rect) -> Line<'static> {
         let title = area.inner(ratatui::layout::Margin::new(theme::PANEL_PADDING, 0));
         let action = if self.session.column_expansion == Some(Focus::Editor) {
             "Restore"
@@ -262,8 +257,23 @@ impl App {
             "Maximize"
         };
         let shortcut = format!("{} u", self.prefix.label());
-        let width = (theme::shortcuts(&[(&shortcut, action)]).width() as u16).min(title.width);
+        let full = theme::shortcuts(&[(&shortcut, action)]);
 
+        // Keep short operation results readable beside the control in narrow panes.
+        let compact = Line::from(theme::keycap(&shortcut));
+        let available = title.width.saturating_sub(MIN_EDITOR_TITLE_WIDTH) as usize;
+        if available >= full.width() {
+            full
+        } else if available >= compact.width() {
+            compact
+        } else {
+            Line::default()
+        }
+    }
+
+    pub(super) fn editor_maximize_button(&self, area: Rect) -> Rect {
+        let title = area.inner(ratatui::layout::Margin::new(theme::PANEL_PADDING, 0));
+        let width = (self.editor_maximize_hint(area).width() as u16).min(title.width);
         Rect::new(title.right() - width, title.y, width, title.height.min(1))
     }
 
