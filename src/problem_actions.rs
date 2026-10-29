@@ -56,6 +56,8 @@ impl App {
     }
 
     pub(super) fn go_to_problem(&mut self) {
+        self.restore_workspace_panes();
+
         if !self.diagnostics_current() || self.session.proposal_review.is_some() {
             return;
         }
@@ -71,6 +73,8 @@ impl App {
     }
 
     pub(super) fn explain_problem(&mut self) {
+        self.restore_workspace_panes();
+
         if !self.diagnostics_current() {
             self.session.status = "Source changed. Rebuild before asking about this error.".into();
             return;

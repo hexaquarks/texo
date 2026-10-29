@@ -28,7 +28,10 @@ impl PaneSizes {
             .state_dir()
             .unwrap_or_else(|| project.data_local_dir());
 
-        Ok(directory.join("layout.json"))
+        Ok(layout_path(
+            directory,
+            std::env::var_os("XDG_STATE_HOME").as_deref(),
+        ))
     }
 
     pub(super) fn load(path: &Path) -> Self {
@@ -62,6 +65,14 @@ impl PaneSizes {
     }
 }
 
+fn layout_path(default_directory: &Path, state_home: Option<&std::ffi::OsStr>) -> PathBuf {
+    // Honor an explicit state directory on macOS too, keeping isolated runs off user state.
+    match state_home.map(Path::new).filter(|path| path.is_absolute()) {
+        Some(directory) => directory.join("texo/layout.json"),
+        None => default_directory.join("layout.json"),
+    }
+}
+
 impl App {
     pub(super) fn restore_layout(&mut self, path: PathBuf) {
         self.pane_sizes = PaneSizes::load(&path);
@@ -82,6 +93,21 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_state_directory_overrides_the_platform_default() {
+        let default = Path::new("/platform/texo");
+        assert_eq!(
+            layout_path(default, Some(std::ffi::OsStr::new("/isolated/state"))),
+            Path::new("/isolated/state/texo/layout.json")
+        );
+        for state_home in [None, Some(std::ffi::OsStr::new("relative"))] {
+            assert_eq!(
+                layout_path(default, state_home),
+                default.join("layout.json")
+            );
+        }
+    }
 
     #[test]
     fn saved_sizes_round_trip_and_replace_previous_state() -> Result<()> {

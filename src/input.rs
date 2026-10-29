@@ -28,6 +28,9 @@ impl App {
         }
 
         let quit = self.route_event(event, area);
+        if self.focus != previous_focus {
+            self.workspace_expansion = None;
+        }
         self.restore_hidden_column_pane();
         let has_overlay = self.overlay_open() || self.session.assistant.login_open();
         if has_overlay {
@@ -250,7 +253,7 @@ impl App {
             let chat_body = pane_content(layout.assistant);
             if Assistant::maximize_button(
                 chat_body,
-                self.session.column_expansion == Some(Focus::Assistant),
+                self.pane_is_expanded(Focus::Assistant),
                 &self.prefix.label(),
             )
             .contains(position)
@@ -357,6 +360,7 @@ impl App {
             KeyCode::Char(character @ ('H' | 'J' | 'K' | 'L')) => {
                 self.resize_directional_pane(character, area);
             }
+            KeyCode::Char('z') => self.toggle_workspace_expansion(),
             KeyCode::Char('u') => {
                 self.toggle_column_expansion();
             }

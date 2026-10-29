@@ -6,6 +6,8 @@ import { createResume, documentPath, paste, prefix, withTexo } from './helpers.m
 async function savedSource(terminal, workspace) {
     await prefix(terminal, 'w');
     await terminal.getByText('Saved TeX document.').expect();
+    await terminal.getByText('unsaved').expect({ not: true });
+
     return readFile(await documentPath(workspace), 'utf8');
 }
 
@@ -69,12 +71,19 @@ test('Vim change objects, repeat, undo, redo, and visual deletion survive termin
         await terminal.press('Escape');
         await terminal.getByText('NORMAL').expect();
         await terminal.press('w', '.');
+        await terminal.getByText('NEW NEW three').expect();
         assert.equal(await savedSource(terminal, workspace), 'NEW NEW three\nsecond line\nthird line\n');
+
         await terminal.press('u', 'u');
+        await terminal.getByText('NEW two three').expect();
         assert.equal(await savedSource(terminal, workspace), 'NEW two three\nsecond line\nthird line\n');
+
         await terminal.press('Ctrl+r', 'Ctrl+r');
+        await terminal.getByText('NEW NEW three').expect();
         assert.equal(await savedSource(terminal, workspace), 'NEW NEW three\nsecond line\nthird line\n');
+
         await terminal.press('g', 'g', 'j', 'V', 'd');
+        await terminal.getByText('second line').expect({ not: true });
         assert.equal(await savedSource(terminal, workspace), 'NEW NEW three\nthird line\n');
     });
 });

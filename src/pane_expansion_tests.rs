@@ -1,0 +1,289 @@
+use super::test_support::application;
+use super::*;
+use ratatui::{Terminal, backend::TestBackend};
+
+fn prefix(app: &mut App, character: char, area: Rect) {
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+        area,
+    );
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+        area,
+    );
+}
+
+#[test]
+fn workspace_expansion_round_trips_each_pane_without_changing_dividers() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    app.pane_sizes.sidebar = Some(30);
+    app.pane_sizes.preview = Some(48);
+    app.pane_sizes.editor = Some(18);
+    let sizes = app.pane_sizes;
+
+    for visible in [true, false] {
+        app.projects_visible = visible;
+        for focus in [Focus::Editor, Focus::Assistant, Focus::Preview] {
+            for (width, height) in [(160, 45), (80, 30), (30, 10), (1, 1)] {
+                let area = Rect::new(0, 0, width, height);
+                app.focus = focus;
+                let original = app.workspace_layout(area);
+                prefix(&mut app, 'z', area);
+                let expanded = app.workspace_layout(area);
+
+                assert_eq!(expanded.projects, original.projects);
+                assert_eq!(expanded.files, original.files);
+                assert_eq!(expanded.status, original.status);
+                let original_content = [original.editor, original.assistant, original.preview]
+                    .into_iter()
+                    .filter(|pane| !pane.is_empty())
+                    .reduce(|area, pane| area.union(pane))
+                    .unwrap_or_default();
+                let selected = match focus {
+                    Focus::Editor => expanded.editor,
+                    Focus::Assistant => expanded.assistant,
+                    Focus::Preview => expanded.preview,
+                    Focus::Projects => unreachable!(),
+                };
+                assert_eq!(selected, original_content);
+
+                let content = [expanded.editor, expanded.assistant, expanded.preview];
+                assert!(content.iter().filter(|pane| !pane.is_empty()).count() <= 1);
+                for pane in content {
+                    assert!(pane.right() <= area.right());
+                    assert!(pane.bottom() <= expanded.status.y);
+                }
+
+                let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+                terminal.draw(|frame| app.draw(frame))?;
+                prefix(&mut app, 'z', area);
+                let restored = app.workspace_layout(area);
+                assert_eq!(restored.editor, original.editor);
+                assert_eq!(restored.assistant, original.assistant);
+                assert_eq!(restored.preview, original.preview);
+                assert!(app.pane_sizes == sizes);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_expansion_restores_column_state_and_build_reveals_pdf() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    prefix(&mut app, 'u', area);
+    let column = app.workspace_layout(area);
+    prefix(&mut app, 'z', area);
+    assert!(app.workspace_layout(area).preview.is_empty());
+    prefix(&mut app, 'z', area);
+    assert_eq!(app.workspace_layout(area).editor, column.editor);
+
+    prefix(&mut app, 'z', area);
+    // Exercise restoration before build validation without launching a compiler.
+    app.session.empty_workspace = true;
+    prefix(&mut app, 'b', area);
+    assert!(app.workspace_expansion.is_none());
+    assert!(app.session.column_expansion == Some(Focus::Editor));
+    assert_eq!(app.workspace_layout(area).preview, column.preview);
+    Ok(())
+}
+
+#[test]
+fn navigation_and_review_actions_reveal_adjacent_panes() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    prefix(&mut app, 'u', area);
+    prefix(&mut app, 'z', area);
+    prefix(&mut app, 'j', area);
+    assert!(app.focus == Focus::Assistant);
+    assert!(app.workspace_expansion.is_none());
+    assert!(app.session.column_expansion.is_none());
+
+    prefix(&mut app, 'z', area);
+    prefix(&mut app, 'r', area);
+    assert!(app.focus == Focus::Projects);
+    assert!(app.workspace_expansion.is_none());
+
+    app.focus = Focus::Editor;
+    prefix(&mut app, 'u', area);
+    prefix(&mut app, 'z', area);
+    app.perform_action(Action::ReviewEdit);
+    assert!(app.workspace_expansion.is_none());
+    assert!(app.session.column_expansion.is_none());
+    Ok(())
+}
+
+#[test]
+fn details_overlay_preserves_expansion_until_error_navigation() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    app.session.diagnostics = Some("Compiler details".into());
+    app.session.summary_hidden = true;
+    prefix(&mut app, 'z', area);
+    prefix(&mut app, 'E', area);
+    assert!(app.diagnostic_details_open());
+    assert!(app.workspace_expansion == Some(Focus::Editor));
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        area,
+    );
+    assert!(!app.diagnostic_details_open());
+    assert!(app.workspace_expansion == Some(Focus::Editor));
+    app.go_to_problem();
+    assert!(app.workspace_expansion.is_none());
+    Ok(())
+}
+
+#[test]
+fn build_from_chat_restores_workspace_and_failure_reveals_source() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    app.focus = Focus::Assistant;
+    prefix(&mut app, 'u', area);
+    prefix(&mut app, 'z', area);
+    app.session.empty_workspace = true;
+    prefix(&mut app, 'b', area);
+    assert!(app.workspace_expansion.is_none());
+    assert!(app.session.column_expansion == Some(Focus::Assistant));
+    assert!(!app.workspace_layout(area).preview.is_empty());
+
+    app.report_build_error(anyhow::anyhow!("Undefined control sequence"), false);
+    assert!(app.session.column_expansion.is_none());
+    assert!(!app.workspace_layout(area).editor.is_empty());
+    assert!(!app.workspace_layout(area).diagnostics.is_empty());
+    Ok(())
+}
+
+#[test]
+fn column_control_restores_prior_state_after_workspace_expansion() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+
+    for focus in [Focus::Editor, Focus::Assistant] {
+        for column_expanded in [false, true] {
+            app.focus = focus;
+            app.session.column_expansion = None;
+            if column_expanded {
+                prefix(&mut app, 'u', area);
+            }
+            let saved_column = app.session.column_expansion;
+            let original = app.workspace_layout(area);
+            prefix(&mut app, 'z', area);
+
+            let expanded = app.workspace_layout(area);
+            let button = if focus == Focus::Editor {
+                app.editor_maximize_button(app.editor_text_area(&expanded))
+            } else {
+                crate::assistant::Assistant::maximize_button(
+                    pane_content(expanded.assistant),
+                    app.pane_is_expanded(focus),
+                    &app.prefix.label(),
+                )
+            };
+            let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+            terminal.draw(|frame| app.draw(frame))?;
+            let label: String = (button.x..button.right())
+                .map(|x| terminal.backend().buffer()[(x, button.y)].symbol())
+                .collect();
+            assert!(label.contains("Restore"));
+
+            prefix(&mut app, 'u', area);
+            assert!(app.workspace_expansion.is_none());
+            assert!(app.session.column_expansion == saved_column);
+            assert_eq!(app.workspace_layout(area).editor, original.editor);
+            assert_eq!(app.workspace_layout(area).assistant, original.assistant);
+
+            prefix(&mut app, 'z', area);
+            app.handle_event(
+                Event::Mouse(event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: button.right() - 1,
+                    row: button.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                area,
+            );
+            assert!(app.workspace_expansion.is_none());
+            assert!(app.session.column_expansion == saved_column);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Poppler; external URL opening is replaced in unit tests"]
+fn expanded_pdf_links_open_on_release_at_normal_and_increased_zoom() -> anyhow::Result<()> {
+    use super::workspace_view::below_header;
+    use ratatui::layout::Position;
+
+    const PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
+    const PREVIEW_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+    for zoom_in in [false, true] {
+        let (_directory, mut app) = application()?;
+        app.session.preview.set_pages(texo::pdf::PdfPages::render(
+            std::path::Path::new("tests/fixtures/links.pdf"),
+            &std::sync::atomic::AtomicBool::new(false),
+        )?)?;
+        let area = Rect::new(0, 0, 160, 50);
+        app.focus = Focus::Preview;
+        prefix(&mut app, 'z', area);
+        if zoom_in {
+            app.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE)),
+                area,
+            );
+        }
+
+        let body = below_header(pane_content(app.preview_area(area)), 1);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        let deadline = std::time::Instant::now() + PREVIEW_TIMEOUT;
+        loop {
+            terminal.draw(|frame| app.draw(frame))?;
+            if !app.session.preview.is_preparing() {
+                break;
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "Preview did not become ready"
+            );
+            std::thread::sleep(PREVIEW_POLL_INTERVAL);
+        }
+
+        let pointer = (body.y..body.bottom()).find_map(|row| {
+            (body.x..body.right()).find_map(|column| {
+                let point = Position::new(column, row);
+                app.session.preview.begin_drag(body, point);
+                let uri = app.session.preview.release_link(body, point);
+                (uri.as_deref() == Some("https://example.com/icon")).then_some(point)
+            })
+        });
+        let pointer = pointer.expect("expanded PDF icon must remain clickable");
+        app.session.status.clear();
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.handle_event(
+                Event::Mouse(event::MouseEvent {
+                    kind,
+                    column: pointer.x,
+                    row: pointer.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                area,
+            );
+            if kind == MouseEventKind::Down(MouseButton::Left) {
+                assert!(app.session.status.is_empty());
+                terminal.draw(|frame| app.draw(frame))?;
+            }
+        }
+        assert_eq!(
+            app.session.status,
+            "Opened PDF link: https://example.com/icon"
+        );
+        assert!(app.workspace_expansion == Some(Focus::Preview));
+    }
+    Ok(())
+}

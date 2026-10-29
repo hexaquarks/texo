@@ -464,76 +464,105 @@ fn pdf_drag_captures_motion_until_release_and_excludes_header_and_dialogs() -> a
     use super::workspace_view::below_header;
     use ratatui::layout::Position;
 
-    let (_directory, mut app) = application()?;
-    app.session.preview.set_pages(texo::pdf::PdfPages::render(
-        std::path::Path::new("tests/fixtures/two-pages.pdf"),
-        &std::sync::atomic::AtomicBool::new(false),
-    )?)?;
-    let area = Rect::new(0, 0, 160, 50);
-    let body = below_header(pane_content(app.preview_area(area)), 1);
-    let pointer = Position::new(body.x + 8, body.y + 6);
-    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while app.session.preview.is_preparing() {
-        terminal.draw(|frame| app.draw(frame))?;
-        anyhow::ensure!(
-            std::time::Instant::now() < deadline,
-            "Preview did not become ready"
+    for expanded in [false, true] {
+        let (_directory, mut app) = application()?;
+        app.session.preview.set_pages(texo::pdf::PdfPages::render(
+            std::path::Path::new("tests/fixtures/two-pages.pdf"),
+            &std::sync::atomic::AtomicBool::new(false),
+        )?)?;
+        let area = Rect::new(0, 0, 160, 50);
+        app.focus = Focus::Preview;
+        if expanded {
+            pane_prefix(&mut app, 'z', KeyModifiers::NONE, area);
+        }
+        let body = below_header(pane_content(app.preview_area(area)), 1);
+        let pointer = Position::new(body.x + 8, body.y + 6);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while app.session.preview.is_preparing() {
+            terminal.draw(|frame| app.draw(frame))?;
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "Preview did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mouse = |kind, point: Position| {
+            Event::Mouse(event::MouseEvent {
+                kind,
+                column: point.x,
+                row: point.y,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+
+        app.handle_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), pointer),
+            area,
         );
-        std::thread::sleep(Duration::from_millis(5));
+        assert!(app.focus == Focus::Preview);
+        assert!(app.session.preview.drag_to(pointer));
+        let source = app.session.editor.source();
+        app.handle_event(
+            mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                Position::new(30, 10),
+            ),
+            area,
+        );
+        assert_eq!(app.session.editor.source(), source);
+        assert!(app.focus == Focus::Preview);
+        app.handle_event(
+            mouse(MouseEventKind::Up(MouseButton::Left), Position::new(30, 10)),
+            area,
+        );
+        assert!(!app.session.preview.drag_to(pointer));
+
+        let header = Position::new(body.x + 5, body.y - 1);
+        app.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), header), area);
+        assert!(!app.session.preview.drag_to(pointer));
+
+        app.handle_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), pointer),
+            area,
+        );
+        app.handle_event(Event::Resize(120, 40), area);
+        assert!(!app.session.preview.drag_to(pointer));
+
+        app.handle_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), pointer),
+            area,
+        );
+        let initial_zoom = app.session.preview.zoom_percent();
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE)),
+            area,
+        );
+        let keyboard_zoom = app.session.preview.zoom_percent();
+        assert!(keyboard_zoom > initial_zoom);
+        app.handle_event(
+            Event::Mouse(event::MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: pointer.x,
+                row: pointer.y,
+                modifiers: KeyModifiers::CONTROL,
+            }),
+            area,
+        );
+        assert!(app.session.preview.zoom_percent() > keyboard_zoom);
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE)),
+            area,
+        );
+        assert!(app.session.preview.zoom_percent() < keyboard_zoom);
+
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+            area,
+        );
+        assert!(app.settings.is_some());
+        assert!(!app.session.preview.drag_to(pointer));
     }
-    let mouse = |kind, point: Position| {
-        Event::Mouse(event::MouseEvent {
-            kind,
-            column: point.x,
-            row: point.y,
-            modifiers: KeyModifiers::NONE,
-        })
-    };
-
-    app.handle_event(
-        mouse(MouseEventKind::Down(MouseButton::Left), pointer),
-        area,
-    );
-    assert!(app.focus == Focus::Preview);
-    assert!(app.session.preview.drag_to(pointer));
-    let source = app.session.editor.source();
-    app.handle_event(
-        mouse(
-            MouseEventKind::Drag(MouseButton::Left),
-            Position::new(30, 10),
-        ),
-        area,
-    );
-    assert_eq!(app.session.editor.source(), source);
-    assert!(app.focus == Focus::Preview);
-    app.handle_event(
-        mouse(MouseEventKind::Up(MouseButton::Left), Position::new(30, 10)),
-        area,
-    );
-    assert!(!app.session.preview.drag_to(pointer));
-
-    let header = Position::new(body.x + 5, body.y - 1);
-    app.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), header), area);
-    assert!(!app.session.preview.drag_to(pointer));
-
-    app.handle_event(
-        mouse(MouseEventKind::Down(MouseButton::Left), pointer),
-        area,
-    );
-    app.handle_event(Event::Resize(120, 40), area);
-    assert!(!app.session.preview.drag_to(pointer));
-
-    app.handle_event(
-        mouse(MouseEventKind::Down(MouseButton::Left), pointer),
-        area,
-    );
-    app.handle_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
-        area,
-    );
-    assert!(app.settings.is_some());
-    assert!(!app.session.preview.drag_to(pointer));
     Ok(())
 }
 

@@ -82,7 +82,7 @@ impl App {
             self.start_render();
         }
 
-        self.session.column_expansion = None;
+        self.restore_workspace_panes();
         self.session.editor.cancel_pending_commands();
         self.session.proposal_review = Some(ProposalReview::new(&edit));
         let build = self.session.assistant.take_compiled_draft();
@@ -147,6 +147,8 @@ impl App {
     }
 
     pub(super) fn apply_proposal(&mut self) {
+        self.restore_workspace_panes();
+
         let Some(review) = &self.session.proposal_review else {
             return;
         };
@@ -202,6 +204,8 @@ impl App {
     }
 
     pub(super) fn modify_proposal(&mut self) {
+        self.restore_workspace_panes();
+
         if self.session.proposal_review.is_some() {
             self.focus = Focus::Assistant;
             self.session.status =
@@ -213,6 +217,8 @@ impl App {
     }
 
     pub(super) fn discard_proposal(&mut self) {
+        self.restore_workspace_panes();
+
         self.session.assistant.cancel();
         self.session.assistant.take_proposal();
         self.clear_proposal();
@@ -265,6 +271,8 @@ impl App {
     }
 
     pub(super) fn start_render(&mut self) {
+        self.workspace_expansion = None;
+
         if self.session.empty_workspace {
             return;
         }
@@ -339,6 +347,11 @@ impl App {
     }
 
     pub(super) fn report_build_error(&mut self, error: anyhow::Error, proposed: bool) {
+        self.workspace_expansion = None;
+        if self.session.column_expansion == Some(Focus::Assistant) {
+            self.session.column_expansion = None;
+        }
+
         if proposed {
             self.session.proposed_render_failed = true;
         } else {

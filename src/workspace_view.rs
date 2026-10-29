@@ -43,6 +43,27 @@ impl App {
             }
         }
 
+        if let Some(focus) = self
+            .workspace_expansion
+            .filter(|focus| *focus == self.focus)
+        {
+            let content = [layout.editor, layout.assistant, layout.preview]
+                .into_iter()
+                .filter(|pane| !pane.is_empty())
+                .reduce(|area, pane| area.union(pane))
+                .unwrap_or_default();
+            layout.editor = Rect::default();
+            layout.assistant = Rect::default();
+            layout.preview = Rect::default();
+
+            match focus {
+                Focus::Editor => layout.editor = content,
+                Focus::Assistant => layout.assistant = content,
+                Focus::Preview => layout.preview = content,
+                Focus::Projects => {}
+            }
+        }
+
         if self.session.diagnostics.is_some()
             && self.session.build_diagnostics.as_ref().is_some()
             && !self.session.summary_hidden
@@ -251,7 +272,7 @@ impl App {
 
     fn editor_maximize_hint(&self, area: Rect) -> Line<'static> {
         let title = area.inner(ratatui::layout::Margin::new(theme::PANEL_PADDING, 0));
-        let action = if self.session.column_expansion == Some(Focus::Editor) {
+        let action = if self.pane_is_expanded(Focus::Editor) {
             "Restore"
         } else {
             "Maximize"
@@ -289,7 +310,7 @@ impl App {
             frame,
             area,
             self.focus == Focus::Assistant,
-            self.session.column_expansion == Some(Focus::Assistant),
+            self.pane_is_expanded(Focus::Assistant),
             &self.prefix.label(),
             reviewing,
         );

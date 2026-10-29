@@ -236,3 +236,20 @@ test('login provider and key screens cancel without changing the configured conn
         await terminal.getByText('Assistant replied without changing').expect();
     }, { prepare });
 });
+
+test('a proposal restores adjacent panes after a workspace-expanded chat request', async () => {
+    await withTexo('expanded-chat-proposal', async ({ terminal }) => {
+        await createResume(terminal, 'Expanded review');
+        await terminal.getByText('Ask Texo...').click();
+        await prefix(terminal, 'u');
+        await prefix(terminal, 'z');
+        await ask(terminal, 'first');
+        await terminal.getByText('Unapproved changes').expect();
+        await terminal.getByText('texo / chat').expect();
+        await terminal.getByText('[ Proposed ]').expect();
+        await prefix(terminal, 'z');
+        await terminal.getByText('Unapproved changes').expect({ not: true });
+        await prefix(terminal, 'd');
+        await terminal.getByText('PDF current').expect();
+    }, { prepare });
+});
