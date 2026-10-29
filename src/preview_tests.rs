@@ -951,3 +951,163 @@ fn dragging_requires_page_content_and_cancels_when_the_source_changes() {
     preview.set_source(Some(patterned_page(120, 240)));
     assert!(!preview.drag_to(Position::new(10, 4)));
 }
+
+#[test]
+fn link_hit_testing_uses_visible_cells_and_rejects_gutters() {
+    let mapping = DisplayedPage {
+        pane: Rect::new(0, 0, 20, 10),
+        image: [5.5, 1.0, 15.5, 6.0],
+        source: [0.0, 0.0, 1.0, 1.0],
+    };
+    let links = vec![crate::pdf::PdfLink {
+        bounds: [0.21, 0.21, 0.22, 0.22],
+        uri: "https://example.com/tiny-icon".into(),
+    }];
+    assert_eq!(
+        mapping.link_at(&links, Position::new(7, 2)),
+        Some(links[0].uri.as_str())
+    );
+    assert_eq!(mapping.link_at(&links, Position::new(4, 2)), None);
+    assert_eq!(mapping.link_at(&links, Position::new(7, 6)), None);
+}
+
+#[test]
+fn retained_link_mapping_uses_the_actual_rounded_cell_grid() {
+    let mapping = retained_mapping(
+        Rect::new(0, 0, 20, 10),
+        ImageView {
+            page_size: Size::new(40, 30),
+            offset: Position::new(8, 5),
+            area: Rect::new(2, 1, 16, 8),
+        },
+    );
+    let links = vec![crate::pdf::PdfLink {
+        bounds: [0.25, 0.2, 0.275, 7.0 / 30.0],
+        uri: "https://example.com/icon".into(),
+    }];
+    assert_eq!(
+        mapping.link_at(&links, Position::new(4, 2)),
+        Some(links[0].uri.as_str())
+    );
+    assert_eq!(mapping.link_at(&links, Position::new(2, 1)), None);
+}
+
+#[test]
+fn raster_link_mapping_keeps_fractional_crop_edges() {
+    let source = Arc::new(DynamicImage::new_rgb8(103, 217));
+    let area = Rect::new(2, 3, 12, 8);
+    let prepared = prepare_image(Picker::halfblocks(), source, area, 31, 17, 180).unwrap();
+    assert_eq!(
+        prepared.mapping.source,
+        [8.0 / 103.0, 14.0 / 217.0, 66.0 / 103.0, 92.0 / 217.0]
+    );
+    assert_eq!(prepared.mapping.image[0], f64::from(area.x));
+}
+
+fn draw_link_preview(preview: &mut Preview, area: Rect) {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 60)).unwrap();
+    finish_viewport(preview, preview_content(area));
+    terminal.draw(|frame| preview.draw(frame, area)).unwrap();
+}
+
+fn link_position(preview: &Preview, area: Rect, uri: &str) -> Position {
+    for row in area.y..area.bottom() {
+        for column in area.x..area.right() {
+            let position = Position::new(column, row);
+            if preview.link_at(position) == Some(uri) {
+                return position;
+            }
+        }
+    }
+    panic!("No visible cell for {uri}");
+}
+
+#[test]
+#[ignore = "requires Poppler"]
+fn links_follow_rendered_pages_zoom_pan_and_resize_without_activating_drags() -> Result<()> {
+    let area = Rect::new(2, 2, 80, 40);
+    for protocol in [ProtocolType::Halfblocks, ProtocolType::Kitty] {
+        let pages = PdfPages::render(
+            std::path::Path::new("tests/fixtures/links.pdf"),
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
+        let mut preview = Preview::default();
+        preview.picker.set_protocol_type(protocol);
+        preview.set_pages(pages)?;
+        let uri = "https://example.com/icon";
+        assert_eq!(preview.link_at(Position::new(15, 5)), None);
+
+        draw_link_preview(&mut preview, area);
+        let point = link_position(&preview, area, uri);
+        preview.begin_drag(area, point);
+        assert_eq!(preview.release_link(area, point).as_deref(), Some(uri));
+        assert_eq!(preview.release_link(area, point), None);
+
+        preview.begin_drag(area, point);
+        preview.drag_to(Position::new(point.x + 1, point.y));
+        preview.drag_to(point);
+        assert_eq!(preview.release_link(area, point), None);
+
+        preview.zoom_at(true, area, point);
+        draw_link_preview(&mut preview, area);
+        let point = link_position(&preview, area, uri);
+        preview.begin_drag(area, point);
+        assert_eq!(preview.release_link(area, point).as_deref(), Some(uri));
+
+        preview.horizontal_pixels = 23;
+        preview.scroll_pixels = 19;
+        draw_link_preview(&mut preview, area);
+        let point = link_position(&preview, area, uri);
+        preview.begin_drag(area, point);
+        let resized = Rect::new(5, 3, 60, 30);
+        assert_eq!(preview.release_link(resized, point), None);
+        draw_link_preview(&mut preview, resized);
+        let point = link_position(&preview, resized, uri);
+        preview.begin_drag(resized, point);
+        assert_eq!(preview.release_link(resized, point).as_deref(), Some(uri));
+
+        preview.begin_drag(resized, point);
+        preview.next_page()?;
+        assert_eq!(preview.release_link(resized, point), None);
+        assert_eq!(preview.link_at(point), None);
+        preview.reset_zoom(resized);
+        draw_link_preview(&mut preview, resized);
+        let email = "mailto:person@example.com";
+        let point = link_position(&preview, resized, email);
+        preview.begin_drag(resized, point);
+        assert_eq!(preview.release_link(resized, point).as_deref(), Some(email));
+
+        preview.begin_drag(resized, point);
+        preview.begin_loading();
+        assert_eq!(preview.release_link(resized, point), None);
+        assert_eq!(preview.link_at(point), None);
+        preview.clear();
+        assert_eq!(preview.link_at(point), None);
+    }
+    Ok(())
+}
+
+#[test]
+fn links_sharing_one_cell_require_a_single_distinct_target() {
+    let mapping = DisplayedPage {
+        pane: Rect::new(0, 0, 10, 10),
+        image: [0.0, 0.0, 10.0, 10.0],
+        source: [0.0, 0.0, 1.0, 1.0],
+    };
+    let mut links = vec![
+        crate::pdf::PdfLink {
+            bounds: [0.21, 0.21, 0.23, 0.23],
+            uri: "https://example.com/first".into(),
+        },
+        crate::pdf::PdfLink {
+            bounds: [0.27, 0.21, 0.29, 0.23],
+            uri: "https://example.com/second".into(),
+        },
+    ];
+    assert_eq!(mapping.link_at(&links, Position::new(2, 2)), None);
+    links[1].uri = links[0].uri.clone();
+    assert_eq!(
+        mapping.link_at(&links, Position::new(2, 2)),
+        Some(links[0].uri.as_str())
+    );
+}

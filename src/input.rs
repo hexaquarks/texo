@@ -37,15 +37,13 @@ impl App {
     }
 
     fn route_event(&mut self, event: Event, area: Rect) -> bool {
-        if !matches!(&event, Event::Mouse(mouse) if mouse.kind == MouseEventKind::Drag(MouseButton::Left))
-        {
+        let continues_pointer_gesture = matches!(&event, Event::Mouse(mouse) if matches!(
+            mouse.kind,
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+        ));
+        if !continues_pointer_gesture {
             self.session.preview.end_drag();
             self.session.proposed_preview.end_drag();
-        }
-
-        if !matches!(&event, Event::Mouse(mouse) if matches!(mouse.kind,
-            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)))
-        {
             self.session.editor.end_drag();
         }
 
@@ -150,12 +148,35 @@ impl App {
         false
     }
 
+    fn open_preview_link(&mut self, uri: &str) {
+        #[cfg(not(test))]
+        if open::that_detached(uri).is_err() {
+            self.session.status = "Could not open PDF link.".into();
+        }
+
+        #[cfg(test)]
+        {
+            self.session.status = format!("Opened PDF link: {uri}");
+        }
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) {
         let layout = self.workspace_layout(area);
         let position = Position::new(mouse.column, mouse.row);
         if self.focus == Focus::Preview && mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
             self.active_preview().drag_to(position);
             return;
+        }
+
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+            let body = below_header(pane_content(layout.preview), 1);
+            let uri = self.active_preview().release_link(body, position);
+            if let Some(uri) = uri {
+                self.open_preview_link(&uri);
+            }
+
+            self.session.preview.end_drag();
+            self.session.proposed_preview.end_drag();
         }
 
         if self.focus == Focus::Editor
