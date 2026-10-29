@@ -30,6 +30,54 @@ pub struct CompiledDraft {
     _directory: tempfile::TempDir,
 }
 
+/// Only bundle support files can be downloaded; project inputs are never fetched.
+pub fn is_bundle_resource(name: &str) -> bool {
+    let safe_name = !name.is_empty()
+        && !name.starts_with('-')
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte));
+    let supported_extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension,
+                "sty" | "cls" | "ltx" | "tfm" | "pfb" | "enc" | "map" | "fd" | "def" | "ldf"
+            )
+        });
+
+    safe_name && supported_extension
+}
+
+/// Fetch one support file without executing any document or reading project configuration.
+pub fn cache_resource(name: &str, cancelled: &AtomicBool) -> Result<()> {
+    use anyhow::ensure;
+    use std::{process::Command, time::Duration};
+
+    const RESOURCE_TIMEOUT: Duration = Duration::from_secs(120);
+    ensure!(
+        is_bundle_resource(name),
+        "Not a supported LaTeX bundle resource"
+    );
+    let directory = tempfile::tempdir()?;
+    let output = crate::process::run(
+        Command::new("tectonic")
+            .current_dir(directory.path())
+            .args(["-X", "bundle", "cat", name]),
+        RESOURCE_TIMEOUT,
+        cancelled,
+    )?;
+
+    // Some Tectonic versions return success even when the bundle lookup failed.
+    ensure!(
+        !output.lines().any(|line| line.starts_with("error:")),
+        "Could not download {name}. It may be a custom project file or the bundle may be unavailable."
+    );
+    Ok(())
+}
+
 pub fn compile(source: &str, directory: &Path, cancelled: &AtomicBool) -> Result<String> {
     Ok(build(source, directory, cancelled)?.diagnostics)
 }
@@ -426,5 +474,33 @@ mod project_compile_tests {
         let bad = r"\documentclass{article}\begin{document}\input{../../private.tex}\end{document}";
         assert!(build(bad, &nested, &cancelled).is_err());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn resource_download_rejects_paths_options_and_project_documents() {
+        for name in [
+            "../fontenc.sty",
+            "--help",
+            "/tmp/font.sty",
+            "resume.tex",
+            "photo.png",
+            "a..sty",
+        ] {
+            assert!(!is_bundle_resource(name), "accepted {name}");
+            assert!(cache_resource(name, &AtomicBool::new(false)).is_err());
+        }
+        assert!(is_bundle_resource("fontenc.sty"));
+        assert!(is_bundle_resource("lmsy9.pfb"));
+    }
+
+    #[test]
+    #[ignore = "requires Tectonic and access to its resource bundle"]
+    fn resource_fetch_works_without_compiling_a_document() -> Result<()> {
+        cache_resource("fontenc.sty", &AtomicBool::new(false))
     }
 }
