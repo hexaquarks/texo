@@ -29,6 +29,11 @@ impl App {
 
         let quit = self.route_event(event, area);
         let has_overlay = self.overlay_open() || self.session.assistant.login_open();
+        if has_overlay {
+            self.session.preview.clear_hover();
+            self.session.proposed_preview.clear_hover();
+        }
+
         if self.focus != previous_focus || (has_overlay && !had_overlay) {
             self.session.editor.cancel_pending_commands();
         }
@@ -37,6 +42,17 @@ impl App {
     }
 
     fn route_event(&mut self, event: Event, area: Rect) -> bool {
+        let keeps_preview_hover = matches!(&event, Event::Mouse(mouse) if matches!(
+            mouse.kind,
+            MouseEventKind::Moved
+                | MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::Up(MouseButton::Left)
+        ));
+        if !keeps_preview_hover || self.overlay_open() || self.session.assistant.login_open() {
+            self.session.preview.clear_hover();
+            self.session.proposed_preview.clear_hover();
+        }
+
         let continues_pointer_gesture = matches!(&event, Event::Mouse(mouse) if matches!(
             mouse.kind,
             MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
@@ -163,6 +179,20 @@ impl App {
     fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) {
         let layout = self.workspace_layout(area);
         let position = Position::new(mouse.column, mouse.row);
+        if matches!(
+            mouse.kind,
+            MouseEventKind::Moved
+                | MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::Up(MouseButton::Left)
+        ) {
+            let body = below_header(pane_content(layout.preview), 1);
+            self.active_preview().hover_at(body, position);
+        }
+
+        if mouse.kind == MouseEventKind::Moved {
+            return;
+        }
+
         if self.focus == Focus::Preview && mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
             self.active_preview().drag_to(position);
             return;

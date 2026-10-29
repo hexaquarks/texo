@@ -1393,6 +1393,26 @@ fn pdf_link_click_opens_only_on_release_and_never_after_dragging() -> anyhow::Re
         })
     };
 
+    let original_focus = app.focus;
+    for exit_event in [
+        mouse(MouseEventKind::Moved, Position::new(0, 0)),
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            Position::new(area.right(), area.bottom()),
+        ),
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        mouse(MouseEventKind::ScrollUp, pointer),
+        Event::Resize(area.width, area.height),
+        Event::FocusLost,
+    ] {
+        app.handle_event(mouse(MouseEventKind::Moved, pointer), area);
+        assert!(app.focus == original_focus, "hover must not focus the PDF");
+        assert!(app.session.preview.is_refreshing());
+        assert!(!app.session.preview.is_preparing());
+        app.handle_event(exit_event, area);
+        assert!(!app.session.preview.is_refreshing());
+    }
+
     app.session.status.clear();
     app.handle_event(
         mouse(MouseEventKind::Down(MouseButton::Left), pointer),

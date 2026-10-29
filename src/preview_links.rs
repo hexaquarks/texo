@@ -1,3 +1,4 @@
+use image::{DynamicImage, Rgba, RgbaImage};
 use ratatui::layout::{Position, Rect};
 
 use crate::pdf::PdfLink;
@@ -9,6 +10,19 @@ pub(super) struct DisplayedPage {
     // Rectangles use [left, top, right, bottom].
     pub image: [f64; 4],
     pub source: [f64; 4],
+}
+
+// A light blue wash at roughly 12.5% opacity keeps text and icon strokes legible.
+const HOVER_TINT: Rgba<u8> = Rgba([100, 149, 237, 32]);
+
+pub(super) fn highlight_link(image: &mut DynamicImage, bounds: [f64; 4]) {
+    let left = (bounds[0] * f64::from(image.width())).floor() as u32;
+    let top = (bounds[1] * f64::from(image.height())).floor() as u32;
+    let right = (bounds[2] * f64::from(image.width())).ceil() as u32;
+    let bottom = (bounds[3] * f64::from(image.height())).ceil() as u32;
+
+    let tint = RgbaImage::from_pixel(right - left, bottom - top, HOVER_TINT);
+    image::imageops::overlay(image, &tint, i64::from(left), i64::from(top));
 }
 
 impl DisplayedPage {
@@ -24,6 +38,11 @@ impl DisplayedPage {
     }
 
     pub fn link_at<'a>(&self, links: &'a [PdfLink], position: Position) -> Option<&'a str> {
+        self.link_index_at(links, position)
+            .map(|index| links[index].uri.as_str())
+    }
+
+    pub fn link_index_at(&self, links: &[PdfLink], position: Position) -> Option<usize> {
         if !self.pane.contains(position) {
             return None;
         }
@@ -47,8 +66,8 @@ impl DisplayedPage {
             self.source[1] + (bottom - self.image[1]) * scale_y,
         ];
 
-        let mut target = None;
-        for link in links {
+        let mut target: Option<usize> = None;
+        for (index, link) in links.iter().enumerate() {
             let width = cell[2].min(link.bounds[2]) - cell[0].max(link.bounds[0]);
             let height = cell[3].min(link.bounds[3]) - cell[1].max(link.bounds[1]);
             if width <= 0.0 || height <= 0.0 {
@@ -56,10 +75,10 @@ impl DisplayedPage {
             }
 
             // Two different targets in one cell are ambiguous; zooming makes them separable.
-            if target.is_some_and(|uri| uri != link.uri) {
+            if target.is_some_and(|previous| links[previous].uri != link.uri) {
                 return None;
             }
-            target = Some(link.uri.as_str());
+            target.get_or_insert(index);
         }
 
         target
