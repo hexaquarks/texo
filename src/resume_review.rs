@@ -82,6 +82,7 @@ impl App {
             self.start_render();
         }
 
+        self.session.column_expansion = None;
         self.session.editor.cancel_pending_commands();
         self.session.proposal_review = Some(ProposalReview::new(&edit));
         let build = self.session.assistant.take_compiled_draft();

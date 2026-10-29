@@ -17,8 +17,9 @@ fn chat_maximizes_and_restores_without_changing_documents_or_prompt() -> anyhow:
         }
     };
 
+    app.focus = Focus::Preview;
     toggle(&mut app, Rect::new(0, 0, 160, 45));
-    assert!(!app.session.chat_maximized);
+    assert!(app.session.column_expansion.is_none());
     app.focus = Focus::Assistant;
 
     for (width, height) in [(160, 45), (80, 30)] {
@@ -87,11 +88,11 @@ fn chat_toggle_uses_reloaded_prefix_and_cancels_without_typing_action_keys() -> 
         Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         area,
     );
-    assert!(!app.session.chat_maximized && !app.prefix.armed);
+    assert!(app.session.column_expansion != Some(Focus::Assistant) && !app.prefix.armed);
 
     app.handle_event(prefix.clone(), area);
     app.handle_event(action.clone(), area);
-    assert!(app.session.chat_maximized);
+    assert!(app.session.column_expansion == Some(Focus::Assistant));
     assert_eq!(app.session.assistant.input.lines()[0], "");
 
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
@@ -113,9 +114,9 @@ fn chat_toggle_uses_reloaded_prefix_and_cancels_without_typing_action_keys() -> 
 
     app.handle_event(prefix, area);
     app.handle_event(action, area);
-    assert!(!app.session.chat_maximized);
+    assert!(app.session.column_expansion != Some(Focus::Assistant));
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT));
-    assert!(!app.session.chat_maximized);
+    assert!(app.session.column_expansion != Some(Focus::Assistant));
     Ok(())
 }
 
@@ -128,7 +129,7 @@ fn chat_header_click_toggles_and_editor_focus_restores_split() -> anyhow::Result
         let layout = app.workspace_layout(area);
         let button = Assistant::maximize_button(
             pane_content(layout.assistant),
-            app.session.chat_maximized,
+            app.session.column_expansion == Some(Focus::Assistant),
             &app.prefix.label(),
         );
         app.handle_event(
@@ -141,13 +142,16 @@ fn chat_header_click_toggles_and_editor_focus_restores_split() -> anyhow::Result
             area,
         );
 
-        assert_eq!(app.session.chat_maximized, expected);
+        assert_eq!(
+            app.session.column_expansion == Some(Focus::Assistant),
+            expected
+        );
         assert!(app.focus == Focus::Assistant);
     }
 
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
     assert!(app.focus == Focus::Editor);
-    assert!(!app.session.chat_maximized);
+    assert!(app.session.column_expansion != Some(Focus::Assistant));
     assert!(!app.workspace_layout(area).editor.is_empty());
     Ok(())
 }
@@ -543,7 +547,7 @@ fn only_the_visible_chat_maximize_control_handles_clicks() -> anyhow::Result<()>
 
         for maximized in [false, true] {
             app.focus = Focus::Assistant;
-            app.session.chat_maximized = maximized;
+            app.session.column_expansion = maximized.then_some(Focus::Assistant);
             let layout = app.workspace_layout(area);
             let body = pane_content(layout.assistant);
             let button = Assistant::maximize_button(body, maximized, &app.prefix.label());
@@ -559,12 +563,15 @@ fn only_the_visible_chat_maximize_control_handles_clicks() -> anyhow::Result<()>
                     }),
                     area,
                 );
-                assert_eq!(app.session.chat_maximized, maximized);
+                assert_eq!(
+                    app.session.column_expansion == Some(Focus::Assistant),
+                    maximized
+                );
             }
 
             // Both the shortcut keycap and the trailing action text are clickable.
             for column in [button.x, button.right() - 1] {
-                app.session.chat_maximized = maximized;
+                app.session.column_expansion = maximized.then_some(Focus::Assistant);
                 app.handle_event(
                     Event::Mouse(event::MouseEvent {
                         kind: MouseEventKind::Down(MouseButton::Left),
@@ -574,7 +581,10 @@ fn only_the_visible_chat_maximize_control_handles_clicks() -> anyhow::Result<()>
                     }),
                     area,
                 );
-                assert_eq!(app.session.chat_maximized, !maximized);
+                assert_eq!(
+                    app.session.column_expansion == Some(Focus::Assistant),
+                    !maximized
+                );
             }
         }
     }
@@ -618,10 +628,10 @@ fn directional_prefix_selects_neighbors_without_editing_chat() -> anyhow::Result
     assert_eq!(app.session.assistant.input.lines(), &["Keep this prompt"]);
     assert_eq!(app.session.editor.source(), source);
 
-    app.session.chat_maximized = true;
+    app.session.column_expansion = Some(Focus::Assistant);
     pane_prefix(&mut app, 'k', KeyModifiers::NONE, area);
     assert!(app.focus == Focus::Editor);
-    assert!(!app.session.chat_maximized);
+    assert!(app.session.column_expansion != Some(Focus::Assistant));
     Ok(())
 }
 
@@ -1445,5 +1455,52 @@ fn pdf_link_click_opens_only_on_release_and_never_after_dragging() -> anyhow::Re
     app.handle_event(Event::FocusLost, area);
     app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), pointer), area);
     assert!(app.session.status.is_empty());
+    Ok(())
+}
+
+#[test]
+fn editor_expansion_preserves_other_panes_and_restores_for_chat() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let source = app.session.editor.source();
+    let sizes = app.pane_sizes;
+
+    for area in [Rect::new(0, 0, 160, 45), Rect::new(0, 0, 80, 30)] {
+        app.focus = Focus::Editor;
+        let original = app.workspace_layout(area);
+        pane_prefix(&mut app, 'u', KeyModifiers::NONE, area);
+        let expanded = app.workspace_layout(area);
+
+        assert_eq!(expanded.editor, original.editor.union(original.assistant));
+        assert!(expanded.assistant.is_empty());
+        assert_eq!(expanded.preview, original.preview);
+        assert_eq!(expanded.projects, original.projects);
+        assert!(app.pane_sizes == sizes);
+
+        let button = app.editor_maximize_button(app.editor_text_area(&expanded));
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        terminal.draw(|frame| app.draw(frame))?;
+        let label: String = (button.x..button.right())
+            .map(|x| terminal.backend().buffer()[(x, button.y)].symbol())
+            .collect();
+        assert!(label.contains("Restore"));
+
+        app.handle_event(
+            Event::Mouse(event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: button.right() - 1,
+                row: button.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            area,
+        );
+        assert!(app.session.column_expansion.is_none());
+        assert_eq!(app.workspace_layout(area).assistant, original.assistant);
+
+        pane_prefix(&mut app, 'u', KeyModifiers::NONE, area);
+        pane_prefix(&mut app, 'j', KeyModifiers::NONE, area);
+        assert!(app.focus == Focus::Assistant);
+        assert!(app.session.column_expansion.is_none());
+        assert_eq!(app.session.editor.source(), source);
+    }
     Ok(())
 }

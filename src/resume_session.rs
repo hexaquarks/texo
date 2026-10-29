@@ -19,7 +19,7 @@ pub(super) struct ResumeSession {
     pub(super) proposed_render_failed: bool,
 
     pub(super) assistant: Assistant,
-    pub(super) chat_maximized: bool,
+    pub(super) column_expansion: Option<super::Focus>,
 
     pub(super) proposal_review: Option<ProposalReview>,
     pub(super) proposed_preview: Preview,
@@ -52,7 +52,7 @@ impl ResumeSession {
             proposed_render_failed: false,
 
             assistant: Assistant::new(),
-            chat_maximized: false,
+            column_expansion: None,
 
             proposal_review: None,
             proposed_preview,

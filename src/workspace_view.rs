@@ -26,10 +26,20 @@ impl App {
         let mut layout =
             WorkspaceLayout::with_sizes(area, self.projects_visible, self.focus, &self.pane_sizes);
 
-        // Keep the PDF and sidebar in place; chat only takes over the editor's space.
-        if self.session.chat_maximized && self.focus != Focus::Editor && !layout.editor.is_empty() {
-            layout.assistant = layout.assistant.union(layout.editor);
-            layout.editor = Rect::default();
+        // Column expansion keeps the PDF and sidebar in place.
+        if !layout.editor.is_empty() && !layout.assistant.is_empty() {
+            let column = layout.editor.union(layout.assistant);
+            match self.session.column_expansion {
+                Some(Focus::Editor) if self.focus != Focus::Assistant => {
+                    layout.editor = column;
+                    layout.assistant = Rect::default();
+                }
+                Some(Focus::Assistant) if self.focus != Focus::Editor => {
+                    layout.assistant = column;
+                    layout.editor = Rect::default();
+                }
+                _ => {}
+            }
         }
 
         if self.session.diagnostics.is_some()
@@ -59,10 +69,7 @@ impl App {
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame) {
-        // Opening another document can focus the editor without a navigation key.
-        if self.focus == Focus::Editor {
-            self.session.chat_maximized = false;
-        }
+        self.restore_hidden_column_pane();
 
         let area = frame.area();
         frame.render_widget(Block::default().style(theme::text()), area);
@@ -108,7 +115,7 @@ impl App {
                 ("E / D", "Error details / summary"),
                 ("t", "Sidebar"),
             ];
-            if self.focus == Focus::Assistant {
+            if matches!(self.focus, Focus::Editor | Focus::Assistant) {
                 bindings.insert(0, ("u", "Maximize/restore"));
             }
             bindings.push(("Esc", "Cancel"));
@@ -225,11 +232,39 @@ impl App {
                 area.width.saturating_sub(theme::PANEL_PADDING * 2),
                 1,
             );
+            let button = self.editor_maximize_button(area);
+            let label_area = Rect {
+                width: button.x.saturating_sub(title.x),
+                ..title
+            };
             frame.render_widget(
                 Paragraph::new(label).style(theme::pane_title(self.focus == Focus::Editor)),
-                title,
+                label_area,
+            );
+            let action = if self.session.column_expansion == Some(Focus::Editor) {
+                "Restore"
+            } else {
+                "Maximize"
+            };
+            let shortcut = format!("{} u", self.prefix.label());
+            frame.render_widget(
+                Paragraph::new(theme::shortcuts(&[(&shortcut, action)])).style(theme::muted()),
+                button,
             );
         }
+    }
+
+    pub(super) fn editor_maximize_button(&self, area: Rect) -> Rect {
+        let title = area.inner(ratatui::layout::Margin::new(theme::PANEL_PADDING, 0));
+        let action = if self.session.column_expansion == Some(Focus::Editor) {
+            "Restore"
+        } else {
+            "Maximize"
+        };
+        let shortcut = format!("{} u", self.prefix.label());
+        let width = (theme::shortcuts(&[(&shortcut, action)]).width() as u16).min(title.width);
+
+        Rect::new(title.right() - width, title.y, width, title.height.min(1))
     }
 
     pub(super) fn review_buttons(&self, area: Rect) -> [Rect; 3] {
@@ -244,7 +279,7 @@ impl App {
             frame,
             area,
             self.focus == Focus::Assistant,
-            self.session.chat_maximized,
+            self.session.column_expansion == Some(Focus::Assistant),
             &self.prefix.label(),
             reviewing,
         );

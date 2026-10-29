@@ -322,7 +322,7 @@ fn review_actions_stay_above_the_composer_when_resized_or_maximized() -> anyhow:
     app.focus = Focus::Assistant;
 
     for maximized in [false, true] {
-        app.session.chat_maximized = maximized;
+        app.session.column_expansion = maximized.then_some(Focus::Assistant);
         for (width, height) in [(160, 45), (80, 24), (40, 18)] {
             for draft in [
                 "",
