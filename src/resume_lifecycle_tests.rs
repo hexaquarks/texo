@@ -475,6 +475,8 @@ fn external_source_change_blocks_save_and_reload_cancels_pending_work() -> Resul
     assert_eq!(fs::read_to_string(&document)?, external);
     assert_eq!(app.session.editor.source(), accepted);
     assert!(app.session.editor.is_modified());
+    assert!(app.diagnostic_details_open());
+    press(&mut app, KeyCode::Esc);
 
     let sender = app.session.assistant.pending_request(accepted);
     app.perform_action(Action::ReloadSource);

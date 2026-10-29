@@ -229,6 +229,8 @@ test('login provider and key screens cancel without changing the configured conn
         await terminal.press('Escape');
         await terminal.resize(160, 50);
         await terminal.getByText('Codex ·').expect();
+        // Wait for the expanded layout before locating the composer after resize.
+        await terminal.getByText('Ask Texo to refine the open resume.').expect();
 
         await ask(terminal, 'advice');
         await terminal.getByText('Assistant replied without changing').expect();

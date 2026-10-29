@@ -17,8 +17,6 @@ use crate::{
     projects::Projects,
 };
 
-const DIAGNOSTIC_SCROLL_LINES: u16 = 4;
-
 impl App {
     pub(super) fn handle_event(&mut self, event: Event, area: Rect) -> bool {
         let previous_focus = self.focus;
@@ -58,6 +56,11 @@ impl App {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
                 return true;
             }
+        }
+
+        if self.diagnostic_details_open() {
+            self.handle_diagnostic_details(event, area);
+            return false;
         }
 
         if self.label_dialog.is_some() {
@@ -165,11 +168,24 @@ impl App {
         {
             self.session
                 .editor
-                .handle_mouse(pane_content(layout.editor), mouse);
+                .handle_mouse(self.editor_text_area(&layout), mouse);
             return;
         }
 
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if layout.diagnostics.contains(position) && self.session.build_diagnostics.is_some() {
+                if let Some((_, key, _)) = self
+                    .problem_action_areas(layout.diagnostics)
+                    .into_iter()
+                    .find(|(rect, _, _)| rect.contains(position))
+                {
+                    self.handle_prefix_action(KeyCode::Char(key), area);
+                } else {
+                    self.go_to_problem();
+                }
+                return;
+            }
+
             let chat_body = pane_content(layout.assistant);
             if Assistant::maximize_button(
                 chat_body,
@@ -219,7 +235,7 @@ impl App {
                 if self.session.proposal_review.is_none() && !self.session.empty_workspace {
                     self.session
                         .editor
-                        .handle_mouse(pane_content(layout.editor), mouse);
+                        .handle_mouse(self.editor_text_area(&layout), mouse);
                 }
             }
         } else if layout.editor.contains(position) {
@@ -232,7 +248,7 @@ impl App {
             } else if self.focus == Focus::Editor && !self.session.empty_workspace {
                 self.session
                     .editor
-                    .handle_mouse(pane_content(layout.editor), mouse);
+                    .handle_mouse(self.editor_text_area(&layout), mouse);
             }
         } else if layout.assistant.contains(position) {
             match mouse.kind {
@@ -305,7 +321,19 @@ impl App {
             KeyCode::Char('t') => {
                 self.handle_control_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL))
             }
-            KeyCode::Char('D') => self.session.diagnostics = None,
+            KeyCode::Char('D') if self.session.build_diagnostics.is_some() => {
+                self.toggle_problem_summary()
+            }
+            KeyCode::Char('G') if self.session.diagnostics.is_some() => self.go_to_problem(),
+            KeyCode::Char('F') if self.session.diagnostics.is_some() => self.explain_problem(),
+            KeyCode::Char('R') if self.session.diagnostics.is_some() => self.recover_resource(),
+            KeyCode::Char('E') if self.session.diagnostics.is_some() => {
+                self.session.details_open = true;
+                self.session.diagnostic_scroll = 0;
+            }
+            KeyCode::Char(character @ ('[' | ']')) if self.session.build_diagnostics.is_some() => {
+                self.select_problem(character == ']');
+            }
             KeyCode::Char('a') => self.apply_proposal(),
             KeyCode::Char('m') => self.modify_proposal(),
             KeyCode::Char('d') if self.session.proposal_review.is_some() => self.discard_proposal(),
@@ -316,18 +344,6 @@ impl App {
                     Focus::Preview if self.projects_visible => Focus::Projects,
                     Focus::Preview | Focus::Projects => Focus::Editor,
                 };
-            }
-            KeyCode::Char('[') => {
-                self.session.diagnostic_scroll = self
-                    .session
-                    .diagnostic_scroll
-                    .saturating_sub(DIAGNOSTIC_SCROLL_LINES);
-            }
-            KeyCode::Char(']') => {
-                self.session.diagnostic_scroll = self
-                    .session
-                    .diagnostic_scroll
-                    .saturating_add(DIAGNOSTIC_SCROLL_LINES);
             }
             KeyCode::Char('s' | '?') => self.open_settings(),
             _ => {}
@@ -529,19 +545,6 @@ impl App {
             }
             KeyCode::PageDown if self.focus == Focus::Assistant => {
                 self.session.assistant.scroll(false)
-            }
-            KeyCode::Esc if self.session.diagnostics.is_some() => self.session.diagnostics = None,
-            KeyCode::PageUp if self.session.diagnostics.is_some() => {
-                self.session.diagnostic_scroll = self
-                    .session
-                    .diagnostic_scroll
-                    .saturating_sub(DIAGNOSTIC_SCROLL_LINES);
-            }
-            KeyCode::PageDown if self.session.diagnostics.is_some() => {
-                self.session.diagnostic_scroll = self
-                    .session
-                    .diagnostic_scroll
-                    .saturating_add(DIAGNOSTIC_SCROLL_LINES);
             }
             _ if self.focus == Focus::Assistant => {
                 self.session.assistant.input.input(key);

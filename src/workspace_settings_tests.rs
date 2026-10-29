@@ -292,7 +292,7 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
         theme::ELEVATED
     );
 
-    let layout = WorkspaceLayout::new(area, false, true, app.focus);
+    let layout = WorkspaceLayout::new(area, true, app.focus);
     assert_eq!(layout.preview.bottom(), layout.status.y);
     assert_eq!(layout.assistant.bottom(), layout.status.y);
     assert_eq!(layout.status.height, 1);

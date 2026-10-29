@@ -52,7 +52,9 @@ test('failed build preserves the published PDF, refuses export, and recovers thr
         await terminal.press('Ctrl+a');
         await paste(terminal, RESUME.replace('Terminal workflow resume.', '\\undefinedTestCommand'));
         await prefix(terminal, 'b');
-        await terminal.getByText('Undefined control sequence').expect();
+        // The inline summary wraps within the editor at this viewport width.
+        await terminal.getByText('Undefined control').expect();
+        await terminal.getByText('sequence').expect();
         assert.deepEqual(await readFile(pdf), original);
         await prefix(terminal, 'e');
         await terminal.getByText('latest build failed').expect();

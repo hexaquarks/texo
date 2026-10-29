@@ -73,7 +73,7 @@ fn pane_selection_highlights_only_the_selected_border() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     let area = Rect::new(0, 0, 160, 50);
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
-    let layout = WorkspaceLayout::new(area, false, true, app.focus);
+    let layout = WorkspaceLayout::new(area, true, app.focus);
     let panes = [layout.editor, layout.assistant, layout.preview];
     assert_eq!(layout.preview.x, layout.editor.right());
     assert_eq!(layout.assistant.y, layout.editor.bottom());
@@ -141,7 +141,7 @@ fn narrow_layout_shows_each_focused_pane_and_tolerates_tiny_sizes() -> anyhow::R
         ] {
             app.focus = focus;
             let area = Rect::new(0, 0, width, height);
-            let layout = WorkspaceLayout::new(area, false, true, focus);
+            let layout = WorkspaceLayout::new(area, true, focus);
             let visible = match focus {
                 Focus::Editor => layout.editor,
                 Focus::Assistant => layout.assistant,

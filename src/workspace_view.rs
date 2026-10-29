@@ -18,18 +18,13 @@ const PREVIEW_PERCENT: u16 = 38;
 const EDITOR_PERCENT: u16 = 55;
 // Borders, padding, header, and composer must fit even with the status row visible.
 pub(super) const MIN_CHAT_HEIGHT: u16 = 11;
-const DIAGNOSTICS_HEIGHT: u16 = 8;
+const INLINE_PROBLEM_HEIGHT: u16 = 5;
 const PREVIEW_TAB_WIDTH: u16 = 13;
 
 impl App {
     pub(super) fn workspace_layout(&self, area: Rect) -> WorkspaceLayout {
-        let mut layout = WorkspaceLayout::with_sizes(
-            area,
-            self.session.diagnostics.is_some(),
-            self.projects_visible,
-            self.focus,
-            &self.pane_sizes,
-        );
+        let mut layout =
+            WorkspaceLayout::with_sizes(area, self.projects_visible, self.focus, &self.pane_sizes);
 
         // Keep the PDF and sidebar in place; chat only takes over the editor's space.
         if self.session.chat_maximized && self.focus != Focus::Editor && !layout.editor.is_empty() {
@@ -37,7 +32,26 @@ impl App {
             layout.editor = Rect::default();
         }
 
+        if self.session.diagnostics.is_some()
+            && self.session.build_diagnostics.as_ref().is_some()
+            && !self.session.summary_hidden
+            && !layout.editor.is_empty()
+        {
+            let content = pane_content(layout.editor);
+            let height = INLINE_PROBLEM_HEIGHT.min(content.height / 2);
+            layout.diagnostics =
+                Rect::new(content.x, content.bottom() - height, content.width, height);
+        }
+
         layout
+    }
+
+    pub(super) fn editor_text_area(&self, layout: &WorkspaceLayout) -> Rect {
+        let mut content = pane_content(layout.editor);
+        if content.intersects(layout.diagnostics) {
+            content.height = layout.diagnostics.y.saturating_sub(content.y);
+        }
+        content
     }
 
     pub(super) fn preview_area(&self, area: Rect) -> Rect {
@@ -63,7 +77,8 @@ impl App {
                 self.focus == Focus::Projects,
             );
         }
-        let editor = draw_pane_border(frame, layout.editor, self.focus == Focus::Editor);
+        draw_pane_border(frame, layout.editor, self.focus == Focus::Editor);
+        let editor = self.editor_text_area(&layout);
         let assistant = draw_pane_border(frame, layout.assistant, self.focus == Focus::Assistant);
         let preview = draw_pane_border(frame, layout.preview, self.focus == Focus::Preview);
 
@@ -90,7 +105,7 @@ impl App {
                 ("e", "Export"),
                 ("c", "Cycle pane"),
                 ("v", "Refresh"),
-                ("[/]/D", "Scroll/close log"),
+                ("E / D", "Error details / summary"),
                 ("t", "Sidebar"),
             ];
             if self.focus == Focus::Assistant {
@@ -134,6 +149,9 @@ impl App {
         if let Some(dialog) = &mut self.project_dialog {
             dialog.draw(frame);
         }
+        if self.diagnostic_details_open() {
+            self.draw_diagnostic_details(frame);
+        }
     }
 
     pub(super) fn draw_editor(
@@ -162,6 +180,17 @@ impl App {
         } else {
             let focused = self.editor_has_focus();
             self.session.editor.draw(frame, area, focused);
+            if self.diagnostics_current() {
+                let lines: Vec<_> = self
+                    .session
+                    .build_diagnostics
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|diagnostics| &diagnostics.problems)
+                    .filter_map(|problem| problem.editor_line())
+                    .collect();
+                self.session.editor.draw_problems(frame, area, &lines);
+            }
         }
 
         if !area.is_empty() {
@@ -286,7 +315,11 @@ impl App {
         } else if (proposed && self.session.proposed_render_failed)
             || (!proposed && self.session.render_failed)
         {
-            "PDF failed"
+            if !proposed && self.session.rendered_pdf.is_some() {
+                "PDF failed · showing previous build"
+            } else {
+                "PDF failed"
+            }
         } else if self.session.rendered_pdf.is_none() && !proposed {
             "PDF missing"
         } else if !proposed
@@ -308,7 +341,13 @@ impl App {
         let zoom = self.active_preview().zoom_percent();
         let title = format!(" {state}  {page} · {zoom}%");
 
-        let compact_title = format!(" PDF {} {zoom}%", page.replace(' ', ""));
+        let compact_title = if state == "PDF failed" {
+            " PDF failed".into()
+        } else if state.starts_with("PDF failed") {
+            " PDF failed · stale".into()
+        } else {
+            format!(" PDF {} {zoom}%", page.replace(' ', ""))
+        };
         draw_preview_title(
             frame,
             title_area,
@@ -333,22 +372,112 @@ impl App {
     }
 
     pub(super) fn draw_diagnostics(&self, frame: &mut Frame, layout: &WorkspaceLayout) {
-        if let Some(diagnostics) = &self.session.diagnostics {
-            let mut title = Line::from(" Build diagnostics  ");
-            title.extend(
-                theme::shortcuts(&[
-                    (&format!("{} [/]", self.prefix.label()), "scroll"),
-                    (&format!("{} D", self.prefix.label()), "close"),
-                ])
-                .spans,
-            );
+        if !self.session.summary_hidden
+            && let Some(problems) = &self.session.build_diagnostics
+        {
+            self.draw_problems(frame, layout.diagnostics, problems);
+        }
+    }
 
-            let log = Paragraph::new(diagnostics.as_str())
-                .block(Block::default().title(title))
-                .style(Style::default().fg(theme::ERROR).bg(theme::ELEVATED))
-                .wrap(Wrap { trim: false })
-                .scroll((self.session.diagnostic_scroll, 0));
-            frame.render_widget(log, layout.diagnostics);
+    pub(super) fn problem_action_areas(&self, area: Rect) -> Vec<(Rect, char, String)> {
+        let Some(diagnostics) = &self.session.build_diagnostics else {
+            return Vec::new();
+        };
+        let mut actions = Vec::new();
+        let current = self.diagnostics_current();
+        if current {
+            if diagnostics.selected().editor_line().is_some()
+                && self.session.proposal_review.is_none()
+            {
+                actions.push(('G', "Go to line"));
+            }
+            if diagnostics.selected().resource.is_some() {
+                actions.push(('R', "Download & retry"));
+            }
+            actions.push(('F', "Ask AI"));
+        }
+        actions.push(('E', "Details"));
+        if diagnostics.problems.len() > 1 {
+            actions.push(('[', "Previous"));
+            actions.push((']', "Next"));
+        }
+        actions.push(('D', "Hide"));
+
+        let mut result = Vec::new();
+        let mut x = 0;
+        let mut row = 0;
+        for (key, label) in actions {
+            let text = if result.is_empty() {
+                format!(" {} {key} {label}  ", self.prefix.label())
+            } else {
+                format!(" {key} {label}  ")
+            };
+            let width = (Line::from(text.as_str()).width() as u16).min(area.width);
+            if x > 0 && x + width > area.width {
+                row += 1;
+                x = 0;
+            }
+            result.push((Rect::new(area.x + x, row, width, 1), key, text));
+            x += width;
+        }
+
+        let top = area.bottom().saturating_sub(row + 1).max(area.y);
+        for (rect, _, _) in &mut result {
+            rect.y += top;
+            *rect = rect.intersection(area);
+        }
+        result
+    }
+
+    fn draw_problems(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        diagnostics: &crate::build_diagnostics::BuildDiagnostics,
+    ) {
+        let current = self.diagnostics_current();
+        let problem = diagnostics.selected();
+        let version = if diagnostics.proposed {
+            "Proposed"
+        } else {
+            "Current"
+        };
+        let state = if current {
+            ""
+        } else {
+            " · outdated — rebuild to update"
+        };
+        let title = format!(
+            " Problems · {version} · {}/{}{state}",
+            diagnostics.selected + 1,
+            diagnostics.problems.len()
+        );
+        let location = problem.location.as_deref().unwrap_or("Build process");
+        let origin = problem
+            .import_line
+            .map(|line| format!("Imported at line {line} → "))
+            .unwrap_or_default();
+        let body = format!("{origin}{location}: {}", problem.message);
+        let actions = self.problem_action_areas(area);
+        let action_top = actions.first().map_or(area.bottom(), |(rect, _, _)| rect.y);
+        let body_area = Rect {
+            height: action_top.saturating_sub(area.y),
+            ..area
+        };
+        let block =
+            Block::default().title(Line::from(title).style(Style::default().fg(theme::ERROR)));
+        frame.render_widget(
+            Paragraph::new(body)
+                .block(block)
+                .style(theme::text().bg(theme::ELEVATED))
+                .wrap(Wrap { trim: false }),
+            body_area,
+        );
+        for (rect, _, label) in actions {
+            frame.render_widget(
+                Paragraph::new(label).style(theme::muted().bg(theme::ELEVATED)),
+                rect,
+            );
         }
     }
 }
@@ -448,24 +577,12 @@ pub(super) struct WorkspaceLayout {
 
 impl WorkspaceLayout {
     #[cfg(test)]
-    pub(super) fn new(
-        area: Rect,
-        show_diagnostics: bool,
-        show_projects: bool,
-        focus: Focus,
-    ) -> Self {
-        Self::with_sizes(
-            area,
-            show_diagnostics,
-            show_projects,
-            focus,
-            &PaneSizes::default(),
-        )
+    pub(super) fn new(area: Rect, show_projects: bool, focus: Focus) -> Self {
+        Self::with_sizes(area, show_projects, focus, &PaneSizes::default())
     }
 
     pub(super) fn with_sizes(
         area: Rect,
-        show_diagnostics: bool,
         show_projects: bool,
         focus: Focus,
         sizes: &PaneSizes,
@@ -473,14 +590,8 @@ impl WorkspaceLayout {
         let [area, status] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
-        let diagnostics_height = if show_diagnostics {
-            DIAGNOSTICS_HEIGHT.min(area.height / 2)
-        } else {
-            0
-        };
-        let [body, diagnostics] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(diagnostics_height)])
-                .areas(area);
+        let body = area;
+        let diagnostics = Rect::default();
 
         // A narrow terminal can still fit a vertical workspace. Keep chat visible and
         // use the upper pane for the editor, preview, or projects as focus changes.

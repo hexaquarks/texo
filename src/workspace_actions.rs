@@ -306,6 +306,7 @@ impl App {
                 return false;
             }
             Action::WorkspaceWarnings => {
+                self.clear_diagnostics();
                 self.session.diagnostics = Some(self.projects.catalog.warnings.join("\n"));
                 return false;
             }

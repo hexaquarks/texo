@@ -27,6 +27,13 @@ impl RenderJob {
         Self::spawn(move |cancelled| compiler::render_draft(source, &path, cancelled))
     }
 
+    pub fn recover(source: String, path: PathBuf, resource: String) -> Result<Self> {
+        Self::spawn(move |cancelled| {
+            texo::sandbox::cache_resource(&resource, cancelled)?;
+            compiler::render_draft(source, &path, cancelled)
+        })
+    }
+
     pub fn compiled(source: String, build: texo::sandbox::CompiledDraft) -> Result<Self> {
         Self::spawn(move |cancelled| compiler::render_compiled(source, build, cancelled))
     }

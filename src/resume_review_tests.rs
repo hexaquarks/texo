@@ -104,7 +104,7 @@ fn review_tabs_and_buttons_use_their_visible_hit_areas() -> anyhow::Result<()> {
         source_after: "Pending".into(),
     }));
     let area = Rect::new(0, 0, 160, 45);
-    let layout = WorkspaceLayout::new(area, false, true, Focus::Editor);
+    let layout = WorkspaceLayout::new(area, true, Focus::Editor);
     let [_, current, proposed] = preview_header(pane_content(layout.preview));
 
     for (tab, expected) in [(proposed, true), (current, false)] {
