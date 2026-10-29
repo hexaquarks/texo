@@ -299,7 +299,7 @@ fn narrow_workspace_keeps_chat_below_the_upper_pane() -> anyhow::Result<()> {
             Focus::Projects,
         ] {
             app.focus = focus;
-            let layout = WorkspaceLayout::new(area, false, true, focus);
+            let layout = WorkspaceLayout::new(area, true, focus);
             let upper = match focus {
                 Focus::Preview => layout.preview,
                 Focus::Projects => layout.projects.union(layout.files),
@@ -849,6 +849,7 @@ fn focused_editor_owns_typing_selection_navigation_and_history() -> anyhow::Resu
     let (_directory, mut app) = application()?;
     let area = Rect::new(0, 0, 160, 45);
     app.session.diagnostics = Some("Build log".into());
+    app.session.summary_hidden = true;
     let key = |app: &mut App, code, modifiers| {
         app.handle_event(Event::Key(KeyEvent::new(code, modifiers)), area);
     };

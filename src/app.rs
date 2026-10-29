@@ -133,7 +133,8 @@ impl App {
     }
 
     fn overlay_open(&self) -> bool {
-        self.project_dialog.is_some()
+        self.diagnostic_details_open()
+            || self.project_dialog.is_some()
             || self.label_dialog.is_some()
             || self.actions.is_some()
             || self.export.is_some()
@@ -147,6 +148,8 @@ impl App {
     }
 }
 
+#[path = "diagnostic_details.rs"]
+mod diagnostic_details;
 #[path = "event_loop.rs"]
 mod event_loop;
 #[path = "input.rs"]
@@ -157,6 +160,8 @@ mod label_actions;
 mod layout_state;
 #[path = "pane_navigation.rs"]
 mod pane_navigation;
+#[path = "problem_actions.rs"]
+mod problem_actions;
 #[path = "resume_review.rs"]
 mod resume_review;
 #[path = "workspace_actions.rs"]
@@ -167,6 +172,9 @@ mod workspace_view;
 #[cfg(test)]
 #[path = "app_input_tests.rs"]
 mod app_input_tests;
+#[cfg(test)]
+#[path = "build_diagnostics_tests.rs"]
+mod build_diagnostics_tests;
 #[cfg(test)]
 #[path = "label_tests.rs"]
 mod label_tests;

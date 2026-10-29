@@ -91,6 +91,8 @@ test('external edits block saving, reload safely, and deleted source can be rest
         await prefix(terminal, 'w');
         await terminal.getByText('Source changed').expect();
         assert.equal(await readFile(document, 'utf8'), external);
+        await terminal.getByText('Error details').expect();
+        await terminal.press('Escape');
         await action(terminal, 'Reload source from disk');
         await terminal.getByText('discard local edits').expect();
         await terminal.press('Escape');

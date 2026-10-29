@@ -30,6 +30,10 @@ pub(super) struct ResumeSession {
     pub(super) status: String,
     pub(super) diagnostics: Option<String>,
     pub(super) diagnostic_scroll: u16,
+    pub(super) details_open: bool,
+    pub(super) summary_hidden: bool,
+    pub(super) build_diagnostics: Option<crate::build_diagnostics::BuildDiagnostics>,
+    pub(super) building_source: String,
 }
 
 impl ResumeSession {
@@ -59,6 +63,10 @@ impl ResumeSession {
             status: String::new(),
             diagnostics: None,
             diagnostic_scroll: 0,
+            details_open: false,
+            summary_hidden: false,
+            build_diagnostics: None,
+            building_source: String::new(),
         }
     }
 }

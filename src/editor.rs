@@ -729,6 +729,42 @@ impl Editor {
         self.draw_status(frame, area, focused);
     }
 
+    pub fn go_to_line(&mut self, line: usize) {
+        self.cancel_pending_commands();
+        self.text.cancel_selection();
+        self.text.move_cursor(CursorMove::Jump(
+            line.saturating_sub(1).min(u16::MAX as usize) as u16,
+            0,
+        ));
+    }
+
+    pub fn draw_problems(&self, frame: &mut Frame, area: Rect, lines: &[usize]) {
+        let content = area.inner(ratatui::layout::Margin::new(theme::PANEL_PADDING, 1));
+        let (scroll_row, _) = self.text.scroll_offset();
+        for y in 0..content.height {
+            let row = usize::from(scroll_row) + usize::from(y);
+            let position = self.text.screen_to_data(row, 0);
+            // Use the textarea's wrap mapping, so a marker follows its source line.
+            let starts_line =
+                position.1 == 0 && (row == 0 || self.text.screen_to_data(row - 1, 0) != position);
+            if content.width > 0 && starts_line && lines.contains(&(position.0 + 1)) {
+                for x in 0..content.width {
+                    let cell = &mut frame.buffer_mut()[(content.x + x, content.y + y)];
+                    if cell.bg == theme::EDITOR {
+                        cell.set_bg(theme::ELEVATED);
+                    }
+                }
+
+                let cell = &mut frame.buffer_mut()[(content.x, content.y + y)];
+                cell.set_symbol("!").set_fg(theme::ERROR);
+                let number_width = self.text.line_number_width().min(content.width);
+                for x in 1..number_width {
+                    frame.buffer_mut()[(content.x + x, content.y + y)].set_fg(theme::ERROR);
+                }
+            }
+        }
+    }
+
     fn draw_highlighting(&self, frame: &mut Frame, content: Rect) {
         let (scroll_row, scroll_column) = self.text.scroll_offset();
         let number_width = self.text.line_number_width();

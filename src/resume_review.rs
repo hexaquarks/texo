@@ -102,7 +102,7 @@ impl App {
         self.session.proposed_build = None;
         self.session.proposed_preview.clear();
         self.session.proposed_render_failed = false;
-        self.session.diagnostics = None;
+        self.clear_diagnostics();
         self.session.show_proposed = true;
 
         let Some(review) = &self.session.proposal_review else {
@@ -226,7 +226,7 @@ impl App {
         self.session.proposed_build = None;
         self.session.proposed_preview.clear();
         self.session.proposal_review = None;
-        self.session.diagnostics = None;
+        self.clear_diagnostics();
         self.session.show_proposed = false;
     }
 
@@ -285,6 +285,7 @@ impl App {
             return;
         }
 
+        self.session.building_source = self.session.editor.source();
         match RenderJob::draft(
             self.session.editor.source(),
             self.session.editor.path.clone(),
@@ -293,7 +294,7 @@ impl App {
                 self.session.preview.begin_loading();
                 self.session.job = Some(job);
                 self.session.render_failed = false;
-                self.session.diagnostics = None;
+                self.clear_diagnostics();
                 self.session.status = "Building…".into();
             }
             Err(error) => self.report_build_error(error, false),
@@ -324,7 +325,7 @@ impl App {
                         self.session.rendered_pdf = Some(document.pdf_path);
                         if self.session.proposal_review.is_none() {
                             self.session.status.clear();
-                            self.session.diagnostics = None;
+                            self.clear_diagnostics();
                         }
 
                         self.refresh_projects();
@@ -342,14 +343,26 @@ impl App {
         } else {
             self.session.render_failed = true;
         }
+
+        let source = if proposed {
+            self.assistant_source()
+        } else {
+            self.session.building_source.clone()
+        };
+        let log = format!("{error:#}");
         self.report_error(error);
+        self.session.build_diagnostics = Some(crate::build_diagnostics::BuildDiagnostics::parse(
+            &log,
+            source,
+            &self.session.editor.path,
+            proposed,
+        ));
+        self.session.status = "Build failed · see the error below the source.".into();
     }
 
     pub(super) fn report_error(&mut self, error: anyhow::Error) {
-        self.session.status = format!(
-            "Operation failed. See diagnostics; {} [/] to scroll.",
-            self.prefix.label()
-        );
+        self.clear_diagnostics();
+        self.session.status = format!("Operation failed. {} E opens details.", self.prefix.label());
         self.session.diagnostics = Some(format!("{error:#}"));
         self.session.diagnostic_scroll = 0;
     }

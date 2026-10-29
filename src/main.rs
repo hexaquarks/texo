@@ -2,6 +2,7 @@ mod actions;
 mod app;
 mod assistant;
 mod assistant_job;
+mod build_diagnostics;
 mod config;
 mod editor;
 mod keybindings;
