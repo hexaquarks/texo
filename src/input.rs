@@ -28,6 +28,7 @@ impl App {
         }
 
         let quit = self.route_event(event, area);
+        self.restore_hidden_column_pane();
         let has_overlay = self.overlay_open() || self.session.assistant.login_open();
         if has_overlay {
             self.session.preview.clear_hover();
@@ -237,16 +238,25 @@ impl App {
                 return;
             }
 
+            if self
+                .editor_maximize_button(self.editor_text_area(&layout))
+                .contains(position)
+            {
+                self.focus = Focus::Editor;
+                self.toggle_column_expansion();
+                return;
+            }
+
             let chat_body = pane_content(layout.assistant);
             if Assistant::maximize_button(
                 chat_body,
-                self.session.chat_maximized,
+                self.session.column_expansion == Some(Focus::Assistant),
                 &self.prefix.label(),
             )
             .contains(position)
             {
                 self.focus = Focus::Assistant;
-                self.session.chat_maximized = !self.session.chat_maximized;
+                self.toggle_column_expansion();
                 return;
             }
 
@@ -347,8 +357,8 @@ impl App {
             KeyCode::Char(character @ ('H' | 'J' | 'K' | 'L')) => {
                 self.resize_directional_pane(character, area);
             }
-            KeyCode::Char('u') if self.focus == Focus::Assistant => {
-                self.session.chat_maximized = !self.session.chat_maximized;
+            KeyCode::Char('u') => {
+                self.toggle_column_expansion();
             }
             KeyCode::Char('n') => self.open_project_dialog(Action::NewResume),
             KeyCode::Char('i') => self.open_project_dialog(Action::ImportResume),
@@ -482,7 +492,7 @@ impl App {
                 self.session.editor.handle_key(key);
             }
 
-            self.session.chat_maximized = false;
+            self.restore_hidden_column_pane();
             return false;
         }
 
@@ -496,9 +506,7 @@ impl App {
         } else {
             self.handle_navigation_key(key);
         }
-        if self.focus == Focus::Editor {
-            self.session.chat_maximized = false;
-        }
+        self.restore_hidden_column_pane();
 
         false
     }

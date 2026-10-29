@@ -9,19 +9,43 @@ pub(super) const PANE_RESIZE_CELLS: u16 = 10;
 
 impl App {
     pub(super) fn select_directional_pane(&mut self, direction: char, area: Rect) {
-        // Restore the upper pane before navigating out of maximized chat.
-        if self.session.chat_maximized && self.focus == Focus::Assistant && direction == 'k' {
-            self.session.chat_maximized = false;
-            self.focus = Focus::Editor;
+        // Navigation toward a hidden sibling first restores the column.
+        let hidden_sibling = match (self.session.column_expansion, self.focus, direction) {
+            (Some(Focus::Assistant), Focus::Assistant, 'k') => Some(Focus::Editor),
+            (Some(Focus::Editor), Focus::Editor, 'j') => Some(Focus::Assistant),
+            _ => None,
+        };
+        if let Some(focus) = hidden_sibling {
+            self.session.column_expansion = None;
+            self.focus = focus;
             return;
         }
 
         let layout = self.workspace_layout(area);
         if let Some((focus, _)) = neighboring_pane(&layout, self.focus, direction) {
             self.focus = focus;
-            if focus == Focus::Editor {
-                self.session.chat_maximized = false;
-            }
+            self.restore_hidden_column_pane();
+        }
+    }
+
+    pub(super) fn toggle_column_expansion(&mut self) {
+        if !matches!(self.focus, Focus::Editor | Focus::Assistant) {
+            return;
+        }
+
+        self.session.column_expansion = if self.session.column_expansion == Some(self.focus) {
+            None
+        } else {
+            Some(self.focus)
+        };
+    }
+
+    pub(super) fn restore_hidden_column_pane(&mut self) {
+        if matches!(
+            (self.session.column_expansion, self.focus),
+            (Some(Focus::Editor), Focus::Assistant) | (Some(Focus::Assistant), Focus::Editor)
+        ) {
+            self.session.column_expansion = None;
         }
     }
 
