@@ -210,3 +210,80 @@ fn column_control_restores_prior_state_after_workspace_expansion() -> anyhow::Re
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires Poppler; external URL opening is replaced in unit tests"]
+fn expanded_pdf_links_open_on_release_at_normal_and_increased_zoom() -> anyhow::Result<()> {
+    use super::workspace_view::below_header;
+    use ratatui::layout::Position;
+
+    const PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
+    const PREVIEW_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+    for zoom_in in [false, true] {
+        let (_directory, mut app) = application()?;
+        app.session.preview.set_pages(texo::pdf::PdfPages::render(
+            std::path::Path::new("tests/fixtures/links.pdf"),
+            &std::sync::atomic::AtomicBool::new(false),
+        )?)?;
+        let area = Rect::new(0, 0, 160, 50);
+        app.focus = Focus::Preview;
+        prefix(&mut app, 'z', area);
+        if zoom_in {
+            app.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE)),
+                area,
+            );
+        }
+
+        let body = below_header(pane_content(app.preview_area(area)), 1);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+        let deadline = std::time::Instant::now() + PREVIEW_TIMEOUT;
+        loop {
+            terminal.draw(|frame| app.draw(frame))?;
+            if !app.session.preview.is_preparing() {
+                break;
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "Preview did not become ready"
+            );
+            std::thread::sleep(PREVIEW_POLL_INTERVAL);
+        }
+
+        let pointer = (body.y..body.bottom()).find_map(|row| {
+            (body.x..body.right()).find_map(|column| {
+                let point = Position::new(column, row);
+                app.session.preview.begin_drag(body, point);
+                let uri = app.session.preview.release_link(body, point);
+                (uri.as_deref() == Some("https://example.com/icon")).then_some(point)
+            })
+        });
+        let pointer = pointer.expect("expanded PDF icon must remain clickable");
+        app.session.status.clear();
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.handle_event(
+                Event::Mouse(event::MouseEvent {
+                    kind,
+                    column: pointer.x,
+                    row: pointer.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                area,
+            );
+            if kind == MouseEventKind::Down(MouseButton::Left) {
+                assert!(app.session.status.is_empty());
+                terminal.draw(|frame| app.draw(frame))?;
+            }
+        }
+        assert_eq!(
+            app.session.status,
+            "Opened PDF link: https://example.com/icon"
+        );
+        assert!(app.workspace_expansion == Some(Focus::Preview));
+    }
+    Ok(())
+}
