@@ -23,6 +23,8 @@ test('Problems explains a real build failure, navigates, shows details, and prep
         await terminal.screenshot(join(ARTIFACTS, 'error-details-modal.png'));
         await terminal.press('Escape');
         await terminal.resize(70, 35);
+        // Wait for the application to redraw, not just the terminal to reflow old cells.
+        await terminal.getByText('Go to line   F Ask AI   E Details   D Hide').expect();
         await terminal.getByText('Go to line').click();
         await terminal.press('Home');
         await paste(terminal, '%');

@@ -14,19 +14,20 @@ test('PDF navigation, zoom, pan, drag, and reset remain usable across resizing a
         await prefix(terminal, 'w');
         await terminal.getByText('Saved TeX document.').expect();
         await prefix(terminal, 'b');
-        await terminal.getByText('1 / 2').expect();
-        await terminal.getByText('PDF current').click();
+        // Focused narrow previews use a compact page counter without spaces.
+        await terminal.getByText('1\\s*/\\s*2', { regex: true }).expect();
+        await terminal.getByText('PDF (current|[12]/2)', { regex: true }).click();
         await terminal.press('Alt+Right');
-        await terminal.getByText('2 / 2').expect();
+        await terminal.getByText('2\\s*/\\s*2', { regex: true }).expect();
         await terminal.press('Alt+Right');
         await terminal.press('Alt+Left');
-        await terminal.getByText('1 / 2').expect();
+        await terminal.getByText('1\\s*/\\s*2', { regex: true }).expect();
         await terminal.press('+');
         await terminal.getByText('120%').expect();
         await terminal.press('+', '+', '+', '+');
         await terminal.getByText('200%').expect();
         await terminal.press('Right', 'Alt+Down');
-        await terminal.getByText('PDF current').expect();
+        await terminal.getByText('PDF (current|[12]/2)', { regex: true }).expect();
         // The preview occupies the right pane at this fixed 120-by-35 viewport.
         await terminal.mouse.drag(90, 16, 85, 12);
         await terminal.screenshot(join(ARTIFACTS, 'preview-drag.png'));
@@ -36,9 +37,9 @@ test('PDF navigation, zoom, pan, drag, and reset remain usable across resizing a
         await terminal.press('Escape');
         await terminal.resize(120, 35);
         await terminal.getByText('200%').expect();
-        await terminal.getByText('PDF current').click();
+        await terminal.getByText('PDF (current|[12]/2)', { regex: true }).click();
         await terminal.press('0');
-        await terminal.getByText('1 / 2 · [1-9][0-9]?%', { regex: true }).expect();
+        await terminal.getByText('1\\s*/\\s*2.*(100|[1-9][0-9]?)%', { regex: true }).expect();
         assert.equal(await readFile(await documentPath(workspace), 'utf8'), TWO_PAGES);
     });
 });

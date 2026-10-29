@@ -248,7 +248,7 @@ test('a proposal restores adjacent panes after a workspace-expanded chat request
         await terminal.getByText('texo / chat').expect();
         await terminal.getByText('[ Proposed ]').expect();
         await prefix(terminal, 'z');
-        assert.ok(!(await terminal.text()).includes('Unapproved changes'));
+        await terminal.getByText('Unapproved changes').expect({ not: true });
         await prefix(terminal, 'd');
         await terminal.getByText('PDF current').expect();
     }, { prepare });

@@ -38,6 +38,7 @@ export async function withTexo(name, scenario, options = {}) {
                 rows: 35,
                 env: {
                     XDG_CONFIG_HOME: join(root, 'config'),
+                    XDG_STATE_HOME: join(root, 'state'),
                     TERM: 'xterm-256color',
                     ...preparedEnvironment,
                     ...options.env,
