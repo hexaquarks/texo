@@ -2,7 +2,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -12,6 +12,11 @@ use tempfile::TempDir;
 
 use crate::process;
 
+#[path = "pdf_links.rs"]
+mod links;
+
+pub use links::PdfLink;
+
 const RASTER_TIMEOUT: Duration = Duration::from_secs(30);
 const PREVIEW_LONG_EDGE_PIXELS: u32 = 1600;
 pub const MAX_PREVIEW_PAGES: usize = 20;
@@ -20,6 +25,8 @@ pub struct PdfPages {
     // Retain the temporary files for as long as the preview can navigate between pages.
     _directory: TempDir,
     pages: Vec<PathBuf>,
+    links: Vec<Vec<PdfLink>>,
+    links_unavailable: bool,
 }
 
 impl PdfPages {
@@ -49,10 +56,26 @@ impl PdfPages {
             "The PDF renderer did not produce every page"
         );
 
+        let extracted = links::extract(&pdf, page_count, cancelled);
+        ensure!(!cancelled.load(Ordering::Relaxed), "PDF preview cancelled");
+
+        let links_unavailable = extracted.is_err();
+        let links = extracted.unwrap_or_else(|_| vec![Vec::new(); page_count]);
+
         Ok(Self {
+            links,
+            links_unavailable,
             _directory: directory,
             pages,
         })
+    }
+
+    pub fn links(&self, index: usize) -> &[PdfLink] {
+        self.links.get(index).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    pub fn links_unavailable(&self) -> bool {
+        self.links_unavailable
     }
 
     pub fn page_count(&self) -> usize {

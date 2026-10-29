@@ -37,6 +37,7 @@ fn failed_preview_does_not_retry_until_the_viewport_changes() {
     let (sender, result) = mpsc::channel();
 
     preview.pending = Some(ViewportJob {
+        hovered_link: None,
         source: preview.source_page.clone().unwrap(),
         pixels: (
             u32::from(area.width) * u32::from(font.width),
@@ -69,6 +70,7 @@ fn pending_image_work_does_not_block_or_replace_a_new_page() {
     let source = preview.source_page.clone().unwrap();
     let (sender, result) = mpsc::channel();
     preview.pending = Some(ViewportJob {
+        hovered_link: None,
         source: source.clone(),
         pixels: (100, 100),
         scroll: 0,
@@ -207,6 +209,7 @@ fn loading_continues_until_the_replacement_image_is_ready() -> anyhow::Result<()
     let font = preview.picker.font_size();
     let (sender, result) = mpsc::channel();
     preview.pending = Some(ViewportJob {
+        hovered_link: None,
         source: source.clone(),
         pixels: (
             u32::from(content.width) * u32::from(font.width),
@@ -554,6 +557,7 @@ fn late_zoom_work_cannot_replace_the_latest_scale_or_pan() {
     let source = preview.source_page.clone().unwrap();
     let (sender, result) = mpsc::channel();
     preview.pending = Some(ViewportJob {
+        hovered_link: None,
         source: source.clone(),
         pixels: (100, 100),
         scroll: 0,
@@ -669,6 +673,7 @@ fn native_page_preparation_remains_valid_when_zoom_changes_before_completion() {
     let source = preview.source_page.clone().unwrap();
     let (sender, result) = mpsc::channel();
     preview.pending = Some(ViewportJob {
+        hovered_link: None,
         source: source.clone(),
         pixels: (200, 200),
         scroll: 0,
@@ -950,4 +955,330 @@ fn dragging_requires_page_content_and_cancels_when_the_source_changes() {
     preview.begin_drag(area, Position::new(12, 6));
     preview.set_source(Some(patterned_page(120, 240)));
     assert!(!preview.drag_to(Position::new(10, 4)));
+}
+
+#[test]
+fn link_hit_testing_uses_visible_cells_and_rejects_gutters() {
+    let mapping = DisplayedPage {
+        pane: Rect::new(0, 0, 20, 10),
+        image: [5.5, 1.0, 15.5, 6.0],
+        source: [0.0, 0.0, 1.0, 1.0],
+    };
+    let links = vec![crate::pdf::PdfLink {
+        bounds: [0.21, 0.21, 0.22, 0.22],
+        uri: "https://example.com/tiny-icon".into(),
+    }];
+    assert_eq!(
+        mapping.link_at(&links, Position::new(7, 2)),
+        Some(links[0].uri.as_str())
+    );
+    assert_eq!(mapping.link_at(&links, Position::new(4, 2)), None);
+    assert_eq!(mapping.link_at(&links, Position::new(7, 6)), None);
+}
+
+#[test]
+fn retained_link_mapping_uses_the_actual_rounded_cell_grid() {
+    let mapping = retained_mapping(
+        Rect::new(0, 0, 20, 10),
+        ImageView {
+            page_size: Size::new(40, 30),
+            offset: Position::new(8, 5),
+            area: Rect::new(2, 1, 16, 8),
+        },
+    );
+    let links = vec![crate::pdf::PdfLink {
+        bounds: [0.25, 0.2, 0.275, 7.0 / 30.0],
+        uri: "https://example.com/icon".into(),
+    }];
+    assert_eq!(
+        mapping.link_at(&links, Position::new(4, 2)),
+        Some(links[0].uri.as_str())
+    );
+    assert_eq!(mapping.link_at(&links, Position::new(2, 1)), None);
+}
+
+#[test]
+fn raster_link_mapping_keeps_fractional_crop_edges() {
+    let source = Arc::new(DynamicImage::new_rgb8(103, 217));
+    let area = Rect::new(2, 3, 12, 8);
+    let prepared = prepare_image(Picker::halfblocks(), source, area, 31, 17, 180).unwrap();
+    assert_eq!(
+        prepared.mapping.source,
+        [8.0 / 103.0, 14.0 / 217.0, 66.0 / 103.0, 92.0 / 217.0]
+    );
+    assert_eq!(prepared.mapping.image[0], f64::from(area.x));
+}
+
+fn draw_link_preview(preview: &mut Preview, area: Rect) {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 60)).unwrap();
+    finish_viewport(preview, preview_content(area));
+    terminal.draw(|frame| preview.draw(frame, area)).unwrap();
+}
+
+fn link_position(preview: &Preview, area: Rect, uri: &str) -> Position {
+    for row in area.y..area.bottom() {
+        for column in area.x..area.right() {
+            let position = Position::new(column, row);
+            if preview.link_at(position) == Some(uri) {
+                return position;
+            }
+        }
+    }
+    panic!("No visible cell for {uri}");
+}
+
+#[test]
+#[ignore = "requires Poppler"]
+fn links_follow_rendered_pages_zoom_pan_and_resize_without_activating_drags() -> Result<()> {
+    let area = Rect::new(2, 2, 80, 40);
+    for protocol in [ProtocolType::Halfblocks, ProtocolType::Kitty] {
+        let pages = PdfPages::render(
+            std::path::Path::new("tests/fixtures/links.pdf"),
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
+        let mut preview = Preview::default();
+        preview.picker.set_protocol_type(protocol);
+        preview.set_pages(pages)?;
+        let uri = "https://example.com/icon";
+        assert_eq!(preview.link_at(Position::new(15, 5)), None);
+
+        draw_link_preview(&mut preview, area);
+        let point = link_position(&preview, area, uri);
+        preview.begin_drag(area, point);
+        assert_eq!(preview.release_link(area, point).as_deref(), Some(uri));
+        assert_eq!(preview.release_link(area, point), None);
+
+        preview.begin_drag(area, point);
+        preview.drag_to(Position::new(point.x + 1, point.y));
+        preview.drag_to(point);
+        assert_eq!(preview.release_link(area, point), None);
+
+        preview.zoom_at(true, area, point);
+        draw_link_preview(&mut preview, area);
+        let point = link_position(&preview, area, uri);
+        preview.begin_drag(area, point);
+        assert_eq!(preview.release_link(area, point).as_deref(), Some(uri));
+
+        preview.horizontal_pixels = 23;
+        preview.scroll_pixels = 19;
+        draw_link_preview(&mut preview, area);
+        let point = link_position(&preview, area, uri);
+        preview.begin_drag(area, point);
+        let resized = Rect::new(5, 3, 60, 30);
+        assert_eq!(preview.release_link(resized, point), None);
+        draw_link_preview(&mut preview, resized);
+        let point = link_position(&preview, resized, uri);
+        preview.begin_drag(resized, point);
+        assert_eq!(preview.release_link(resized, point).as_deref(), Some(uri));
+
+        preview.begin_drag(resized, point);
+        preview.next_page()?;
+        assert_eq!(preview.release_link(resized, point), None);
+        assert_eq!(preview.link_at(point), None);
+        preview.reset_zoom(resized);
+        draw_link_preview(&mut preview, resized);
+        let email = "mailto:person@example.com";
+        let point = link_position(&preview, resized, email);
+        preview.begin_drag(resized, point);
+        assert_eq!(preview.release_link(resized, point).as_deref(), Some(email));
+
+        preview.begin_drag(resized, point);
+        preview.begin_loading();
+        assert_eq!(preview.release_link(resized, point), None);
+        assert_eq!(preview.link_at(point), None);
+        preview.clear();
+        assert_eq!(preview.link_at(point), None);
+    }
+    Ok(())
+}
+
+#[test]
+fn links_sharing_one_cell_require_a_single_distinct_target() {
+    let mapping = DisplayedPage {
+        pane: Rect::new(0, 0, 10, 10),
+        image: [0.0, 0.0, 10.0, 10.0],
+        source: [0.0, 0.0, 1.0, 1.0],
+    };
+    let mut links = vec![
+        crate::pdf::PdfLink {
+            bounds: [0.21, 0.21, 0.23, 0.23],
+            uri: "https://example.com/first".into(),
+        },
+        crate::pdf::PdfLink {
+            bounds: [0.27, 0.21, 0.29, 0.23],
+            uri: "https://example.com/second".into(),
+        },
+    ];
+    assert_eq!(mapping.link_at(&links, Position::new(2, 2)), None);
+    links[1].uri = links[0].uri.clone();
+    assert_eq!(
+        mapping.link_at(&links, Position::new(2, 2)),
+        Some(links[0].uri.as_str())
+    );
+}
+
+#[test]
+fn hover_tint_changes_only_the_annotation_and_preserves_legibility() {
+    let mut pixels = image::RgbImage::from_pixel(20, 20, image::Rgb([255; 3]));
+    pixels.put_pixel(10, 10, image::Rgb([0; 3]));
+    let mut image = DynamicImage::ImageRgb8(pixels);
+    highlight_link(&mut image, [0.25, 0.25, 0.75, 0.75]);
+    let pixels = image.to_rgb8();
+
+    assert_eq!(pixels.get_pixel(4, 10).0, [255; 3]);
+    assert_eq!(pixels.get_pixel(15, 10).0, [255; 3]);
+    let tinted_paper = pixels.get_pixel(6, 6).0;
+    assert!(tinted_paper[0] < tinted_paper[2]);
+    assert!(tinted_paper.iter().all(|channel| *channel > 220));
+    assert!(
+        pixels
+            .get_pixel(10, 10)
+            .0
+            .iter()
+            .all(|channel| *channel < 32)
+    );
+}
+
+#[test]
+#[ignore = "requires Poppler; reports hover preparation timing"]
+fn hover_reuses_preparation_until_target_changes_and_preserves_clicks() -> Result<()> {
+    let area = Rect::new(2, 2, 80, 40);
+    for protocol in [ProtocolType::Halfblocks, ProtocolType::Kitty] {
+        let pages = PdfPages::render(
+            std::path::Path::new("tests/fixtures/links.pdf"),
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
+        let mut preview = Preview::default();
+        preview.picker.set_protocol_type(protocol);
+        preview.set_pages(pages)?;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 60))?;
+        finish_viewport(&mut preview, preview_content(area));
+        terminal.draw(|frame| preview.draw(frame, area))?;
+        let original_frame = terminal.backend().buffer().clone();
+        let source = preview.source_page.clone().unwrap();
+        let original_pixels = source.as_bytes().to_vec();
+        let position = link_position(&preview, area, "https://example.com/icon");
+        let original_geometry = preview.displayed_page;
+
+        let enter_started = Instant::now();
+        preview.hover_at(area, position);
+        assert_eq!(preview.hovered_link, Some(0));
+        assert!(preview.is_refreshing());
+        assert!(
+            !preview.is_preparing(),
+            "hover must not change the loading title"
+        );
+        preview.prepare_viewport(preview_content(area));
+        assert!(!preview.is_preparing());
+        preview.begin_drag(area, position);
+        finish_viewport(&mut preview, preview_content(area));
+        terminal.draw(|frame| preview.draw(frame, area))?;
+        let enter_time = enter_started.elapsed();
+        assert_eq!(preview.image_hovered_link, Some(0));
+        assert_eq!(preview.displayed_page, original_geometry);
+        assert_eq!(
+            preview.release_link(area, position).as_deref(),
+            Some("https://example.com/icon")
+        );
+        assert_ne!(terminal.backend().buffer(), &original_frame);
+        assert!(Arc::ptr_eq(preview.source_page.as_ref().unwrap(), &source));
+        assert_eq!(source.as_bytes(), original_pixels);
+
+        let motion_started = Instant::now();
+        for _ in 0..1000 {
+            preview.hover_at(area, position);
+            preview.prepare_viewport(preview_content(area));
+            assert!(
+                preview.pending.is_none(),
+                "same-link motion must not schedule encoding"
+            );
+        }
+        let motion_time = motion_started.elapsed();
+
+        let leave_started = Instant::now();
+        preview.hover_at(area, Position::new(0, 0));
+        assert_eq!(preview.hovered_link, None);
+        finish_viewport(&mut preview, preview_content(area));
+        terminal.draw(|frame| preview.draw(frame, area))?;
+        let leave_time = leave_started.elapsed();
+        assert_eq!(preview.image_hovered_link, None);
+        if protocol == ProtocolType::Halfblocks {
+            assert_eq!(terminal.backend().buffer(), &original_frame);
+        }
+        eprintln!(
+            "{protocol:?}: enter {enter_time:?}, 1000 same-link moves {motion_time:?} (0 preparations), leave {leave_time:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn late_hover_preparation_cannot_replace_a_cleared_highlight() {
+    let mut preview = Preview::default();
+    preview.set_source(Some(patterned_page(120, 200)));
+    let area = Rect::new(0, 0, 12, 8);
+    finish_viewport(&mut preview, area);
+    let source = preview.source_page.clone().unwrap();
+    let font = preview.picker.font_size();
+    let pixels = (
+        u32::from(area.width) * u32::from(font.width),
+        u32::from(area.height) * u32::from(font.height),
+    );
+    let (sender, result) = mpsc::channel();
+    preview.pending = Some(ViewportJob {
+        hovered_link: Some(0),
+        source: source.clone(),
+        pixels,
+        scroll: 0,
+        result,
+        zoom_percent: FIT_WIDTH_PERCENT,
+        horizontal: 0,
+    });
+    sender
+        .send(
+            prepare_image(
+                Picker::halfblocks(),
+                source.clone(),
+                area,
+                0,
+                0,
+                FIT_WIDTH_PERCENT,
+            )
+            .map(PreparedImage::Raster),
+        )
+        .unwrap();
+
+    preview.clear_hover();
+    assert!(preview.receive_prepared_viewport(&source, pixels));
+    assert_eq!(preview.image_hovered_link, None);
+    assert!(preview.pending.is_none());
+}
+
+#[test]
+fn failed_hover_encoding_does_not_retry_every_frame() {
+    let mut preview = Preview::default();
+    preview.set_source(Some(patterned_page(120, 200)));
+    let area = Rect::new(0, 0, 12, 8);
+    finish_viewport(&mut preview, area);
+    let source = preview.source_page.clone().unwrap();
+    let pixels = preview.viewport_pixels.unwrap();
+    let (sender, result) = mpsc::channel();
+    preview.hovered_link = Some(0);
+    preview.pending = Some(ViewportJob {
+        hovered_link: Some(0),
+        source: source.clone(),
+        pixels,
+        scroll: 0,
+        result,
+        zoom_percent: FIT_WIDTH_PERCENT,
+        horizontal: 0,
+    });
+    sender
+        .send(Err(anyhow!("Synthetic hover encoding failure")))
+        .unwrap();
+
+    assert!(!preview.receive_prepared_viewport(&source, pixels));
+    preview.prepare_viewport(area);
+    assert!(preview.pending.is_none());
+    assert!(!preview.is_refreshing());
 }

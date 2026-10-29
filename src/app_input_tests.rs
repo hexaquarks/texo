@@ -1339,3 +1339,111 @@ fn vim_escape_finishes_repeatable_edits_and_cancels_pending_operators() -> anyho
     assert_eq!(app.session.editor.source(), "NEW NEW three");
     Ok(())
 }
+
+#[test]
+#[ignore = "requires Poppler; external URL opening is replaced in unit tests"]
+fn pdf_link_click_opens_only_on_release_and_never_after_dragging() -> anyhow::Result<()> {
+    use super::workspace_view::below_header;
+    use ratatui::layout::Position;
+
+    let (_directory, mut app) = application()?;
+    app.session.preview.set_pages(texo::pdf::PdfPages::render(
+        std::path::Path::new("tests/fixtures/links.pdf"),
+        &std::sync::atomic::AtomicBool::new(false),
+    )?)?;
+    let area = Rect::new(0, 0, 160, 50);
+    let body = below_header(pane_content(app.preview_area(area)), 1);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        terminal.draw(|frame| app.draw(frame))?;
+        if !app.session.preview.is_preparing() {
+            break;
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Preview did not become ready"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let mut pointer = None;
+    for row in body.y..body.bottom() {
+        for column in body.x..body.right() {
+            let point = Position::new(column, row);
+            app.session.preview.begin_drag(body, point);
+            if app.session.preview.release_link(body, point).as_deref()
+                == Some("https://example.com/icon")
+            {
+                pointer = Some(point);
+                break;
+            }
+        }
+        if pointer.is_some() {
+            break;
+        }
+    }
+    let pointer = pointer.expect("the vector icon must be clickable");
+    let mouse = |kind, point: Position| {
+        Event::Mouse(event::MouseEvent {
+            kind,
+            column: point.x,
+            row: point.y,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+
+    let original_focus = app.focus;
+    for exit_event in [
+        mouse(MouseEventKind::Moved, Position::new(0, 0)),
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            Position::new(area.right(), area.bottom()),
+        ),
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        mouse(MouseEventKind::ScrollUp, pointer),
+        Event::Resize(area.width, area.height),
+        Event::FocusLost,
+    ] {
+        app.handle_event(mouse(MouseEventKind::Moved, pointer), area);
+        assert!(app.focus == original_focus, "hover must not focus the PDF");
+        assert!(app.session.preview.is_refreshing());
+        assert!(!app.session.preview.is_preparing());
+        app.handle_event(exit_event, area);
+        assert!(!app.session.preview.is_refreshing());
+    }
+
+    app.session.status.clear();
+    app.handle_event(
+        mouse(MouseEventKind::Down(MouseButton::Left), pointer),
+        area,
+    );
+    assert!(app.session.status.is_empty());
+    terminal.draw(|frame| app.draw(frame))?;
+    app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), pointer), area);
+    assert_eq!(
+        app.session.status,
+        "Opened PDF link: https://example.com/icon"
+    );
+
+    app.session.status.clear();
+    app.handle_event(
+        mouse(MouseEventKind::Down(MouseButton::Left), pointer),
+        area,
+    );
+    app.handle_event(
+        mouse(MouseEventKind::Drag(MouseButton::Left), pointer),
+        area,
+    );
+    app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), pointer), area);
+    assert!(app.session.status.is_empty());
+
+    app.handle_event(
+        mouse(MouseEventKind::Down(MouseButton::Left), pointer),
+        area,
+    );
+    app.handle_event(Event::FocusLost, area);
+    app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), pointer), area);
+    assert!(app.session.status.is_empty());
+    Ok(())
+}

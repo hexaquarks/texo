@@ -30,6 +30,10 @@ use crate::{
     retained_image::{ImageView, RetainedImage, TerminalImages},
 };
 
+#[path = "preview_links.rs"]
+mod links;
+use links::{DisplayedPage, highlight_link};
+
 const EMPTY_STATE_HEIGHT: u16 = 7;
 const LOADING_FRAME_MS: u128 = 100;
 const LOADING_LABEL_HEIGHT: u16 = 2;
@@ -49,6 +53,8 @@ pub struct Preview {
     page_index: usize,
     image: Option<PreparedImage>,
     image_source: Option<Arc<DynamicImage>>,
+    image_hovered_link: Option<usize>,
+    hovered_link: Option<usize>,
     terminal_images: TerminalImages,
     image_presented: bool,
     source_page: Option<Arc<DynamicImage>>,
@@ -60,6 +66,8 @@ pub struct Preview {
     zoom_percent: u16,
     last_wheel_zoom: Option<Instant>,
     drag_position: Option<Position>,
+    link_press: Option<(Position, DisplayedPage, String)>,
+    displayed_page: Option<DisplayedPage>,
     horizontal_pixels: u32,
     displayed_horizontal: Option<u32>,
 }
@@ -74,6 +82,7 @@ struct PreparedViewport {
     page_size: (u32, u32),
     scroll: u32,
     horizontal: u32,
+    mapping: Box<DisplayedPage>,
 }
 
 struct RetainedViewport {
@@ -84,6 +93,7 @@ struct RetainedViewport {
 }
 
 struct ViewportJob {
+    hovered_link: Option<usize>,
     source: Arc<DynamicImage>,
     pixels: (u32, u32),
     scroll: u32,
@@ -102,6 +112,8 @@ impl Default for Preview {
             page_index: 0,
             image: None,
             image_source: None,
+            image_hovered_link: None,
+            hovered_link: None,
             terminal_images: TerminalImages::default(),
             image_presented: false,
             source_page: None,
@@ -113,6 +125,8 @@ impl Default for Preview {
             zoom_percent: FIT_WIDTH_PERCENT,
             last_wheel_zoom: None,
             drag_position: None,
+            link_press: None,
+            displayed_page: None,
             horizontal_pixels: 0,
             displayed_horizontal: None,
         }
@@ -170,10 +184,14 @@ impl Preview {
 
     /// Keep one animation clock across compilation and terminal image preparation.
     pub fn begin_loading(&mut self) {
+        self.clear_hover();
+        self.displayed_page = None;
+        self.end_drag();
         self.loading_started = Some(Instant::now());
     }
 
     pub fn draw_loading(&mut self, frame: &mut Frame, area: Rect) {
+        self.displayed_page = None;
         let started = self.loading_started.get_or_insert_with(Instant::now);
         Self::draw_loading_at(frame, area, started.elapsed());
     }
@@ -225,6 +243,7 @@ impl Preview {
     }
 
     fn set_source(&mut self, source: Option<DynamicImage>) {
+        self.clear_hover();
         self.source_page = source.map(Arc::new);
         if self.source_page.is_some() {
             self.loading_started.get_or_insert_with(Instant::now);
@@ -232,6 +251,7 @@ impl Preview {
             self.loading_started = None;
         }
 
+        self.displayed_page = None;
         self.scaled_page_size = None;
         self.viewport_pixels = None;
         self.displayed_scroll = None;
@@ -247,8 +267,30 @@ impl Preview {
         }
     }
 
+    /// Update the visual target only; image copying and encoding stay in the viewport worker.
+    pub fn hover_at(&mut self, area: Rect, position: Position) {
+        self.hovered_link = self
+            .displayed_page
+            .filter(|mapping| mapping.pane == preview_content(area))
+            .and_then(|mapping| {
+                let pages = self.pages.as_ref()?;
+                mapping.link_index_at(pages.links(self.page_index), position)
+            });
+    }
+
+    pub fn clear_hover(&mut self) {
+        self.hovered_link = None;
+    }
+
     pub fn begin_drag(&mut self, area: Rect, position: Position) {
-        self.drag_position = None;
+        self.end_drag();
+        if let Some(mapping) = self.displayed_page
+            && mapping.pane == preview_content(area)
+            && let Some(uri) = self.link_at(position)
+        {
+            self.link_press = Some((position, mapping, uri.to_owned()));
+        }
+
         if preview_content(area).contains(position)
             && self.scaled_page_size.is_some()
             && self.viewport_pixels.is_some()
@@ -259,10 +301,34 @@ impl Preview {
 
     pub fn end_drag(&mut self) {
         self.drag_position = None;
+        self.link_press = None;
+    }
+
+    /// Resolve a completed click without opening anything; the application owns activation.
+    pub fn release_link(&mut self, area: Rect, position: Position) -> Option<String> {
+        let press = self.link_press.take();
+        self.end_drag();
+        let (start, mapping, uri) = press?;
+        if start != position
+            || self.displayed_page != Some(mapping)
+            || mapping.pane != preview_content(area)
+            || self.link_at(position) != Some(uri.as_str())
+        {
+            return None;
+        }
+        Some(uri)
+    }
+
+    fn link_at(&self, position: Position) -> Option<&str> {
+        let mapping = self.displayed_page?;
+        let pages = self.pages.as_ref()?;
+        mapping.link_at(pages.links(self.page_index), position)
     }
 
     /// Move the paper with the pointer, including when it crosses the pane boundary.
     pub fn drag_to(&mut self, position: Position) -> bool {
+        self.clear_hover();
+        self.link_press = None;
         let Some(previous) = self.drag_position else {
             return false;
         };
@@ -295,6 +361,7 @@ impl Preview {
     }
 
     pub fn scroll(&mut self, up: bool) {
+        self.clear_hover();
         let Some((_, page_height)) = self.scaled_page_size else {
             return;
         };
@@ -316,7 +383,25 @@ impl Preview {
     }
 
     pub fn is_preparing(&self) -> bool {
-        self.source_page.is_some() && (self.pending.is_some() || self.viewport_pixels.is_none())
+        let changing_view = self.pending.as_ref().is_some_and(|job| {
+            self.viewport_pixels != Some(job.pixels)
+                || self.displayed_scroll != Some(job.scroll)
+                || self.displayed_horizontal != Some(job.horizontal)
+                || self
+                    .image_source
+                    .as_ref()
+                    .is_none_or(|source| !Arc::ptr_eq(source, &job.source))
+        });
+
+        self.source_page.is_some() && (self.viewport_pixels.is_none() || changing_view)
+    }
+
+    /// Hover encoding needs fast polling without changing the PDF's loading title.
+    pub fn is_refreshing(&self) -> bool {
+        self.source_page.is_some()
+            && (self.pending.is_some()
+                || self.viewport_pixels.is_none()
+                || self.image_hovered_link != self.hovered_link)
     }
 
     /// The page point under the cursor stays in place unless an edge clamps the viewport.
@@ -370,6 +455,7 @@ impl Preview {
     }
 
     fn set_zoom(&mut self, percent: u16, area: Rect, position: Position) {
+        self.clear_hover();
         self.end_drag();
         let Some(source) = &self.source_page else {
             return;
@@ -415,6 +501,7 @@ impl Preview {
     }
 
     pub fn pan_horizontal(&mut self, left: bool) {
+        self.clear_hover();
         let Some((page_width, _)) = self.scaled_page_size else {
             return;
         };
@@ -464,6 +551,7 @@ impl Preview {
                 .view
                 .supports_placeholders();
         let retained_ready = retain_page
+            && self.image_hovered_link == self.hovered_link
             && matches!(self.image, Some(PreparedImage::Retained(_)))
             && self
                 .image_source
@@ -481,6 +569,7 @@ impl Preview {
         }
 
         if !retain_page
+            && self.image_hovered_link == self.hovered_link
             && self.viewport_pixels == Some(pixels)
             && self.displayed_scroll == Some(self.scroll_pixels)
             && self.displayed_horizontal == Some(self.horizontal_pixels)
@@ -509,6 +598,7 @@ impl Preview {
             // when the user changes the view before the first upload has finished.
             let retained = matches!(&result, Ok(PreparedImage::Retained(_)));
             let current = Arc::ptr_eq(&job.source, source)
+                && job.hovered_link == self.hovered_link
                 && (retained
                     || (job.pixels == pixels
                         && job.scroll == self.scroll_pixels
@@ -529,6 +619,7 @@ impl Preview {
                         }
 
                         self.image = Some(prepared);
+                        self.image_hovered_link = self.hovered_link;
                         self.image_source = Some(source.clone());
                         self.image_presented = false;
                     }
@@ -542,6 +633,7 @@ impl Preview {
                         } else {
                             // Keep the error visible instead of spawning another failed worker
                             // every frame. A new page or viewport can try again.
+                            self.image_hovered_link = self.hovered_link;
                             self.viewport_pixels = Some(pixels);
                             self.displayed_scroll = Some(self.scroll_pixels);
                             self.displayed_horizontal = Some(self.horizontal_pixels);
@@ -568,11 +660,26 @@ impl Preview {
         let horizontal = self.horizontal_pixels;
         let zoom_percent = self.zoom_percent;
         let terminal_images = self.terminal_images.clone();
+        let hovered_link = self.hovered_link;
+        let hover_bounds = self.pages.as_ref().and_then(|pages| {
+            pages
+                .links(self.page_index)
+                .get(hovered_link?)
+                .map(|link| link.bounds)
+        });
         let (sender, result) = mpsc::channel();
 
         let worker = thread::Builder::new()
             .name("texo-preview".into())
             .spawn(move || {
+                let worker_source = if let Some(bounds) = hover_bounds {
+                    let mut highlighted = worker_source.as_ref().clone();
+                    highlight_link(&mut highlighted, bounds);
+                    Arc::new(highlighted)
+                } else {
+                    worker_source
+                };
+
                 let prepared = if retain_page {
                     RetainedImage::new(&picker, worker_source.as_ref().clone(), terminal_images)
                         .map(PreparedImage::Retained)
@@ -594,6 +701,7 @@ impl Preview {
         match worker {
             Ok(_) => {
                 self.pending = Some(ViewportJob {
+                    hovered_link,
                     source,
                     pixels,
                     scroll,
@@ -604,6 +712,7 @@ impl Preview {
             }
             Err(error) => {
                 self.notice = format!("Could not prepare the preview: {error}");
+                self.image_hovered_link = self.hovered_link;
                 self.viewport_pixels = Some(pixels);
                 self.displayed_scroll = Some(self.scroll_pixels);
                 self.displayed_horizontal = Some(self.horizontal_pixels);
@@ -656,9 +765,13 @@ impl Preview {
     }
 
     pub fn page_status(&self) -> Option<String> {
-        self.pages
-            .as_ref()
-            .map(|pages| format!("{} / {}", self.page_index + 1, pages.page_count()))
+        self.pages.as_ref().map(|pages| {
+            let mut status = format!("{} / {}", self.page_index + 1, pages.page_count());
+            if pages.links_unavailable() {
+                status.push_str(" · Links unavailable");
+            }
+            status
+        })
     }
 
     fn draw_loading_at(frame: &mut Frame, area: Rect, elapsed: Duration) {
@@ -710,6 +823,14 @@ impl Preview {
     }
 
     fn draw_preview(&mut self, frame: &mut Frame, area: Rect, cached_only: bool) {
+        let resized = self
+            .displayed_page
+            .is_some_and(|mapping| mapping.pane != preview_content(area));
+        if cached_only || resized {
+            self.clear_hover();
+        }
+
+        self.displayed_page = None;
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::PREVIEW)),
             area,
@@ -736,6 +857,11 @@ impl Preview {
             .filter(|_| matches!(self.image, Some(PreparedImage::Retained(_))))
             .map(|source| self.retained_viewport(source, content).view);
 
+        let current_source = match (&self.image_source, &self.source_page) {
+            (Some(displayed), Some(current)) => Arc::ptr_eq(displayed, current),
+            _ => false,
+        };
+
         match &mut self.image {
             Some(PreparedImage::Retained(image)) if !cached_only || self.image_presented => {
                 let view = retained_view
@@ -744,7 +870,12 @@ impl Preview {
                 if let Some(mut view) = view {
                     view.area = view.area.intersection(content);
                     match image.render(view, frame.buffer_mut()) {
-                        Ok(()) => self.image_presented = true,
+                        Ok(()) => {
+                            self.image_presented = true;
+                            if current_source && !cached_only && !view.area.is_empty() {
+                                self.displayed_page = Some(retained_mapping(content, view));
+                            }
+                        }
                         Err(error) => {
                             self.notice = format!("Could not place the PDF preview: {error}");
                             self.image = None;
@@ -768,6 +899,9 @@ impl Preview {
                     &mut viewport.image,
                 );
                 self.image_presented = true;
+                if current_source && !cached_only {
+                    self.displayed_page = Some(viewport.mapping.moved_to(content));
+                }
             }
             _ => {
                 let [_, message, _] = Layout::vertical([
@@ -855,12 +989,50 @@ fn prepare_image(
         result?;
     }
 
+    let gutter = (width - visible_width) / 2;
+    let mapping = DisplayedPage {
+        pane: area,
+        image: [
+            f64::from(area.x) + f64::from(gutter) / f64::from(font.width),
+            f64::from(area.y),
+            f64::from(area.x) + f64::from(gutter + visible_width) / f64::from(font.width),
+            f64::from(area.y) + f64::from(visible_height) / f64::from(font.height),
+        ],
+        source: [
+            f64::from(source_region.x) / f64::from(source.width()),
+            f64::from(source_region.y) / f64::from(source.height()),
+            f64::from(source_region.x + source_region.width) / f64::from(source.width()),
+            f64::from(source_region.y + source_region.height) / f64::from(source.height()),
+        ],
+    };
+
     Ok(PreparedViewport {
+        mapping: Box::new(mapping),
         image,
         page_size: (page_width, page_height),
         scroll,
         horizontal,
     })
+}
+
+fn retained_mapping(pane: Rect, view: ImageView) -> DisplayedPage {
+    DisplayedPage {
+        pane,
+        image: [
+            f64::from(view.area.x),
+            f64::from(view.area.y),
+            f64::from(view.area.right()),
+            f64::from(view.area.bottom()),
+        ],
+        source: [
+            f64::from(view.offset.x) / f64::from(view.page_size.width),
+            f64::from(view.offset.y) / f64::from(view.page_size.height),
+            (f64::from(view.offset.x) + f64::from(view.area.width))
+                / f64::from(view.page_size.width),
+            (f64::from(view.offset.y) + f64::from(view.area.height))
+                / f64::from(view.page_size.height),
+        ],
+    }
 }
 
 // Round outward so fractional source pixels at the viewport edge are retained.
