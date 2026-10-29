@@ -154,3 +154,59 @@ fn build_from_chat_restores_workspace_and_failure_reveals_source() -> anyhow::Re
     assert!(!app.workspace_layout(area).diagnostics.is_empty());
     Ok(())
 }
+
+#[test]
+fn column_control_restores_prior_state_after_workspace_expansion() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+
+    for focus in [Focus::Editor, Focus::Assistant] {
+        for column_expanded in [false, true] {
+            app.focus = focus;
+            app.session.column_expansion = None;
+            if column_expanded {
+                prefix(&mut app, 'u', area);
+            }
+            let saved_column = app.session.column_expansion;
+            let original = app.workspace_layout(area);
+            prefix(&mut app, 'z', area);
+
+            let expanded = app.workspace_layout(area);
+            let button = if focus == Focus::Editor {
+                app.editor_maximize_button(app.editor_text_area(&expanded))
+            } else {
+                crate::assistant::Assistant::maximize_button(
+                    pane_content(expanded.assistant),
+                    app.pane_is_expanded(focus),
+                    &app.prefix.label(),
+                )
+            };
+            let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+            terminal.draw(|frame| app.draw(frame))?;
+            let label: String = (button.x..button.right())
+                .map(|x| terminal.backend().buffer()[(x, button.y)].symbol())
+                .collect();
+            assert!(label.contains("Restore"));
+
+            prefix(&mut app, 'u', area);
+            assert!(app.workspace_expansion.is_none());
+            assert!(app.session.column_expansion == saved_column);
+            assert_eq!(app.workspace_layout(area).editor, original.editor);
+            assert_eq!(app.workspace_layout(area).assistant, original.assistant);
+
+            prefix(&mut app, 'z', area);
+            app.handle_event(
+                Event::Mouse(event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: button.right() - 1,
+                    row: button.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                area,
+            );
+            assert!(app.workspace_expansion.is_none());
+            assert!(app.session.column_expansion == saved_column);
+        }
+    }
+    Ok(())
+}

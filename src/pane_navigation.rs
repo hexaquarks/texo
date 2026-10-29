@@ -47,8 +47,16 @@ impl App {
         self.session.column_expansion = None;
     }
 
+    pub(super) fn pane_is_expanded(&self, focus: Focus) -> bool {
+        self.workspace_expansion == Some(focus) || self.session.column_expansion == Some(focus)
+    }
+
     pub(super) fn toggle_column_expansion(&mut self) {
-        self.workspace_expansion = None;
+        // The visible Restore control leaves workspace expansion before changing the column.
+        if self.workspace_expansion.take().is_some() {
+            return;
+        }
+
         if !matches!(self.focus, Focus::Editor | Focus::Assistant) {
             return;
         }

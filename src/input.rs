@@ -253,7 +253,7 @@ impl App {
             let chat_body = pane_content(layout.assistant);
             if Assistant::maximize_button(
                 chat_body,
-                self.session.column_expansion == Some(Focus::Assistant),
+                self.pane_is_expanded(Focus::Assistant),
                 &self.prefix.label(),
             )
             .contains(position)

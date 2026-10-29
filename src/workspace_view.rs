@@ -272,7 +272,7 @@ impl App {
 
     fn editor_maximize_hint(&self, area: Rect) -> Line<'static> {
         let title = area.inner(ratatui::layout::Margin::new(theme::PANEL_PADDING, 0));
-        let action = if self.session.column_expansion == Some(Focus::Editor) {
+        let action = if self.pane_is_expanded(Focus::Editor) {
             "Restore"
         } else {
             "Maximize"
@@ -310,7 +310,7 @@ impl App {
             frame,
             area,
             self.focus == Focus::Assistant,
-            self.session.column_expansion == Some(Focus::Assistant),
+            self.pane_is_expanded(Focus::Assistant),
             &self.prefix.label(),
             reviewing,
         );
