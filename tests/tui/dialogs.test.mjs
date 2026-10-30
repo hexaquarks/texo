@@ -19,6 +19,22 @@ test('project dialogs share visible controls and preserve work when cancelled', 
         await terminal.screenshot(join(ARTIFACTS, 'dialog-manage.png'));
         await terminal.press('Escape');
 
+        await action(terminal, 'Change label');
+        await terminal.getByText('› No label').expect();
+        await terminal.waitIdle();
+        await terminal.screenshot(join(ARTIFACTS, 'dialog-labels.png'));
+        await terminal.press('j');
+        await terminal.waitIdle();
+        await terminal.screenshot(join(ARTIFACTS, 'dialog-labels-moved.png'));
+        await terminal.press('Escape');
+
+        await action(terminal, 'Reload from disk');
+        await terminal.getByText('The on-disk file will not be changed.').expect();
+        await terminal.waitIdle();
+        await terminal.screenshot(join(ARTIFACTS, 'dialog-reload-clean.png'));
+        await terminal.press('Enter');
+        await terminal.getByText('Reload from disk?').expect({ not: true });
+
         for (const name of ['Rename', 'Duplicate']) {
             await action(terminal, name);
             await terminal.getByText('Resume name').expect();

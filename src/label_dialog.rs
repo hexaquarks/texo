@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph},
+    widgets::{Block, Clear, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph},
 };
 use ratatui_textarea::TextArea;
 use texo::theme;
@@ -299,7 +299,10 @@ impl LabelDialog {
             }));
             items.push(ListItem::new("Custom…"));
             frame.render_stateful_widget(
-                List::new(items).highlight_style(Style::default().bg(theme::SELECTION)),
+                List::new(items)
+                    .highlight_symbol("› ")
+                    .highlight_spacing(HighlightSpacing::Always)
+                    .highlight_style(Style::default().bg(theme::SELECTION)),
                 form,
                 &mut self.selection,
             );

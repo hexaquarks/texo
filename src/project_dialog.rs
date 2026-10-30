@@ -129,8 +129,16 @@ impl ProjectDialog {
         }
     }
 
+    fn loss_rows(&self) -> u16 {
+        // Each consequence has one text row and one row of separation.
+        self.losses.len() as u16 * 2
+    }
+
     fn content_rows(&self) -> u16 {
-        if self.confirmation() || matches!(self.action, Action::ImportResume) {
+        if self.confirmation() {
+            let error_rows = if self.error.is_empty() { 0 } else { 3 };
+            5 + self.loss_rows() + error_rows
+        } else if matches!(self.action, Action::ImportResume) {
             15
         } else {
             12
@@ -318,12 +326,12 @@ impl ProjectDialog {
             );
             frame.render_widget(
                 Paragraph::new(self.losses.join("\n\n")).wrap(Wrap { trim: false }),
-                layout.row(5, 6),
+                layout.row(4, self.loss_rows()),
             );
             if matches!(self.action, Action::ReloadSource) {
                 frame.render_widget(
                     Paragraph::new("The on-disk file will not be changed.").style(theme::muted()),
-                    layout.row(11, 1),
+                    layout.row(4 + self.loss_rows(), 1),
                 );
             }
         } else {
@@ -370,12 +378,14 @@ impl ProjectDialog {
                 );
             }
         }
-        frame.render_widget(
-            Paragraph::new(self.error.as_str())
-                .style(theme::dialog().fg(theme::ERROR))
-                .wrap(Wrap { trim: false }),
-            layout.row(self.content_rows() - 2, 2),
-        );
+        if !self.error.is_empty() {
+            frame.render_widget(
+                Paragraph::new(self.error.as_str())
+                    .style(theme::dialog().fg(theme::ERROR))
+                    .wrap(Wrap { trim: false }),
+                layout.row(self.content_rows() - 2, 2),
+            );
+        }
         button(
             frame,
             layout.buttons[0],
