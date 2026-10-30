@@ -9,7 +9,7 @@ fn press(app: &mut App, code: KeyCode) {
 }
 
 #[test]
-fn browsing_comparison_and_paste_leave_working_copy_cursor_and_undo_intact() -> anyhow::Result<()> {
+fn browsing_and_paste_leave_working_copy_cursor_and_undo_intact() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     app.session.editor.text.insert_str("Unsaved ");
     let source = app.session.editor.source();
@@ -35,8 +35,9 @@ fn browsing_comparison_and_paste_leave_working_copy_cursor_and_undo_intact() -> 
         .map(|cell| cell.symbol())
         .collect();
     assert!(text.contains("read-only"));
-    assert!(text.contains("+ Unsaved Original document"));
-    assert!(text.contains("− Original document"));
+    assert!(text.contains("Original document"));
+    assert!(!text.contains("Unsaved Original document"));
+    assert!(!text.contains("Compare"));
     assert_eq!(
         std::fs::read_to_string(&app.session.editor.path)?,
         "Original document"
@@ -300,5 +301,105 @@ fn failed_source_write_does_not_create_a_saved_revision() -> anyhow::Result<()> 
         "Original document"
     );
     assert_eq!(history::revisions(&app.session.editor.path)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn permanent_history_uses_real_filename_and_pins_working_copy_when_scrolling() -> anyhow::Result<()>
+{
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    let directory = tempfile::tempdir()?;
+    let document = directory.path().join("cv.tex");
+    std::fs::write(&document, "Initial")?;
+    let mut app = App::new(Editor::open(document)?, Preview::default())?;
+    for number in 1..20 {
+        app.session
+            .editor
+            .replace_source(&format!("Saved {number}"));
+        app.session.editor.save()?;
+    }
+    app.refresh_history();
+    app.session.editor.text.insert_str("Unsaved ");
+    let working_source = app.session.editor.source();
+    let cursor = app.session.editor.text.cursor();
+    let scroll = app.session.editor.text.scroll_offset();
+    app.session.history.selection.select(Some(20));
+
+    let mut terminal = Terminal::new(TestBackend::new(SCREEN.width, SCREEN.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("History · cv.tex"));
+    assert!(text.contains("cv.tex · Working copy"));
+    assert!(text.contains("Unsaved changes"));
+    assert!(text.contains("cv.tex · r1"));
+    assert!(!text.contains("Files") && !text.contains("Compare"));
+    assert!(app.session.history.selection.offset() > 0);
+
+    let content = Projects::history_content_area(app.workspace_layout(SCREEN).files);
+    let click = |row| {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: content.x,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    let offset = app.session.history.selection.offset();
+    let expected = app.session.history.revisions[offset].id;
+    app.handle_event(click(content.y + 2), SCREEN);
+    assert_eq!(
+        app.session.history.view.as_ref().unwrap().revision.id,
+        expected
+    );
+    app.session.history.view.as_mut().unwrap().job = None;
+    app.handle_event(click(content.y), SCREEN);
+    assert!(app.session.history.view.is_none());
+    assert!(app.focus == Focus::Editor);
+    assert_eq!(app.session.editor.source(), working_source);
+    assert_eq!(app.session.editor.text.cursor(), cursor);
+    assert_eq!(app.session.editor.text.scroll_offset(), scroll);
+    Ok(())
+}
+
+#[test]
+fn selecting_a_resume_returns_to_its_unsaved_working_copy_and_history() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let first = resume_project::create(workspace.path(), "Alpha")?;
+    let second = resume_project::create(workspace.path(), "Beta")?;
+    let mut app = App::with_workspace(
+        Editor::open(first.document())?,
+        Preview::default(),
+        workspace.path().into(),
+    )?;
+    app.session.editor.text.insert_str("Unsaved ");
+    let source = app.session.editor.source();
+    let cursor = app.session.editor.text.cursor();
+    let first_revision = app.session.history.revisions[0].id;
+    app.open_history();
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    app.session.history.view.as_mut().unwrap().job = None;
+    press(&mut app, KeyCode::Tab);
+    assert!(!app.projects.history_focused);
+    press(&mut app, KeyCode::Down);
+    app.session.job = None;
+    assert_eq!(app.session.editor.path, second.document());
+    assert!(app.session.history.view.is_none());
+    assert_ne!(app.session.history.revisions[0].id, first_revision);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.session.editor.path, first.document());
+    assert!(app.session.history.view.is_none());
+    assert_eq!(app.session.history.selection.selected(), Some(0));
+    assert_eq!(app.session.history.revisions[0].id, first_revision);
+    assert_eq!(app.session.editor.source(), source);
+    assert_eq!(app.session.editor.text.cursor(), cursor);
+    assert!(app.session.editor.is_modified());
     Ok(())
 }

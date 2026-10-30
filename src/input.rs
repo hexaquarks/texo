@@ -261,12 +261,6 @@ impl App {
                 self.open_resume_menu();
             } else if Projects::new_button(layout.projects).contains(position) {
                 self.open_project_dialog(Action::NewResume);
-            } else if layout.files.contains(position) {
-                self.focus = Focus::Projects;
-                self.projects.files_focused = true;
-                if self.projects.select_file_at(layout.files, mouse.row) {
-                    self.activate_projects();
-                }
             } else if layout.projects.contains(position) {
                 self.focus = Focus::Projects;
                 if self.projects.select_at(layout.projects, mouse.row) {
@@ -334,7 +328,7 @@ impl App {
             )
         {
             self.focus = Focus::Projects;
-            self.projects.files_focused = false;
+            self.projects.history_focused = false;
             self.projects
                 .move_selection(mouse.kind == MouseEventKind::ScrollDown);
             self.activate_projects();
@@ -372,16 +366,9 @@ impl App {
             KeyCode::Char('r') => {
                 self.projects_visible = true;
                 self.focus = Focus::Projects;
-                self.projects.files_focused = false;
+                self.projects.history_focused = false;
             }
             KeyCode::Char('y') => self.open_history(),
-            KeyCode::Char('f') => {
-                self.session.history.visible = false;
-                self.return_to_working_copy();
-                self.projects_visible = true;
-                self.focus = Focus::Projects;
-                self.projects.files_focused = true;
-            }
             KeyCode::Char('b') => self.start_render(),
             KeyCode::Char('e') => self.open_export(),
             KeyCode::Char('v') => self.refresh_projects(),
@@ -468,10 +455,7 @@ impl App {
             self.handle_historical_source_key(key);
             return false;
         }
-        if self.session.history.visible
-            && self.focus == Focus::Projects
-            && self.projects.files_focused
-        {
+        if self.focus == Focus::Projects && self.projects.history_focused {
             self.handle_history_key(key);
             return false;
         }
@@ -652,10 +636,9 @@ impl App {
 
     pub(super) fn handle_projects_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('m') if !self.projects.files_focused => self.open_resume_menu(),
-            KeyCode::Char('l') if !self.projects.files_focused => self.open_label_dialog(),
-            KeyCode::Tab if self.projects.files_focused => self.open_history(),
-            KeyCode::Tab => self.projects.files_focused = true,
+            KeyCode::Char('m') if !self.projects.history_focused => self.open_resume_menu(),
+            KeyCode::Char('l') if !self.projects.history_focused => self.open_label_dialog(),
+            KeyCode::Tab => self.open_history(),
             KeyCode::Up | KeyCode::Char('k') => {
                 self.projects.move_selection(false);
                 self.activate_projects();
@@ -663,10 +646,6 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.projects.move_selection(true);
                 self.activate_projects();
-            }
-            KeyCode::Enter if self.projects.files_focused => {
-                self.activate_projects();
-                self.focus = Focus::Editor;
             }
             KeyCode::Enter => self.activate_projects(),
             _ => {}

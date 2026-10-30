@@ -78,10 +78,10 @@ fn label_shortcut_is_scoped_and_invalid_or_cancelled_labels_do_not_save() -> any
     assert!(app.session.editor.source().starts_with('l'));
 
     app.focus = Focus::Projects;
-    app.projects.files_focused = true;
+    app.projects.history_focused = true;
     key(&mut app, KeyCode::Char('l'));
     assert!(app.label_dialog.is_none());
-    app.projects.files_focused = false;
+    app.projects.history_focused = false;
     key(&mut app, KeyCode::Char('l'));
     assert!(app.label_dialog.is_some());
     for _ in 0..=PRESET_LABELS.len() {

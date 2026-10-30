@@ -40,10 +40,19 @@ pub(super) struct ResumeSession {
 impl ResumeSession {
     pub(super) fn new(editor: Editor, preview: Preview) -> Self {
         let proposed_preview = preview.empty_like();
+        let mut history = super::history_view::HistoryState::default();
+        // Empty workspaces have no source yet; do not create history for their placeholder.
+        if editor.path.is_file() {
+            match crate::history::revisions(&editor.path) {
+                Ok(revisions) => history.revisions = revisions.into_iter().rev().collect(),
+                Err(error) => history.error = Some(format!("History: {error:#}")),
+            }
+        }
+        history.selection.select(Some(0));
 
         Self {
             editor,
-            history: super::history_view::HistoryState::default(),
+            history,
             empty_workspace: false,
 
             preview,
