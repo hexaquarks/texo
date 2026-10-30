@@ -472,6 +472,8 @@ impl App {
             }
             Action::ReloadSource => {
                 self.session.editor.reload()?;
+                self.return_to_working_copy();
+                self.refresh_history();
                 self.session.assistant.cancel();
                 self.session.assistant.take_proposal();
                 self.clear_proposal();
@@ -484,6 +486,7 @@ impl App {
             }
             Action::RecoverSource => {
                 let warning = self.session.editor.recover_missing()?;
+                self.refresh_history();
                 self.start_render();
                 if let Some(warning) = warning {
                     self.session.status = warning;

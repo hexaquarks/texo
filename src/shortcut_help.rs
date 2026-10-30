@@ -33,6 +33,7 @@ impl App {
             ("Resumes", "i", "Import"),
             ("Resumes", "r", "Resumes"),
             ("Resumes", "f", "Files"),
+            ("Resumes", "y", "History"),
             ("Resumes", "v", "Refresh"),
             ("Document", "b", "Build PDF"),
             ("Document", "w", "Save"),

@@ -64,7 +64,8 @@ impl App {
             }
         }
 
-        if self.session.diagnostics.is_some()
+        if self.session.history.view.is_none()
+            && self.session.diagnostics.is_some()
             && self.session.build_diagnostics.as_ref().is_some()
             && !self.session.summary_hidden
             && !layout.editor.is_empty()
@@ -90,6 +91,15 @@ impl App {
         self.workspace_layout(area).preview
     }
 
+    pub(super) fn preview_body_area(&self, area: Rect) -> Rect {
+        let header_rows = if self.session.history.view.is_some() {
+            2
+        } else {
+            1
+        };
+        below_header(pane_content(area), header_rows)
+    }
+
     pub(super) fn draw(&mut self, frame: &mut Frame) {
         self.restore_hidden_column_pane();
 
@@ -105,6 +115,9 @@ impl App {
                 &self.session.editor.path,
                 self.focus == Focus::Projects,
             );
+        }
+        if self.projects_visible {
+            self.draw_history_sidebar(frame, layout.files);
         }
         draw_pane_border(frame, layout.editor, self.focus == Focus::Editor);
         let editor = self.editor_text_area(&layout);
@@ -137,6 +150,7 @@ impl App {
         if self.diagnostic_details_open() {
             self.draw_diagnostic_details(frame);
         }
+        self.draw_history_dialog(frame);
         if self.shortcuts_open {
             self.draw_shortcut_help(frame);
         }
@@ -169,7 +183,7 @@ impl App {
         .areas(area);
 
         // Review replaces the editor title, so retain operation results beside the controls.
-        if self.session.proposal_review.is_some() {
+        if self.session.proposal_review.is_some() || self.session.history.view.is_some() {
             frame.render_widget(
                 Paragraph::new(self.session.status.as_str()).style(theme::muted()),
                 status,
@@ -184,6 +198,10 @@ impl App {
         area: Rect,
         source_state: &anyhow::Result<crate::editor::DiskState>,
     ) {
+        if self.session.history.view.is_some() {
+            self.draw_historical_source(frame, area);
+            return;
+        }
         if self.session.empty_workspace {
             let prompt = vec![
                 Line::from("Create or import a resume."),
@@ -348,6 +366,10 @@ impl App {
             return;
         }
 
+        if self.session.history.view.is_some() {
+            self.draw_history_pdf(frame, area);
+            return;
+        }
         let body = below_header(area, 1);
         let proposed = self.session.show_proposed && self.session.proposal_review.is_some();
         let building = if proposed {
