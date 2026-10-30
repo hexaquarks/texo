@@ -18,8 +18,7 @@ use texo::theme;
 
 const DIALOG_WIDTH: u16 = 64;
 const RESUME_MENU_WIDTH: u16 = 76;
-const RESUME_MENU_HEIGHT: u16 = 21;
-const RESUME_ROW_HEIGHT: u16 = 2;
+const RESUME_MENU_HEIGHT: u16 = 15;
 const MENU_FRAME_HEIGHT: u16 = 6;
 
 #[derive(Clone, Copy)]
@@ -118,26 +117,12 @@ impl ActionMenu {
         [area, choices, help]
     }
 
-    fn row_height(&self, choices: Rect) -> u16 {
-        if self.context.is_some() && choices.height >= self.entries.len() as u16 * RESUME_ROW_HEIGHT
-        {
-            RESUME_ROW_HEIGHT
-        } else {
-            1
-        }
-    }
-
     pub fn click(&mut self, screen: Rect, column: u16, row: u16) -> Option<Action> {
         let [_, choices, _] = self.layout(screen);
         if !choices.contains((column, row).into()) {
             return None;
         }
-        let row_height = self.row_height(choices);
-        let relative_row = row - choices.y;
-        let index = self.state.offset() + usize::from(relative_row / row_height);
-        if row_height == RESUME_ROW_HEIGHT && index == 2 && relative_row % row_height == 1 {
-            return None;
-        }
+        let index = self.state.offset() + usize::from(row - choices.y);
         if index >= self.entries.len() {
             return None;
         }
@@ -165,7 +150,6 @@ impl ActionMenu {
                 );
             }
         }
-        let row_height = self.row_height(choices);
         let selected = self.state.selected();
         let rows = self
             .entries
@@ -179,11 +163,7 @@ impl ActionMenu {
                     theme::dialog()
                 };
 
-                if row_height == RESUME_ROW_HEIGHT {
-                    ListItem::new(vec![line, Line::default()]).style(style)
-                } else {
-                    ListItem::new(line).style(style)
-                }
+                ListItem::new(line).style(style)
             });
 
         let list = List::new(rows)
@@ -191,16 +171,6 @@ impl ActionMenu {
             .highlight_symbol("› ");
         frame.render_stateful_widget(list, choices, &mut self.state);
         if self.context.is_some() {
-            if row_height == RESUME_ROW_HEIGHT {
-                // Separate the reload action from metadata and duplication actions.
-                let divider_row = choices.y + RESUME_ROW_HEIGHT * 3 - 1;
-                frame.render_widget(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .border_style(theme::muted()),
-                    Rect::new(choices.x, divider_row, choices.width, 1),
-                );
-            }
             frame.render_widget(
                 Block::default()
                     .borders(Borders::TOP)
@@ -515,7 +485,7 @@ mod tests {
                 .is_none()
         );
         assert!(matches!(
-            menu.click(terminal.backend().buffer().area, choices.x, choices.y + 6),
+            menu.click(terminal.backend().buffer().area, choices.x, choices.y + 3),
             Some(Action::ReloadSource)
         ));
         Ok(())
@@ -580,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn manage_and_export_fit_tiny_terminals_without_activating_the_divider() -> Result<()> {
+    fn manage_and_export_fit_tiny_terminals_without_activating_the_footer() -> Result<()> {
         use ratatui::{Terminal, backend::TestBackend};
 
         let mut menu = ActionMenu::for_resume("Example");
@@ -595,7 +565,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(screen.width, screen.height))?;
         terminal.draw(|frame| menu.draw(frame))?;
         let [_, choices, _] = menu.layout(screen);
-        assert!(menu.click(screen, choices.x, choices.y + 5).is_none());
+        assert!(menu.click(screen, choices.x, choices.bottom()).is_none());
         Ok(())
     }
 }

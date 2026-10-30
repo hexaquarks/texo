@@ -14,7 +14,7 @@ test('project dialogs share visible controls and preserve work when cancelled', 
         await terminal.getByText('Manage', { whitespace: 'exact' }).click();
         await terminal.getByText('Manage resume').expect();
         assert.doesNotMatch(await terminal.text(), /Label:/);
-        await terminal.press('j', 'j', 'j');
+        await terminal.press('j', 'j');
         await terminal.waitIdle();
         await terminal.screenshot(join(ARTIFACTS, 'dialog-manage.png'));
         await terminal.press('Escape');
