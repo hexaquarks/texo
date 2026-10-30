@@ -112,11 +112,8 @@ impl App {
                 frame,
                 layout.projects,
                 layout.files,
-                &self.session.editor.path,
                 self.focus == Focus::Projects,
             );
-        }
-        if self.projects_visible {
             self.draw_history_sidebar(frame, layout.files);
         }
         draw_pane_border(frame, layout.editor, self.focus == Focus::Editor);

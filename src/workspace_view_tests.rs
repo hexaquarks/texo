@@ -51,7 +51,7 @@ fn sidebar_navigation_and_dividers_match_the_visible_panes() -> anyhow::Result<(
         Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
         area,
     );
-    assert!(app.projects.files_focused);
+    assert!(app.projects.history_focused);
     app.handle_event(
         Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         area,

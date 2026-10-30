@@ -60,7 +60,7 @@ fn cached_resumes_do_not_restore_old_workspace_settings_or_navigation() -> anyho
     app.settings_path = directory.path().join("custom-config.toml");
     app.prefix = Prefix::new("ctrl+a")?;
     app.projects_visible = false;
-    app.projects.files_focused = true;
+    app.projects.history_focused = true;
     app.focus = Focus::Assistant;
 
     for path in [first.clone(), second.clone(), first, second] {
@@ -75,7 +75,7 @@ fn cached_resumes_do_not_restore_old_workspace_settings_or_navigation() -> anyho
         );
         assert_eq!(app.prefix.label(), Prefix::new("ctrl+a")?.label());
         assert!(!app.projects_visible);
-        assert!(app.projects.files_focused);
+        assert!(app.projects.history_focused);
         assert!(app.focus == Focus::Assistant);
     }
 

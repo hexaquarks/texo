@@ -1,17 +1,17 @@
 use ratatui::{
     Frame,
     crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind},
-    layout::{Constraint, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea;
-use similar::{ChangeTag, TextDiff};
 use texo::{preview::Preview, theme};
 use uuid::Uuid;
 
 use super::{App, Focus};
 use crate::{
+    actions::{Action, ActionMenu},
     history::{self, Revision},
     projects::Projects,
     render_job::RenderJob,
@@ -20,13 +20,11 @@ use crate::{
 const SCROLL_ROWS: u16 = 3;
 const DIALOG_WIDTH: u16 = 62;
 const DIALOG_HEIGHT: u16 = 9;
-const HISTORY_FOOTER_ROWS: u16 = 3;
+const HISTORY_ERROR_ROWS: u16 = 3;
 const REVISION_ROWS: u16 = 2;
-const FILES_TAB_WIDTH: u16 = 7;
 
 #[derive(Default)]
 pub(super) struct HistoryState {
-    pub visible: bool,
     pub revisions: Vec<Revision>,
     pub selection: ListState,
     pub error: Option<String>,
@@ -36,7 +34,6 @@ pub(super) struct HistoryState {
 
 pub(super) struct HistoricalView {
     pub revision: Revision,
-    compare: bool,
     scroll: (u16, u16),
     pub preview: Preview,
     pub job: Option<RenderJob>,
@@ -45,6 +42,7 @@ pub(super) struct HistoricalView {
 }
 
 pub(super) enum HistoryDialog {
+    Menu(ActionMenu),
     Restore(Revision),
     Name {
         id: Uuid,
@@ -53,35 +51,18 @@ pub(super) enum HistoryDialog {
 }
 
 impl HistoricalView {
-    fn source_lines(&self, working: &str) -> Vec<Line<'static>> {
-        if self.compare {
-            TextDiff::from_lines(&self.revision.source, working)
-                .iter_all_changes()
-                .map(|change| {
-                    let (marker, style) = match change.tag() {
-                        ChangeTag::Delete => ("− ", theme::text().fg(theme::ERROR)),
-                        ChangeTag::Insert => ("+ ", theme::text().fg(theme::GREEN)),
-                        ChangeTag::Equal => ("  ", theme::text()),
-                    };
-                    Line::styled(
-                        format!("{marker}{}", change.value().trim_end_matches(['\n', '\r'])),
-                        style,
-                    )
-                })
-                .collect::<Vec<_>>()
-        } else {
-            self.revision
-                .source
-                .lines()
-                .enumerate()
-                .map(|(index, line)| {
-                    Line::from(vec![
-                        Span::styled(format!("{:>4} ", index + 1), theme::muted()),
-                        Span::raw(line.to_owned()),
-                    ])
-                })
-                .collect()
-        }
+    fn source_lines(&self) -> Vec<Line<'static>> {
+        self.revision
+            .source
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                Line::from(vec![
+                    Span::styled(format!("{:>4} ", index + 1), theme::muted()),
+                    Span::raw(line.to_owned()),
+                ])
+            })
+            .collect()
     }
 }
 
@@ -125,9 +106,8 @@ impl App {
 
         self.refresh_history();
         self.projects_visible = true;
-        self.projects.files_focused = true;
+        self.projects.history_focused = true;
         self.focus = Focus::Projects;
-        self.session.history.visible = true;
     }
 
     pub(super) fn return_to_working_copy(&mut self) {
@@ -149,6 +129,7 @@ impl App {
     pub(super) fn open_selected_revision(&mut self) {
         let Some(revision) = self.selected_revision() else {
             self.return_to_working_copy();
+            self.focus = Focus::Editor;
             return;
         };
 
@@ -156,7 +137,6 @@ impl App {
         self.session.editor.cancel_pending_commands();
         self.session.history.view = Some(HistoricalView {
             revision,
-            compare: false,
             scroll: (0, 0),
             preview: self.session.preview.empty_like(),
             job: None,
@@ -236,22 +216,8 @@ impl App {
                     .select(Some((current + 1).min(last)));
             }
             KeyCode::Enter => self.open_selected_revision(),
+            KeyCode::Char('m') => self.open_revision_menu(),
             KeyCode::Esc | KeyCode::Char('w') => self.return_to_working_copy(),
-            KeyCode::Char('c') => {
-                if self.selected_revision().map(|revision| revision.id)
-                    != self
-                        .session
-                        .history
-                        .view
-                        .as_ref()
-                        .map(|view| view.revision.id)
-                {
-                    self.open_selected_revision();
-                }
-                if let Some(view) = &mut self.session.history.view {
-                    view.compare = true;
-                }
-            }
             KeyCode::Char('r') => {
                 if self.session.proposal_review.is_some() {
                     self.session.status =
@@ -271,19 +237,45 @@ impl App {
                 }
             }
             KeyCode::Tab => {
-                self.session.history.visible = false;
-                self.return_to_working_copy();
+                self.projects.history_focused = false;
             }
             _ => {}
         }
     }
 
+    pub(super) fn open_revision_menu(&mut self) {
+        if let Some(index) = self.session.history.selection.selected()
+            && index > 0
+            && index <= self.session.history.revisions.len()
+        {
+            let number = self.session.history.revisions.len() - index + 1;
+            self.session.history.dialog =
+                Some(HistoryDialog::Menu(ActionMenu::for_revision(number)));
+        }
+    }
+
     pub(super) fn handle_historical_source_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('m') && key.modifiers.is_empty() {
+            if let Some(view) = &self.session.history.view {
+                let index = self
+                    .session
+                    .history
+                    .revisions
+                    .iter()
+                    .position(|revision| revision.id == view.revision.id);
+                self.session
+                    .history
+                    .selection
+                    .select(index.map(|index| index + 1));
+            }
+            self.open_revision_menu();
+            return;
+        }
+
         if key.code == KeyCode::Esc {
             self.return_to_working_copy();
             return;
         }
-        let working = self.session.editor.source();
         let Some(view) = &mut self.session.history.view else {
             return;
         };
@@ -295,14 +287,10 @@ impl App {
             KeyCode::Left => view.scroll.1 = view.scroll.1.saturating_sub(SCROLL_ROWS),
             KeyCode::Right => view.scroll.1 = view.scroll.1.saturating_add(SCROLL_ROWS),
             KeyCode::Home => view.scroll = (0, 0),
-            KeyCode::Char('c') if key.modifiers.is_empty() => {
-                view.compare = !view.compare;
-                view.scroll = (0, 0);
-            }
             _ => {}
         }
 
-        let lines = view.source_lines(&working);
+        let lines = view.source_lines();
         let last_row = u16::try_from(lines.len().saturating_sub(1)).unwrap_or(u16::MAX);
         let last_column = lines.iter().map(Line::width).max().unwrap_or(0);
         view.scroll.0 = view.scroll.0.min(last_row);
@@ -335,14 +323,50 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn handle_history_dialog(&mut self, event: Event) {
+    pub(super) fn handle_history_dialog(&mut self, event: Event, screen: Rect) {
         let Some(mut dialog) = self.session.history.dialog.take() else {
             return;
         };
+        if let HistoryDialog::Menu(menu) = &mut dialog {
+            let action = match event {
+                Event::Key(key) => match key.code {
+                    KeyCode::Esc => return,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        menu.move_selection(false);
+                        None
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        menu.move_selection(true);
+                        None
+                    }
+                    KeyCode::Enter => Some(menu.selected()),
+                    _ => None,
+                },
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    menu.click(screen, mouse.column, mouse.row)
+                }
+                _ => None,
+            };
+            if let Some(action) = action {
+                match action {
+                    Action::OpenRevision => self.open_selected_revision(),
+                    Action::RestoreRevision => self
+                        .handle_history_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+                    Action::RenameRevision => self
+                        .handle_history_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+                    _ => {}
+                }
+                return;
+            }
+            self.session.history.dialog = Some(dialog);
+            return;
+        }
+
         match event {
             Event::Key(key) if key.code == KeyCode::Esc => return,
             Event::Key(key) if key.code == KeyCode::Enter => {
                 let result = match &dialog {
+                    HistoryDialog::Menu(_) => unreachable!(),
                     HistoryDialog::Restore(revision) => self.restore_history_revision(revision),
                     HistoryDialog::Name { id, input } => {
                         history::rename(&self.session.editor.path, *id, &input.lines().join(""))
@@ -372,33 +396,9 @@ impl App {
     }
 
     pub(super) fn draw_history_sidebar(&mut self, frame: &mut Frame, area: Rect) {
-        if self.session.history.visible {
-            frame.render_widget(Clear, area);
-            frame.render_widget(Block::default().style(theme::text()), area);
-        }
-
+        frame.render_widget(Clear, area);
+        frame.render_widget(Block::default().style(theme::text()), area);
         let inner = area.inner(Margin::new(1, 1));
-        let header = Rect {
-            height: inner.height.min(1),
-            ..inner
-        };
-        frame.render_widget(Clear, header);
-        frame.render_widget(Block::default().style(theme::text()), header);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Files", theme::pane_title(!self.session.history.visible)),
-                Span::raw("  "),
-                Span::styled("History", theme::pane_title(self.session.history.visible)),
-            ])),
-            header,
-        );
-        if !self.session.history.visible {
-            return;
-        }
-        frame.render_widget(
-            Block::default().style(theme::text()),
-            Projects::file_content_area(area),
-        );
         let filename = self
             .session
             .editor
@@ -406,44 +406,120 @@ impl App {
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
-        frame.render_widget(
-            Paragraph::new(format!("{filename} · UTC")).style(theme::muted()),
-            Rect {
-                y: header.y + 1,
-                height: inner.height.saturating_sub(1).min(1),
-                ..header
-            },
-        );
-        let content = Projects::file_content_area(area);
-        let [entries, footer] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(HISTORY_FOOTER_ROWS)])
-                .areas(content);
-        let working = if self.session.editor.is_modified() {
-            "Working copy * unsaved"
-        } else {
-            "Working copy"
+        let header = Rect {
+            height: inner.height.min(1),
+            ..inner
         };
-        let mut items = vec![
-            ListItem::new(working).style(theme::pane_title(self.session.history.view.is_none())),
-        ];
-        items.extend(self.session.history.revisions.iter().map(|revision| {
-            ListItem::new(vec![
-                Line::from(revision.label().to_owned()),
-                Line::styled(revision.date_label(), theme::muted()),
+        let [title, filename_area] = Layout::horizontal([
+            Constraint::Length("History ".len() as u16),
+            Constraint::Min(0),
+        ])
+        .areas(header);
+        frame.render_widget(
+            Paragraph::new("History").style(theme::pane_title(
+                self.focus == Focus::Projects && self.projects.history_focused,
+            )),
+            title,
+        );
+        frame.render_widget(
+            Paragraph::new(crate::projects::sidebar_text(
+                &filename,
+                filename_area.width,
+            ))
+            .alignment(Alignment::Right)
+            .style(theme::muted()),
+            filename_area,
+        );
+        if self.session.empty_workspace {
+            return;
+        }
+
+        let content = Projects::history_content_area(area);
+        let [working, entries, error_area] = self.history_entry_areas(content);
+        let selected = self.session.history.selection.selected().unwrap_or(0);
+        let working_style = if selected == 0 {
+            theme::text().bg(theme::SELECTION)
+        } else {
+            theme::text()
+        };
+        let working_status = if self.session.editor.is_modified() {
+            "Unsaved changes"
+        } else {
+            "Saved"
+        };
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from("Working copy"),
+                Line::styled(working_status, theme::muted()),
             ])
-        }));
+            .style(working_style),
+            working,
+        );
+
+        let count = self.session.history.revisions.len();
+        let items = self
+            .session
+            .history
+            .revisions
+            .iter()
+            .enumerate()
+            .map(|(index, revision)| {
+                let label = crate::projects::sidebar_text(
+                    &format!("revision-{}", count - index),
+                    entries.width.saturating_sub(2),
+                );
+                let padding = usize::from(entries.width).saturating_sub(label.len() + 1);
+                let label = format!("{label}{}⋯", " ".repeat(padding));
+                let timestamp = time::OffsetDateTime::from_unix_timestamp(revision.timestamp);
+                let date = timestamp.map_or_else(
+                    |_| "Unknown date".into(),
+                    |date| {
+                        format!(
+                            "{:02}-{:02} {:02}:{:02}",
+                            date.month() as u8,
+                            date.day(),
+                            date.hour(),
+                            date.minute()
+                        )
+                    },
+                );
+                let detail = format!("{} · {date}", revision.label());
+                ListItem::new(vec![
+                    Line::from(label),
+                    Line::styled(detail, theme::muted()),
+                ])
+            });
+        // Keep the working copy outside the scrolling list so it always remains reachable.
+        let mut state = ListState::default()
+            .with_selected(selected.checked_sub(1))
+            .with_offset(self.session.history.selection.offset());
         frame.render_stateful_widget(
             List::new(items).highlight_style(theme::text().bg(theme::SELECTION)),
             entries,
-            &mut self.session.history.selection,
+            &mut state,
         );
-        let hint = self
-            .session
-            .history
-            .error
-            .as_deref()
-            .unwrap_or("Enter View · c Diff\nr Restore · n Name\nw Work · Tab Files");
-        frame.render_widget(Paragraph::new(hint).style(theme::muted()), footer);
+        *self.session.history.selection.offset_mut() = state.offset();
+
+        if let Some(error) = &self.session.history.error {
+            frame.render_widget(
+                Paragraph::new(error.as_str()).style(theme::muted()),
+                error_area,
+            );
+        }
+    }
+
+    fn history_entry_areas(&self, content: Rect) -> [Rect; 3] {
+        let error_rows = if self.session.history.error.is_some() {
+            HISTORY_ERROR_ROWS
+        } else {
+            0
+        };
+        Layout::vertical([
+            Constraint::Length(REVISION_ROWS),
+            Constraint::Min(0),
+            Constraint::Length(error_rows),
+        ])
+        .areas(content)
     }
 
     pub(super) fn history_mouse(
@@ -455,39 +531,26 @@ impl App {
         if layout.files.contains((mouse.column, mouse.row).into()) {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                 self.focus = Focus::Projects;
-                self.projects.files_focused = true;
-                if mouse.row == layout.files.y + 1 {
-                    if mouse.column < layout.files.x + 1 + FILES_TAB_WIDTH {
-                        self.session.history.visible = false;
-                        self.return_to_working_copy();
-                    } else {
-                        self.open_history();
-                    }
-                    return true;
-                }
-                if self.session.history.visible {
-                    let content = Projects::file_content_area(layout.files);
-                    let offset = self.session.history.selection.offset();
-                    let mut row = content.y;
-                    for index in offset..=self.session.history.revisions.len() {
-                        if row >= content.bottom().saturating_sub(HISTORY_FOOTER_ROWS) {
-                            break;
-                        }
-                        let height = if index == 0 { 1 } else { REVISION_ROWS };
-                        if mouse.row >= row
-                            && mouse.row < row + height
-                            && mouse.row < content.bottom().saturating_sub(HISTORY_FOOTER_ROWS)
-                        {
-                            self.session.history.selection.select(Some(index));
+                self.projects.history_focused = true;
+                let content = Projects::history_content_area(layout.files);
+                let [working, entries, _] = self.history_entry_areas(content);
+                let position = (mouse.column, mouse.row).into();
+                if working.contains(position) {
+                    self.return_to_working_copy();
+                    self.focus = Focus::Editor;
+                } else if entries.contains(position) {
+                    let index = self.session.history.selection.offset()
+                        + usize::from((mouse.row - entries.y) / REVISION_ROWS);
+                    if index < self.session.history.revisions.len() {
+                        self.session.history.selection.select(Some(index + 1));
+                        if mouse.column == entries.right().saturating_sub(1) {
+                            self.open_revision_menu();
+                        } else {
                             self.open_selected_revision();
-                            break;
                         }
-                        row += height;
                     }
-                    return true;
                 }
-            }
-            if self.session.history.visible {
+            } else {
                 let code = match mouse.kind {
                     MouseEventKind::ScrollUp => Some(KeyCode::Up),
                     MouseEventKind::ScrollDown => Some(KeyCode::Down),
@@ -496,8 +559,8 @@ impl App {
                 if let Some(code) = code {
                     self.handle_history_key(KeyEvent::new(code, KeyModifiers::NONE));
                 }
-                return true;
             }
+            return true;
         }
         if self.session.history.view.is_some()
             && layout.editor.contains((mouse.column, mouse.row).into())
@@ -530,11 +593,7 @@ impl App {
             view.revision.label(),
             view.revision.date_label()
         );
-        let subtitle = if view.compare {
-            "− Revision / + Working copy (including unsaved edits)"
-        } else {
-            "c Compare · Esc Working copy"
-        };
+        let subtitle = "m Actions · Esc Working copy";
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(label, theme::dialog_title()),
@@ -542,7 +601,7 @@ impl App {
             ]),
             title,
         );
-        let lines = view.source_lines(&self.session.editor.source());
+        let lines = view.source_lines();
         frame.render_widget(Paragraph::new(lines).scroll(view.scroll), body);
     }
 
@@ -583,7 +642,11 @@ impl App {
         }
     }
 
-    pub(super) fn draw_history_dialog(&self, frame: &mut Frame) {
+    pub(super) fn draw_history_dialog(&mut self, frame: &mut Frame) {
+        if let Some(HistoryDialog::Menu(menu)) = &mut self.session.history.dialog {
+            menu.draw(frame);
+            return;
+        }
         let Some(dialog) = &self.session.history.dialog else {
             return;
         };
@@ -598,6 +661,7 @@ impl App {
         );
         frame.render_widget(Clear, area);
         let title = match dialog {
+            HistoryDialog::Menu(_) => unreachable!(),
             HistoryDialog::Restore(_) => "Restore revision?",
             HistoryDialog::Name { .. } => "Name revision",
         };
@@ -614,6 +678,7 @@ impl App {
         ])
         .areas(inner);
         match dialog {
+            HistoryDialog::Menu(_) => unreachable!(),
             HistoryDialog::Restore(revision) => {
                 let message = format!(
                     "Restore {}? Unsaved work will be kept as a recovery checkpoint. All revisions remain.",

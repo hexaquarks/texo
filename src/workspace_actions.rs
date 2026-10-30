@@ -518,6 +518,8 @@ impl App {
 
     pub(super) fn open_document(&mut self, path: PathBuf) {
         if path == self.session.editor.path {
+            self.return_to_working_copy();
+            self.refresh_history();
             return;
         }
 
@@ -550,9 +552,9 @@ impl App {
         target.editor.end_drag();
         target.editor.apply_preferences(self.editor_preferences);
 
-        let files_focused = self.projects.files_focused;
+        let history_focused = self.projects.history_focused;
         self.projects = projects;
-        self.projects.files_focused = files_focused;
+        self.projects.history_focused = history_focused;
         self.prefix.cancel();
 
         self.restore_workspace_panes();
@@ -561,6 +563,8 @@ impl App {
         // Late results stay with the editor, undo stack, chat, and preview that requested them.
         let previous = std::mem::replace(&mut self.session, target);
         self.sessions.insert(previous.editor.path.clone(), previous);
+        self.return_to_working_copy();
+        self.refresh_history();
 
         if self.session.job.is_none()
             && self.session.rendered_source.is_none()
