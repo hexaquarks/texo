@@ -221,6 +221,37 @@ impl SettingsDialog {
         None
     }
 
+    fn navigate(&mut self, direction: char) {
+        use SettingsControl::*;
+
+        if self.focus == Mode && matches!(direction, 'h' | 'l') {
+            self.editor_preferences.mode = if direction == 'h' {
+                EditingMode::Standard
+            } else {
+                EditingMode::Vim
+            };
+            return;
+        }
+
+        self.focus = match (self.focus, direction) {
+            (Mode, 'j') => Wrap,
+            (Wrap, 'j') => ChangeFolder,
+            (ChangeFolder, 'j') => OpenConfig,
+            (OpenConfig, 'j') => Cancel,
+            (ReloadConfig, 'j') => Apply,
+            (Wrap, 'k') => Mode,
+            (ChangeFolder, 'k') => Wrap,
+            (OpenConfig | ReloadConfig, 'k') => ChangeFolder,
+            (Cancel, 'k') => OpenConfig,
+            (Apply, 'k') => ReloadConfig,
+            (OpenConfig, 'l') => ReloadConfig,
+            (ReloadConfig, 'h') => OpenConfig,
+            (Cancel, 'l') => Apply,
+            (Apply, 'h') => Cancel,
+            _ => self.focus,
+        };
+    }
+
     pub fn handle_event(&mut self, event: Event, screen: Rect) -> Option<SettingsAction> {
         if self.folder_open {
             return self.handle_folder_event(event, screen);
@@ -245,13 +276,10 @@ impl SettingsDialog {
                     };
                     self.focus = CONTROLS[next];
                 }
-                KeyCode::Left | KeyCode::Right if self.focus == SettingsControl::Mode => {
-                    self.editor_preferences.mode = if key.code == KeyCode::Left {
-                        EditingMode::Standard
-                    } else {
-                        EditingMode::Vim
-                    };
-                }
+                KeyCode::Up | KeyCode::Char('k') => self.navigate('k'),
+                KeyCode::Down | KeyCode::Char('j') => self.navigate('j'),
+                KeyCode::Left | KeyCode::Char('h') => self.navigate('h'),
+                KeyCode::Right | KeyCode::Char('l') => self.navigate('l'),
                 KeyCode::Enter | KeyCode::Char(' ') => return self.activate(self.focus),
                 _ => {}
             },
@@ -305,6 +333,26 @@ impl SettingsDialog {
                     (current + 1) % FOLDER_CONTROLS.len()
                 };
                 self.folder_focus = FOLDER_CONTROLS[next];
+            }
+            // Vim navigation is only active on buttons; the destination keeps literal typing.
+            Event::Key(key)
+                if self.folder_focus != FolderControl::Destination
+                    && key.modifiers.is_empty()
+                    && matches!(
+                        key.code,
+                        KeyCode::Char('h' | 'j' | 'k' | 'l')
+                            | KeyCode::Left
+                            | KeyCode::Right
+                            | KeyCode::Up
+                            | KeyCode::Down
+                    ) =>
+            {
+                self.folder_focus = match key.code {
+                    KeyCode::Char('h') | KeyCode::Left => FolderControl::Cancel,
+                    KeyCode::Char('l') | KeyCode::Right => FolderControl::Continue,
+                    KeyCode::Char('k') | KeyCode::Up => FolderControl::Destination,
+                    _ => self.folder_focus,
+                };
             }
             Event::Key(key) if key.code == KeyCode::Enter => return self.activate_folder_control(),
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
@@ -380,15 +428,7 @@ impl SettingsDialog {
 
         for (row, title) in [(0, "EDITOR"), (7, "WORKSPACE"), (12, "ADVANCED")] {
             frame.render_widget(
-                Paragraph::new(format!(
-                    "{title} {}",
-                    "─".repeat(usize::from(
-                        Self::inner(screen)
-                            .width
-                            .saturating_sub(title.len() as u16 + 1)
-                    ))
-                ))
-                .style(theme::muted()),
+                Paragraph::new(title).style(theme::muted()),
                 self.row(screen, row, 1),
             );
         }
@@ -467,7 +507,7 @@ impl SettingsDialog {
             self.row(screen, 19, 2),
         );
         frame.render_widget(
-            Paragraph::new("Tab move · Space toggle · Esc cancel").style(theme::muted()),
+            Paragraph::new("h/j/k/l / Tab move · Space toggle · Esc cancel").style(theme::muted()),
             self.row(screen, 24, 1),
         );
     }

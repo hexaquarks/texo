@@ -13,7 +13,7 @@ test('grouped preferences stage toggles and protect work across apply and cancel
         await terminal.getByText('EDITOR').expect();
         await terminal.getByText('WORKSPACE').expect();
         await terminal.getByText('ADVANCED').expect();
-        await terminal.press('Right', 'Tab', 'Space');
+        await terminal.press('l', 'j', 'Space');
         await terminal.getByText('Disabled').expect();
         await terminal.getByText('Preference changes are not applied yet.').expect();
         await terminal.screenshot(join(ARTIFACTS, 'settings-grouped.png'));

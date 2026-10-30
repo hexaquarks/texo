@@ -709,3 +709,67 @@ fn editing_a_validated_destination_removes_the_confirmation() -> anyhow::Result<
     assert_eq!(app.projects.root(), directory.path());
     Ok(())
 }
+
+#[test]
+fn settings_vim_navigation_follows_rows_and_preserves_folder_typing() -> anyhow::Result<()> {
+    use crate::settings::SettingsControl;
+
+    let (_directory, mut app) = application()?;
+    let screen = Rect::new(0, 0, 100, 35);
+    app.open_settings();
+    for (key, focus) in [
+        ('j', SettingsControl::Wrap),
+        ('j', SettingsControl::ChangeFolder),
+        ('j', SettingsControl::OpenConfig),
+        ('l', SettingsControl::ReloadConfig),
+        ('j', SettingsControl::Apply),
+        ('h', SettingsControl::Cancel),
+        ('k', SettingsControl::OpenConfig),
+        ('k', SettingsControl::ChangeFolder),
+        ('k', SettingsControl::Wrap),
+        ('k', SettingsControl::Mode),
+    ] {
+        app.handle_settings_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+            screen,
+        );
+        assert!(app.settings.as_ref().unwrap().focus == focus);
+    }
+    for (key, mode) in [
+        ('l', crate::config::EditingMode::Vim),
+        ('h', crate::config::EditingMode::Standard),
+    ] {
+        app.handle_settings_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+            screen,
+        );
+        assert!(app.settings.as_ref().unwrap().editor_preferences.mode == mode);
+    }
+
+    app.begin_folder_change()?;
+    for key in ['h', 'j', 'k', 'l'] {
+        app.handle_settings_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+            screen,
+        );
+    }
+    assert_eq!(app.settings.as_ref().unwrap().value(), "hjkl");
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        screen,
+    );
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+        screen,
+    );
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
+        screen,
+    );
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        screen,
+    );
+    assert!(!app.settings.as_ref().unwrap().folder_open);
+    Ok(())
+}
