@@ -525,8 +525,8 @@ impl App {
                 self.open_project_dialog(Action::RecoverSource)
             }
             KeyCode::Char('s') => match self.session.editor.save() {
-                Ok(()) => {
-                    self.session.status = "Saved TeX document.".into();
+                Ok(warning) => {
+                    self.session.status = warning.unwrap_or_else(|| "Saved TeX document.".into());
                     self.refresh_projects();
                     self.projects.select_path(&self.session.editor.path);
                 }

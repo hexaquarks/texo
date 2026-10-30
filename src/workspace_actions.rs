@@ -483,8 +483,11 @@ impl App {
                 None
             }
             Action::RecoverSource => {
-                self.session.editor.recover_missing()?;
+                let warning = self.session.editor.recover_missing()?;
                 self.start_render();
+                if let Some(warning) = warning {
+                    self.session.status = warning;
+                }
                 None
             }
             _ => None,

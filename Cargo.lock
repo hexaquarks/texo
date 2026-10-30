@@ -3789,6 +3789,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "textwrap",
+ "time",
  "tokio",
  "toml_edit",
  "uuid",
