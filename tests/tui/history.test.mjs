@@ -49,13 +49,13 @@ test('history previews, restores with recovery, names revisions, and survives re
         assert.equal(await readFile(document, 'utf8'), second);
 
         await terminal.press('m');
-        await terminal.getByText('Restore…').click();
+        await terminal.getByText('Restore').click();
         await terminal.getByText('Restore revision?').expect();
         await terminal.press('Escape');
         await terminal.getByText('Restore revision?').expect({ not: true });
         assert.equal(await readFile(document, 'utf8'), second);
         await terminal.press('m');
-        await terminal.getByText('Restore…').click();
+        await terminal.getByText('Restore').click();
         await terminal.getByText('Restore revision?').expect();
         await terminal.press('Enter');
         await terminal.getByText('Restore revision?').expect({ not: true });
@@ -68,7 +68,7 @@ test('history previews, restores with recovery, names revisions, and survives re
         assert.equal(journal.revisions[3].kind, 'Recovery');
         assert.equal(journal.revisions[3].source, unsaved);
         await terminal.press('Down', 'm');
-        await terminal.getByText('Rename…').click();
+        await terminal.getByText('Rename').click();
         await terminal.getByText('Name revision').expect();
         await paste(terminal, 'Application ready');
         await terminal.press('Enter');
@@ -95,7 +95,7 @@ test('permanent history and resume switching preserve unsaved working copies', a
         await terminal.getByText('History', { whitespace: 'exact' }).expect();
         await terminal.getByText('revision-1').expect();
         await terminal.getByText('⋯').first().click();
-        await terminal.getByText('Restore…').expect();
+        await terminal.getByText('Restore').expect();
         await terminal.screenshot(join(ARTIFACTS, 'history-menu.png'));
         await terminal.getByText('Open', { whitespace: 'exact' }).click();
         await terminal.getByText('read-only').expect();

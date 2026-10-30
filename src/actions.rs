@@ -47,8 +47,8 @@ pub struct ActionMenu {
 
 const REVISION_ACTIONS: [(Action, &str); 3] = [
     (Action::OpenRevision, "Open"),
-    (Action::RestoreRevision, "Restore…"),
-    (Action::RenameRevision, "Rename…"),
+    (Action::RestoreRevision, "Restore"),
+    (Action::RenameRevision, "Rename"),
 ];
 
 impl ActionMenu {
