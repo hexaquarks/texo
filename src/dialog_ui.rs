@@ -8,7 +8,7 @@ use ratatui_textarea::TextArea;
 use texo::theme;
 
 const FORM_WIDTH: u16 = 76;
-const FOOTER_HEIGHT: u16 = 6;
+const FOOTER_HEIGHT: u16 = 4;
 
 #[derive(Clone, Copy)]
 pub enum DialogAction {
@@ -40,7 +40,7 @@ impl FormLayout {
             height: inner.height.saturating_sub(FOOTER_HEIGHT),
             ..inner
         };
-        let button_row = Rect::new(inner.x, body.bottom(), inner.width, inner.height.min(3));
+        let button_row = Rect::new(inner.x, body.bottom(), inner.width, inner.height.min(1));
         let action_width = (action.chars().count() as u16 + 4).min(button_row.width / 2);
         let cancel_width = 12.min(button_row.width.saturating_sub(action_width + 2));
         let buttons = [
@@ -155,8 +155,7 @@ pub fn button(frame: &mut Frame, area: Rect, label: &str, focused: bool, kind: B
     frame.render_widget(
         Paragraph::new(label)
             .alignment(Alignment::Center)
-            .style(style)
-            .block(Block::default().padding(Padding::vertical(1))),
+            .style(style),
         area,
     );
 }
