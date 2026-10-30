@@ -321,7 +321,8 @@ fn review_keeps_operation_errors_visible_and_prefix_help_accessible() -> anyhow:
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(screen.contains("Select pane"));
-    assert!(!screen.contains(&app.session.status));
+    assert!(screen.contains("Shortcuts"));
+    assert!(!screen.contains("Select pane"));
+    assert!(screen.contains(&app.session.status));
     Ok(())
 }

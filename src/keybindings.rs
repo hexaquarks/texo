@@ -76,9 +76,10 @@ impl Prefix {
             }
 
             self.armed = false;
-            let action_modifiers = event.modifiers.is_empty()
-                || (event.modifiers == KeyModifiers::SHIFT
-                    && matches!(event.code, KeyCode::Char(character) if character.is_ascii_uppercase()));
+            // Enhanced keyboard protocols retain Shift on uppercase keys and '?'.
+            let shifted_action = event.modifiers == KeyModifiers::SHIFT
+                && matches!(event.code, KeyCode::Char('A'..='Z' | '?'));
+            let action_modifiers = event.modifiers.is_empty() || shifted_action;
 
             return if action_modifiers && event.code != KeyCode::Esc {
                 self.record_resize_repeat(event, now);

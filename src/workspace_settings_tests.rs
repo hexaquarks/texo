@@ -241,7 +241,7 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
         area,
     );
     app.handle_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+        Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
         area,
     );
     assert!(app.settings.is_some());
@@ -274,11 +274,11 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
     let footer: String = (0..area.width)
         .map(|x| terminal.backend().buffer()[(x, area.height - 1)].symbol())
         .collect();
+    let settings_key =
+        footer.find(&format!("{} s", app.prefix.label())).unwrap() + app.prefix.label().len() + 1;
+    let settings_key = settings_key as u16;
     let footer = footer.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(footer.contains(&format!("{} s Settings", app.prefix.label())));
-    let settings_key = (0..area.width)
-        .find(|x| terminal.backend().buffer()[(*x, area.height - 1)].symbol() == "s")
-        .unwrap();
     assert_eq!(
         terminal.backend().buffer()[(settings_key, area.height - 1)].bg,
         theme::KEYCAP

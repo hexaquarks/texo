@@ -117,50 +117,7 @@ impl App {
         self.draw_preview(frame, preview, &source_state);
         self.draw_diagnostics(frame, &layout);
 
-        let prefix = self.prefix.label();
-        let settings_hint = if self.prefix.armed {
-            let resize_hint = format!("Resize {} cells", super::pane_navigation::PANE_RESIZE_CELLS);
-            let mut bindings = vec![
-                ("h/j/k/l", "Select pane"),
-                ("H/J/K/L", resize_hint.as_str()),
-                ("n", "New"),
-                ("i", "Import"),
-                ("r", "Resumes"),
-                ("f", "Files"),
-                ("s", "Settings"),
-                ("b", "Build"),
-                ("w", "Save"),
-                ("e", "Export"),
-                ("c", "Cycle pane"),
-                ("v", "Refresh"),
-                ("E / D", "Error details / summary"),
-                ("t", "Sidebar"),
-            ];
-            if matches!(self.focus, Focus::Editor | Focus::Assistant) {
-                bindings.insert(0, ("u", "Maximize/restore"));
-            }
-            bindings.push(("Esc", "Cancel"));
-
-            let mut hint = Line::from(vec![theme::keycap(&prefix), Span::raw("  ")]);
-            hint.extend(theme::shortcuts(&bindings).spans);
-            hint
-        } else {
-            theme::shortcuts(&[(&prefix, "Prefix"), (&format!("{prefix} s"), "Settings")])
-        };
-
-        // The review title replaces the usual status title. Keep operation results visible below it.
-        let show_review_status = self.session.proposal_review.is_some()
-            && !self.session.status.is_empty()
-            && !self.prefix.armed;
-        let footer = if show_review_status {
-            Paragraph::new(self.session.status.as_str())
-        } else {
-            Paragraph::new(settings_hint).alignment(ratatui::layout::Alignment::Right)
-        };
-        frame.render_widget(
-            footer.style(theme::muted().bg(theme::ELEVATED)),
-            layout.status,
-        );
+        self.draw_status_bar(frame, layout.status);
 
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
@@ -180,6 +137,45 @@ impl App {
         if self.diagnostic_details_open() {
             self.draw_diagnostic_details(frame);
         }
+        if self.shortcuts_open {
+            self.draw_shortcut_help(frame);
+        }
+    }
+
+    fn draw_status_bar(&self, frame: &mut Frame, area: Rect) {
+        let prefix = self.prefix.label();
+        let help = format!("{prefix} ?");
+        let settings = format!("{prefix} s");
+        let mut hint = theme::shortcuts(&[
+            (&prefix, "Prefix"),
+            (&help, "Shortcuts"),
+            (&settings, "Settings"),
+        ]);
+        if hint.width() > usize::from(area.width) {
+            hint = theme::shortcuts(&[(&help, "Help"), (&settings, "Settings")]);
+        }
+        if hint.width() > usize::from(area.width) {
+            hint = theme::shortcuts(&[(&help, "Help")]);
+        }
+
+        frame.render_widget(
+            Block::default().style(theme::muted().bg(theme::ELEVATED)),
+            area,
+        );
+        let [status, controls] = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(hint.width().min(usize::from(area.width)) as u16),
+        ])
+        .areas(area);
+
+        // Review replaces the editor title, so retain operation results beside the controls.
+        if self.session.proposal_review.is_some() {
+            frame.render_widget(
+                Paragraph::new(self.session.status.as_str()).style(theme::muted()),
+                status,
+            );
+        }
+        frame.render_widget(Paragraph::new(hint).style(theme::muted()), controls);
     }
 
     pub(super) fn draw_editor(
