@@ -56,7 +56,7 @@ impl App {
         }
 
         if self.session.history.dialog.is_some() {
-            self.handle_history_dialog(event);
+            self.handle_history_dialog(event, area);
             return false;
         }
 

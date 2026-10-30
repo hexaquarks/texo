@@ -27,6 +27,9 @@ pub enum Action {
     DuplicateResume,
     ReloadSource,
     RecoverSource,
+    OpenRevision,
+    RestoreRevision,
+    RenameRevision,
 }
 
 const RESUME_ACTIONS: [(Action, &str); 4] = [
@@ -42,7 +45,21 @@ pub struct ActionMenu {
     title: String,
 }
 
+const REVISION_ACTIONS: [(Action, &str); 3] = [
+    (Action::OpenRevision, "Open"),
+    (Action::RestoreRevision, "Restore…"),
+    (Action::RenameRevision, "Rename…"),
+];
+
 impl ActionMenu {
+    pub fn for_revision(number: usize) -> Self {
+        Self {
+            state: ListState::default().with_selected(Some(0)),
+            entries: &REVISION_ACTIONS,
+            title: format!("revision-{number}"),
+        }
+    }
+
     pub fn for_resume(name: &str) -> Self {
         Self {
             state: ListState::default().with_selected(Some(0)),

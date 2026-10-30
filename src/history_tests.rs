@@ -276,7 +276,10 @@ fn history_layout_handles_tiny_windows_and_footer_clicks_in_long_histories() -> 
         app.session.history.selection.select(Some(1));
         app.handle_history_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         terminal.draw(|frame| app.draw(frame))?;
-        app.handle_history_dialog(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        app.handle_history_dialog(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            SCREEN,
+        );
     }
     Ok(())
 }
@@ -419,5 +422,48 @@ fn prefix_vertical_navigation_switches_sidebar_sections_without_changing_work() 
         assert_eq!(app.projects.history_focused, history_focused);
         assert_eq!(app.session.editor.source(), source);
     }
+    Ok(())
+}
+
+#[test]
+fn revision_menu_cancels_safely_and_restoring_still_requires_confirmation() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    app.session.editor.text.insert_str("Unsaved ");
+    let source = app.session.editor.source();
+    app.open_history();
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('m'));
+    assert!(matches!(
+        app.session.history.dialog,
+        Some(history_view::HistoryDialog::Menu(_))
+    ));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.session.history.dialog.is_none());
+    assert_eq!(app.session.editor.source(), source);
+
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.session.history.view.is_some());
+    app.session.history.view.as_mut().unwrap().job = None;
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        app.session.history.dialog,
+        Some(history_view::HistoryDialog::Restore(_))
+    ));
+    assert_eq!(app.session.editor.source(), source);
+    press(&mut app, KeyCode::Esc);
+
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: source.clone(),
+        source_after: "Proposal".into(),
+    }));
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.session.history.dialog.is_none());
+    assert!(app.session.status.contains("Resolve the AI proposal"));
+    assert_eq!(app.session.editor.source(), source);
     Ok(())
 }

@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::{App, Focus};
 use crate::{
+    actions::{Action, ActionMenu},
     history::{self, Revision},
     projects::Projects,
     render_job::RenderJob,
@@ -41,6 +42,7 @@ pub(super) struct HistoricalView {
 }
 
 pub(super) enum HistoryDialog {
+    Menu(ActionMenu),
     Restore(Revision),
     Name {
         id: Uuid,
@@ -214,6 +216,7 @@ impl App {
                     .select(Some((current + 1).min(last)));
             }
             KeyCode::Enter => self.open_selected_revision(),
+            KeyCode::Char('m') => self.open_revision_menu(),
             KeyCode::Esc | KeyCode::Char('w') => self.return_to_working_copy(),
             KeyCode::Char('r') => {
                 if self.session.proposal_review.is_some() {
@@ -240,7 +243,35 @@ impl App {
         }
     }
 
+    pub(super) fn open_revision_menu(&mut self) {
+        if let Some(index) = self.session.history.selection.selected()
+            && index > 0
+            && index <= self.session.history.revisions.len()
+        {
+            let number = self.session.history.revisions.len() - index + 1;
+            self.session.history.dialog =
+                Some(HistoryDialog::Menu(ActionMenu::for_revision(number)));
+        }
+    }
+
     pub(super) fn handle_historical_source_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('m') && key.modifiers.is_empty() {
+            if let Some(view) = &self.session.history.view {
+                let index = self
+                    .session
+                    .history
+                    .revisions
+                    .iter()
+                    .position(|revision| revision.id == view.revision.id);
+                self.session
+                    .history
+                    .selection
+                    .select(index.map(|index| index + 1));
+            }
+            self.open_revision_menu();
+            return;
+        }
+
         if key.code == KeyCode::Esc {
             self.return_to_working_copy();
             return;
@@ -292,14 +323,50 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn handle_history_dialog(&mut self, event: Event) {
+    pub(super) fn handle_history_dialog(&mut self, event: Event, screen: Rect) {
         let Some(mut dialog) = self.session.history.dialog.take() else {
             return;
         };
+        if let HistoryDialog::Menu(menu) = &mut dialog {
+            let action = match event {
+                Event::Key(key) => match key.code {
+                    KeyCode::Esc => return,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        menu.move_selection(false);
+                        None
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        menu.move_selection(true);
+                        None
+                    }
+                    KeyCode::Enter => Some(menu.selected()),
+                    _ => None,
+                },
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    menu.click(screen, mouse.column, mouse.row)
+                }
+                _ => None,
+            };
+            if let Some(action) = action {
+                match action {
+                    Action::OpenRevision => self.open_selected_revision(),
+                    Action::RestoreRevision => self
+                        .handle_history_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+                    Action::RenameRevision => self
+                        .handle_history_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+                    _ => {}
+                }
+                return;
+            }
+            self.session.history.dialog = Some(dialog);
+            return;
+        }
+
         match event {
             Event::Key(key) if key.code == KeyCode::Esc => return,
             Event::Key(key) if key.code == KeyCode::Enter => {
                 let result = match &dialog {
+                    HistoryDialog::Menu(_) => unreachable!(),
                     HistoryDialog::Restore(revision) => self.restore_history_revision(revision),
                     HistoryDialog::Name { id, input } => {
                         history::rename(&self.session.editor.path, *id, &input.lines().join(""))
@@ -397,7 +464,12 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, revision)| {
-                let label = format!("revision-{}", count - index);
+                let label = crate::projects::sidebar_text(
+                    &format!("revision-{}", count - index),
+                    entries.width.saturating_sub(2),
+                );
+                let padding = usize::from(entries.width).saturating_sub(label.len() + 1);
+                let label = format!("{label}{}⋯", " ".repeat(padding));
                 let timestamp = time::OffsetDateTime::from_unix_timestamp(revision.timestamp);
                 let date = timestamp.map_or_else(
                     |_| "Unknown date".into(),
@@ -471,7 +543,11 @@ impl App {
                         + usize::from((mouse.row - entries.y) / REVISION_ROWS);
                     if index < self.session.history.revisions.len() {
                         self.session.history.selection.select(Some(index + 1));
-                        self.open_selected_revision();
+                        if mouse.column == entries.right().saturating_sub(1) {
+                            self.open_revision_menu();
+                        } else {
+                            self.open_selected_revision();
+                        }
                     }
                 }
             } else {
@@ -517,7 +593,7 @@ impl App {
             view.revision.label(),
             view.revision.date_label()
         );
-        let subtitle = "Esc Working copy";
+        let subtitle = "m Actions · Esc Working copy";
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(label, theme::dialog_title()),
@@ -566,7 +642,11 @@ impl App {
         }
     }
 
-    pub(super) fn draw_history_dialog(&self, frame: &mut Frame) {
+    pub(super) fn draw_history_dialog(&mut self, frame: &mut Frame) {
+        if let Some(HistoryDialog::Menu(menu)) = &mut self.session.history.dialog {
+            menu.draw(frame);
+            return;
+        }
         let Some(dialog) = &self.session.history.dialog else {
             return;
         };
@@ -581,6 +661,7 @@ impl App {
         );
         frame.render_widget(Clear, area);
         let title = match dialog {
+            HistoryDialog::Menu(_) => unreachable!(),
             HistoryDialog::Restore(_) => "Restore revision?",
             HistoryDialog::Name { .. } => "Name revision",
         };
@@ -597,6 +678,7 @@ impl App {
         ])
         .areas(inner);
         match dialog {
+            HistoryDialog::Menu(_) => unreachable!(),
             HistoryDialog::Restore(revision) => {
                 let message = format!(
                     "Restore {}? Unsaved work will be kept as a recovery checkpoint. All revisions remain.",
