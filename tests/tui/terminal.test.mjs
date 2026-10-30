@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { ARTIFACTS, RESUME, UI_TIMEOUT_MS, withTexo, paste, prefix, createResume, documentPath } from './helpers.mjs';
+import {
+    exportDestination, ARTIFACTS, RESUME, UI_TIMEOUT_MS, withTexo, paste, prefix, createResume, documentPath,
+} from './helpers.mjs';
 
 const executeFile = promisify(execFile);
 const PDF_INSPECTION_TIMEOUT_MS = 10_000;
@@ -21,10 +23,9 @@ test('create, paste Unicode, save, build, and export through the terminal', asyn
         await prefix(terminal, 'b');
         await terminal.getByText('PDF current').expect();
         await prefix(terminal, 'e');
-        await terminal.getByText('Export PDF').expect();
-        await terminal.press('Home', 'Shift+End');
+        await terminal.getByText('Export PDF').first().expect();
         const exported = join(root, 'application.pdf');
-        await paste(terminal, exported);
+        await exportDestination(terminal, exported);
         await terminal.press('Enter');
         await terminal.getByText('Exported').expect();
         const { stdout } = await executeFile('pdftotext', [exported, '-'], {
@@ -60,10 +61,12 @@ test('clicking the import name field directs typing into that field', async () =
         const source = join(sourceDirectory, 'original.tex');
         await writeFile(source, RESUME);
         await prefix(terminal, 'i');
-        await terminal.getByText('Source .tex file').expect();
+        await terminal.getByText('Choose a .tex file').expect();
         await paste(terminal, source);
         await terminal.getByText('Imported resume').click();
         await paste(terminal, 'Mouse imported');
+        await terminal.press('Enter');
+        await terminal.getByText('Choose the TeX entrypoint').expect();
         await terminal.press('Enter');
         await terminal.getByText('PDF current').expect();
         await terminal.getByText('Mouse imported').first().expect();
@@ -78,7 +81,7 @@ test('mouse selection chooses the requested import entrypoint', async () => {
         await writeFile(join(source, 'first.tex'), RESUME);
         await writeFile(join(source, 'second.tex'), RESUME.replace('workflow', 'second entrypoint'));
         await prefix(terminal, 'i');
-        await terminal.getByText('Source .tex file').expect();
+        await terminal.getByText('Choose a .tex file').expect();
         await paste(terminal, source);
         await terminal.press('Enter');
         await terminal.getByText('Choose the TeX entrypoint').expect();
@@ -102,7 +105,7 @@ test('a scrolled import picker maps clicks after resizing', async () => {
         }
 
         await prefix(terminal, 'i');
-        await terminal.getByText('Source .tex file').expect();
+        await terminal.getByText('Choose a .tex file').expect();
         await paste(terminal, source);
         await terminal.press('Enter');
         await terminal.getByText('Choose the TeX entrypoint').expect();

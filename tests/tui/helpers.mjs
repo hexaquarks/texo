@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TuiTest } from '@microsoft/tui-test';
 
@@ -92,4 +92,12 @@ export async function action(terminal, name) {
 export async function replaceField(terminal, value) {
     await terminal.press('Home', 'Shift+End');
     await paste(terminal, value);
+}
+
+export async function exportDestination(terminal, destination) {
+    await terminal.getByText('Folder', { whitespace: 'exact' }).click();
+    await terminal.press('Home', 'Shift+End');
+    await paste(terminal, dirname(destination));
+    await terminal.press('Tab');
+    await replaceField(terminal, basename(destination));
 }
