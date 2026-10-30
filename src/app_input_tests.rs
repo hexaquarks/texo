@@ -195,7 +195,7 @@ fn typing_q_edits_and_ctrl_q_quits_immediately() -> anyhow::Result<()> {
     assert!(app.session.editor.source().starts_with('q'));
     let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
     assert!(app.handle_key(quit));
-    app.actions = Some(ActionMenu::open());
+    app.actions = Some(ActionMenu::for_resume("Example"));
     assert!(app.handle_event(Event::Key(quit), Rect::new(0, 0, 160, 50)));
     Ok(())
 }
@@ -230,13 +230,13 @@ fn application_actions_bypass_editor_shortcuts_and_use_the_configured_prefix() -
     let (_directory, mut app) = application()?;
     let area = Rect::new(0, 0, 160, 45);
     let source = app.session.editor.source();
-    app.perform_action(Action::FocusAssistant);
+    app.handle_control_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
     assert!(app.focus == Focus::Assistant);
-    app.perform_action(Action::FocusAssistant);
+    app.handle_control_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
     assert!(app.focus == Focus::Editor);
     app.session.rendered_source = Some(source.clone());
     app.session.rendered_pdf = Some(app.session.editor.path.with_extension("pdf"));
-    app.perform_action(Action::Export);
+    app.open_export();
     assert!(app.export.is_some());
     app.export = None;
     app.session.editor.text.insert_str("Saved through prefix ");
@@ -1315,18 +1315,20 @@ fn vim_menu_navigation_leaves_editable_fields_and_document_untouched() -> anyhow
         app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), area);
     };
 
-    app.actions = Some(ActionMenu::open());
+    app.actions = Some(ActionMenu::for_resume("Example"));
     press(&mut app, KeyCode::Char('j'));
     assert!(matches!(
         app.actions.as_ref().unwrap().selected(),
-        Action::ImportResume
+        Action::LabelResume
     ));
     press(&mut app, KeyCode::Char('k'));
     assert!(matches!(
         app.actions.as_ref().unwrap().selected(),
-        Action::NewResume
+        Action::RenameResume
     ));
-    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
+
+    app.open_project_dialog(Action::NewResume);
     assert!(app.project_dialog.is_some());
     press(&mut app, KeyCode::Char('j'));
     press(&mut app, KeyCode::Char('k'));
@@ -1562,5 +1564,24 @@ fn narrow_editor_prioritizes_status_over_the_expansion_control() -> anyhow::Resu
         .collect();
     assert!(header.contains("Proposal is stale"));
     assert!(app.editor_maximize_button(area).is_empty());
+    Ok(())
+}
+
+#[test]
+fn removed_actions_shortcuts_do_not_open_an_overlay() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 120, 35);
+    let source = app.session.editor.source();
+
+    pane_prefix(&mut app, 'p', KeyModifiers::NONE, area);
+    assert!(!app.overlay_open());
+    assert_eq!(app.session.editor.source(), source);
+
+    app.focus = Focus::Preview;
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)),
+        area,
+    );
+    assert!(!app.overlay_open());
     Ok(())
 }

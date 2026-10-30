@@ -1,13 +1,11 @@
 use std::path::PathBuf;
 
 use ratatui::{
-    crossterm::event::{
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-    },
+    crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
     layout::{Position, Rect},
 };
 
-use super::{App, Focus, resume_session::ResumeSession};
+use super::{App, resume_session::ResumeSession};
 use crate::{
     actions::{Action, ActionMenu, ExportDialog},
     config::Settings,
@@ -289,74 +287,10 @@ impl App {
     }
 
     pub(super) fn perform_action(&mut self, action: Action) -> bool {
-        let key = match action {
-            Action::NewResume
-            | Action::ImportResume
-            | Action::RenameResume
-            | Action::DuplicateResume
-            | Action::ReloadSource
-            | Action::RecoverSource => {
-                self.open_project_dialog(action);
-                return false;
-            }
-            Action::FocusResumes | Action::FocusFiles => {
-                self.projects_visible = true;
-                self.focus = Focus::Projects;
-                self.projects.files_focused = matches!(action, Action::FocusFiles);
-                return false;
-            }
-            Action::WorkspaceWarnings => {
-                self.clear_diagnostics();
-                self.session.diagnostics = Some(self.projects.catalog.warnings.join("\n"));
-                return false;
-            }
-            Action::LabelResume => {
-                self.open_label_dialog();
-                return false;
-            }
-            Action::Settings => {
-                self.open_settings();
-                return false;
-            }
-            Action::Build => 'b',
-            Action::Export => 'e',
-            Action::Save => 's',
-            Action::ToggleProjects => 't',
-            Action::Quit => return true,
-            Action::FocusAssistant => 'j',
-            Action::ClearChat => {
-                self.discard_proposal();
-                self.session.assistant.reset();
-                self.session.status = "Conversation cleared.".into();
-                return false;
-            }
-            Action::ReviewEdit => {
-                self.restore_workspace_panes();
-                if self.session.proposal_review.is_some() {
-                    self.focus = Focus::Editor;
-                } else {
-                    self.session.status = "No proposed edit to review.".into();
-                }
-                return false;
-            }
-            Action::ScrollUp | Action::ScrollDown => {
-                self.active_preview()
-                    .scroll(matches!(action, Action::ScrollUp));
-                return false;
-            }
-            Action::PreviousPage | Action::NextPage => {
-                let result = if matches!(action, Action::PreviousPage) {
-                    self.active_preview().previous_page()
-                } else {
-                    self.active_preview().next_page()
-                };
-                if let Err(error) = result {
-                    self.report_error(error);
-                }
-                return false;
-            }
-        };
-        self.handle_control_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL));
+        match action {
+            Action::LabelResume => self.open_label_dialog(),
+            _ => self.open_project_dialog(action),
+        }
         false
     }
 

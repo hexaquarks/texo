@@ -142,23 +142,6 @@ fn transcript_uses_prompt_markers_and_compact_plain_responses() {
 }
 
 #[test]
-fn reset_removes_document_specific_conversation_and_proposal() {
-    let mut assistant = Assistant::new();
-    assistant
-        .messages
-        .push(Message::new("user", "private details".into(), false));
-    assistant.input.insert_str("draft prompt");
-    assistant.proposed_edit = Some(ProposedEdit {
-        source_before: "old".into(),
-        source_after: "new".into(),
-    });
-    assistant.reset();
-    assert!(assistant.messages.is_empty());
-    assert!(assistant.proposal().is_none());
-    assert_eq!(assistant.input.lines(), &[""]);
-}
-
-#[test]
 fn click_moves_cursor_inside_composer_and_ignores_history() {
     let mut assistant = Assistant::new();
     assistant.input.insert_str("hello world");

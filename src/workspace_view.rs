@@ -130,7 +130,6 @@ impl App {
                 ("s", "Settings"),
                 ("b", "Build"),
                 ("w", "Save"),
-                ("p", "Actions"),
                 ("e", "Export"),
                 ("c", "Cycle pane"),
                 ("v", "Refresh"),
@@ -164,7 +163,7 @@ impl App {
         );
 
         if let Some(menu) = &mut self.actions {
-            menu.draw(frame, &self.prefix.label());
+            menu.draw(frame);
         }
         if let Some(export) = &mut self.export {
             export.draw(frame);
@@ -191,8 +190,11 @@ impl App {
     ) {
         if self.session.empty_workspace {
             let prompt = vec![
-                Line::from("Create a resume with +, or Import from Actions."),
-                theme::shortcuts(&[(&format!("{} p", self.prefix.label()), "Actions")]),
+                Line::from("Create or import a resume."),
+                theme::shortcuts(&[
+                    (&format!("{} n", self.prefix.label()), "New"),
+                    (&format!("{} i", self.prefix.label()), "Import"),
+                ]),
                 Line::from("Existing loose TeX files stay untouched."),
             ];
             frame.render_widget(
@@ -229,9 +231,9 @@ impl App {
                 ""
             };
             let label = if !self.session.editor.path.is_file() {
-                "Source missing · Actions → Restore source".into()
+                "Source missing · Save to restore source".into()
             } else if matches!(source_state, Ok(crate::editor::DiskState::Changed)) {
-                "Source changed externally · Actions → Reload source".into()
+                "Source changed externally · Manage → Reload source".into()
             } else if source_state.is_err() {
                 "Source unreadable · Your editor text is preserved".into()
             } else if self.session.proposal_review.is_some() {

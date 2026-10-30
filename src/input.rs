@@ -10,12 +10,7 @@ use super::{
     App, Focus,
     workspace_view::{WorkspaceLayout, below_header, pane_content, preview_header},
 };
-use crate::{
-    actions::{Action, ActionMenu},
-    assistant::Assistant,
-    keybindings::PrefixInput,
-    projects::Projects,
-};
+use crate::{actions::Action, assistant::Assistant, keybindings::PrefixInput, projects::Projects};
 
 impl App {
     pub(super) fn handle_event(&mut self, event: Event, area: Rect) -> bool {
@@ -347,7 +342,6 @@ impl App {
                 self.projects.files_focused = true;
             }
             KeyCode::Char('b') => self.start_render(),
-            KeyCode::Char('p') => self.actions = Some(ActionMenu::open()),
             KeyCode::Char('e') => self.open_export(),
             KeyCode::Char('v') => self.refresh_projects(),
             KeyCode::Char('w') => {
@@ -495,7 +489,6 @@ impl App {
                 };
             }
             KeyCode::Char('b') => self.start_render(),
-            KeyCode::Char('p') => self.actions = Some(ActionMenu::open()),
             KeyCode::Char('e') => self.open_export(),
             KeyCode::Char('t') => {
                 self.projects_visible = !self.projects_visible;

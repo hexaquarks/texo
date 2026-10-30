@@ -233,7 +233,7 @@ impl Projects {
             );
         } else if inner.height > HEADER_HEIGHT {
             let note = if !self.catalog.warnings.is_empty() {
-                format!("{} invalid projects · Actions", self.catalog.warnings.len())
+                format!("{} invalid projects", self.catalog.warnings.len())
             } else {
                 "No resumes yet".into()
             };

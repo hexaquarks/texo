@@ -299,11 +299,6 @@ impl Assistant {
         }
     }
 
-    /// Cancel before clearing so a late reply can never appear in another document's chat.
-    pub fn reset(&mut self) {
-        *self = Self::new();
-    }
-
     pub fn proposal(&self) -> Option<&ProposedEdit> {
         self.proposed_edit.as_ref()
     }

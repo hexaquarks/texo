@@ -182,7 +182,7 @@ fn empty_workspace_to_revised_resume_export_and_reopen() -> Result<()> {
     assert_eq!(fs::read_to_string(&document)?, final_source);
 
     let exported = root.join("application.pdf");
-    app.perform_action(Action::Export);
+    app.open_export();
     app.export.as_mut().unwrap().input.select_all();
     app.handle_event(
         Event::Paste(exported.to_string_lossy().into_owned()),
@@ -341,7 +341,7 @@ fn failed_pdf_publish_preserves_the_review_and_can_be_retried() -> Result<()> {
     assert!(app.session.diagnostics.is_none());
     assert!(!draft_pdf.exists());
     assert!(pdf_text(&published)?.contains("Backend engineer"));
-    app.perform_action(Action::Save);
+    app.handle_control_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
     assert!(fs::read_to_string(&document)?.contains("Backend engineer"));
     app.open_export();
     assert!(app.export.is_some());
@@ -471,7 +471,7 @@ fn external_source_change_blocks_save_and_reload_cancels_pending_work() -> Resul
     let accepted = app.session.editor.source();
     let external = FULL_RESUME.replace("Software engineer.", "External edit.");
     fs::write(&document, &external)?;
-    app.perform_action(Action::Save);
+    app.handle_control_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
     assert_eq!(fs::read_to_string(&document)?, external);
     assert_eq!(app.session.editor.source(), accepted);
     assert!(app.session.editor.is_modified());

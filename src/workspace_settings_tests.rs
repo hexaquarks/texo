@@ -267,7 +267,7 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
     app.send_message();
     assert!(app.settings.is_some());
     app.settings = None;
-    app.perform_action(Action::Settings);
+    app.open_settings();
     assert!(app.settings.is_some());
     app.settings = None;
     terminal.draw(|frame| app.draw(frame))?;

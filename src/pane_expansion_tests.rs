@@ -90,7 +90,7 @@ fn workspace_expansion_restores_column_state_and_build_reveals_pdf() -> anyhow::
 }
 
 #[test]
-fn navigation_and_review_actions_reveal_adjacent_panes() -> anyhow::Result<()> {
+fn navigation_reveals_adjacent_panes() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     let area = Rect::new(0, 0, 160, 45);
     prefix(&mut app, 'u', area);
@@ -105,12 +105,6 @@ fn navigation_and_review_actions_reveal_adjacent_panes() -> anyhow::Result<()> {
     assert!(app.focus == Focus::Projects);
     assert!(app.workspace_expansion.is_none());
 
-    app.focus = Focus::Editor;
-    prefix(&mut app, 'u', area);
-    prefix(&mut app, 'z', area);
-    app.perform_action(Action::ReviewEdit);
-    assert!(app.workspace_expansion.is_none());
-    assert!(app.session.column_expansion.is_none());
     Ok(())
 }
 

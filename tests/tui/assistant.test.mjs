@@ -5,7 +5,7 @@ import { join, delimiter } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { action, createResume, documentPath, paste, prefix, withTexo } from './helpers.mjs';
+import { createResume, documentPath, paste, prefix, withTexo } from './helpers.mjs';
 
 const run = promisify(execFile);
 const POLL_INTERVAL_MS = 20;
@@ -141,8 +141,6 @@ test('AI cancellation, provider failure, and failed compilation all allow anothe
 
         await acceptAndSave(terminal);
         assert.match(await readFile(document, 'utf8'), /Repaired draft/);
-        await action(terminal, 'Clear conversation');
-        await terminal.getByText('Fixture completed repair').expect({ not: true });
     }, { prepare });
 });
 

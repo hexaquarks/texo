@@ -247,7 +247,7 @@ impl Assistant {
             let introduction = vec![
                 Line::from("Ask Texo to refine the open resume."),
                 Line::from("Review proposed edits before accepting."),
-                Line::from("Save accepted text from Actions."),
+                Line::from("Save accepted text with the save shortcut."),
             ];
             frame.render_widget(Paragraph::new(introduction).style(theme::muted()), area);
             return;
