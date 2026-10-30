@@ -262,7 +262,7 @@ fn history_layout_handles_tiny_windows_and_footer_clicks_in_long_histories() -> 
         Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: layout.files.x + 2,
-            row: layout.files.bottom() - 2,
+            row: layout.files.bottom() - 1,
             modifiers: KeyModifiers::NONE,
         }),
         SCREEN,
@@ -335,11 +335,13 @@ fn permanent_history_uses_real_filename_and_pins_working_copy_when_scrolling() -
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(text.contains("History · cv.tex"));
-    assert!(text.contains("cv.tex · Working copy"));
+    assert!(text.contains("History") && text.contains("cv.tex"));
+    assert!(text.contains("Working copy"));
     assert!(text.contains("Unsaved changes"));
-    assert!(text.contains("cv.tex · r1"));
+    assert!(text.contains("revision-1"));
     assert!(!text.contains("Files") && !text.contains("Compare"));
+    assert_eq!(text.matches("cv.tex").count(), 1);
+    assert!(!text.contains("Enter View") && !text.contains("Tab Resumes"));
     assert!(app.session.history.selection.offset() > 0);
 
     let content = Projects::history_content_area(app.workspace_layout(SCREEN).files);
@@ -401,5 +403,21 @@ fn selecting_a_resume_returns_to_its_unsaved_working_copy_and_history() -> anyho
     assert_eq!(app.session.editor.source(), source);
     assert_eq!(app.session.editor.text.cursor(), cursor);
     assert!(app.session.editor.is_modified());
+    Ok(())
+}
+
+#[test]
+fn prefix_vertical_navigation_switches_sidebar_sections_without_changing_work() -> anyhow::Result<()>
+{
+    let (_directory, mut app) = application()?;
+    app.session.editor.text.insert_str("Unsaved ");
+    let source = app.session.editor.source();
+    app.focus = Focus::Projects;
+    for (direction, history_focused) in [('j', true), ('j', true), ('k', false), ('k', false)] {
+        app.handle_prefix_action(KeyCode::Char(direction), SCREEN);
+        assert!(app.focus == Focus::Projects);
+        assert_eq!(app.projects.history_focused, history_focused);
+        assert_eq!(app.session.editor.source(), source);
+    }
     Ok(())
 }

@@ -11,6 +11,11 @@ impl App {
     pub(super) fn select_directional_pane(&mut self, direction: char, area: Rect) {
         self.workspace_expansion = None;
 
+        if self.focus == Focus::Projects && matches!(direction, 'j' | 'k') {
+            self.projects.history_focused = direction == 'j';
+            return;
+        }
+
         // Navigation toward a hidden sibling first restores the column.
         let hidden_sibling = match (self.session.column_expansion, self.focus, direction) {
             (Some(Focus::Assistant), Focus::Assistant, 'k') => Some(Focus::Editor),

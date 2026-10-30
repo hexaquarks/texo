@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind},
-    layout::{Constraint, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -19,7 +19,7 @@ use crate::{
 const SCROLL_ROWS: u16 = 3;
 const DIALOG_WIDTH: u16 = 62;
 const DIALOG_HEIGHT: u16 = 9;
-const HISTORY_FOOTER_ROWS: u16 = 3;
+const HISTORY_ERROR_ROWS: u16 = 3;
 const REVISION_ROWS: u16 = 2;
 
 #[derive(Default)]
@@ -343,23 +343,32 @@ impl App {
             height: inner.height.min(1),
             ..inner
         };
+        let [title, filename_area] = Layout::horizontal([
+            Constraint::Length("History ".len() as u16),
+            Constraint::Min(0),
+        ])
+        .areas(header);
         frame.render_widget(
-            Paragraph::new(format!("History · {filename}")).style(theme::pane_title(
+            Paragraph::new("History").style(theme::pane_title(
                 self.focus == Focus::Projects && self.projects.history_focused,
             )),
-            header,
+            title,
+        );
+        frame.render_widget(
+            Paragraph::new(crate::projects::sidebar_text(
+                &filename,
+                filename_area.width,
+            ))
+            .alignment(Alignment::Right)
+            .style(theme::muted()),
+            filename_area,
         );
         if self.session.empty_workspace {
             return;
         }
 
         let content = Projects::history_content_area(area);
-        let [working, entries, footer] = Layout::vertical([
-            Constraint::Length(REVISION_ROWS),
-            Constraint::Min(0),
-            Constraint::Length(HISTORY_FOOTER_ROWS),
-        ])
-        .areas(content);
+        let [working, entries, error_area] = self.history_entry_areas(content);
         let selected = self.session.history.selection.selected().unwrap_or(0);
         let working_style = if selected == 0 {
             theme::text().bg(theme::SELECTION)
@@ -373,11 +382,7 @@ impl App {
         };
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from(history_entry_label(
-                    &filename,
-                    "Working copy",
-                    working.width,
-                )),
+                Line::from("Working copy"),
                 Line::styled(working_status, theme::muted()),
             ])
             .style(working_style),
@@ -392,8 +397,7 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, revision)| {
-                let label =
-                    history_entry_label(&filename, &format!("r{}", count - index), entries.width);
+                let label = format!("revision-{}", count - index);
                 let timestamp = time::OffsetDateTime::from_unix_timestamp(revision.timestamp);
                 let date = timestamp.map_or_else(
                     |_| "Unknown date".into(),
@@ -424,13 +428,26 @@ impl App {
         );
         *self.session.history.selection.offset_mut() = state.offset();
 
-        let hint = self
-            .session
-            .history
-            .error
-            .as_deref()
-            .unwrap_or("Enter View · w Work\nr Restore · n Name\nTab Resumes");
-        frame.render_widget(Paragraph::new(hint).style(theme::muted()), footer);
+        if let Some(error) = &self.session.history.error {
+            frame.render_widget(
+                Paragraph::new(error.as_str()).style(theme::muted()),
+                error_area,
+            );
+        }
+    }
+
+    fn history_entry_areas(&self, content: Rect) -> [Rect; 3] {
+        let error_rows = if self.session.history.error.is_some() {
+            HISTORY_ERROR_ROWS
+        } else {
+            0
+        };
+        Layout::vertical([
+            Constraint::Length(REVISION_ROWS),
+            Constraint::Min(0),
+            Constraint::Length(error_rows),
+        ])
+        .areas(content)
     }
 
     pub(super) fn history_mouse(
@@ -444,12 +461,7 @@ impl App {
                 self.focus = Focus::Projects;
                 self.projects.history_focused = true;
                 let content = Projects::history_content_area(layout.files);
-                let [working, entries, _] = Layout::vertical([
-                    Constraint::Length(REVISION_ROWS),
-                    Constraint::Min(0),
-                    Constraint::Length(HISTORY_FOOTER_ROWS),
-                ])
-                .areas(content);
+                let [working, entries, _] = self.history_entry_areas(content);
                 let position = (mouse.column, mouse.row).into();
                 if working.contains(position) {
                     self.return_to_working_copy();
@@ -605,22 +617,4 @@ impl App {
             footer,
         );
     }
-}
-
-// Reserve space for the revision identity while keeping the real filename recognizable.
-fn history_entry_label(filename: &str, label: &str, width: u16) -> String {
-    let full_width =
-        Span::raw(filename).width() + Span::raw(label).width() + Span::raw(" · ").width();
-    let separator = if full_width > usize::from(width) {
-        "· "
-    } else {
-        " · "
-    };
-    let suffix = format!("{separator}{label}");
-    let suffix_width = u16::try_from(Span::raw(&suffix).width()).unwrap_or(u16::MAX);
-    let filename_width = width.saturating_sub(suffix_width).max(width / 2);
-    format!(
-        "{}{suffix}",
-        crate::projects::sidebar_text(filename, filename_width)
-    )
 }
