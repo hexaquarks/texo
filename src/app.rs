@@ -52,6 +52,8 @@ struct App {
     workspace_expansion: Option<Focus>,
     shortcuts_open: bool,
     shortcut_scroll: usize,
+    shortcut_query: String,
+    shortcut_searching: bool,
 }
 
 pub fn run(
@@ -108,6 +110,8 @@ impl App {
             workspace_expansion: None,
             shortcuts_open: false,
             shortcut_scroll: 0,
+            shortcut_query: String::new(),
+            shortcut_searching: false,
         })
     }
 

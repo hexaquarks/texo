@@ -382,6 +382,8 @@ impl App {
             KeyCode::Char('s') => self.open_settings(),
             KeyCode::Char('?') => {
                 self.shortcuts_open = true;
+                self.shortcut_query.clear();
+                self.shortcut_searching = false;
                 self.shortcut_scroll = 0;
             }
             _ => {}

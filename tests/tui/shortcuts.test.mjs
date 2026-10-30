@@ -13,17 +13,25 @@ test('prefix keeps the footer stable and opens a scrollable shortcut list', asyn
         assert.equal((await terminal.text()).trimEnd().split('\n').at(-1), footer);
 
         await terminal.press('?');
-        await terminal.getByText('Shortcuts · Ctrl-x').expect();
+        await terminal.getByText('Prefix: Ctrl-x').expect();
         await terminal.getByText('Zoom pane').expect();
         await terminal.screenshot(join(ARTIFACTS, 'shortcut-help.png'));
         await terminal.press('w');
-        await terminal.getByText('Shortcuts · Ctrl-x').expect();
+        await terminal.getByText('Prefix: Ctrl-x').expect();
+
+        await terminal.press('/', 'z', 'o', 'o', 'm');
+        await terminal.getByText('Zoom pane').expect();
+        await terminal.getByText('Build PDF', { whitespace: 'exact' }).expect({ not: true });
+        await terminal.screenshot(join(ARTIFACTS, 'shortcut-search.png'));
+        await terminal.press('Escape');
+        await terminal.getByText('Search commands or shortcuts').expect();
+        await terminal.getByText('Build PDF', { whitespace: 'exact' }).expect();
 
         await terminal.resize(50, 12);
         await terminal.press('End');
-        await terminal.getByText('Settings').expect();
+        await terminal.getByText('Export PDF').expect();
         await terminal.press('Escape');
-        await terminal.getByText('Shortcuts · Ctrl-x').expect({ not: true });
+        await terminal.getByText('Prefix: Ctrl-x').expect({ not: true });
         await terminal.resize(120, 35);
         await prefix(terminal, 's');
         await terminal.getByText('Resume folder').expect();
