@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::dialog_ui::{ButtonStyle, DialogAction, FormLayout, button, field};
+use crate::dialog_ui::{ButtonFocus, DialogAction, FormLayout, buttons, field};
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
@@ -426,23 +426,17 @@ impl ExportDialog {
                 .style(theme::dialog().fg(theme::ERROR)),
             layout.row(11, 3),
         );
-        button(
+        let focus = match self.focus {
+            ExportControl::Cancel => ButtonFocus::Cancel,
+            ExportControl::Submit => ButtonFocus::Action,
+            _ => ButtonFocus::Field,
+        };
+        buttons(
             frame,
-            layout.buttons[0],
-            "Cancel",
-            self.focus == ExportControl::Cancel,
-            ButtonStyle::Secondary,
-        );
-        button(
-            frame,
-            layout.buttons[1],
+            layout.buttons,
             self.action_label(),
-            self.focus == ExportControl::Submit,
-            if self.overwrite_path.is_some() {
-                ButtonStyle::Destructive
-            } else {
-                ButtonStyle::Primary
-            },
+            focus,
+            self.overwrite_path.is_some(),
         );
     }
 }

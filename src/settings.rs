@@ -12,7 +12,7 @@ use texo::theme;
 
 use crate::{
     config::{EditingMode, EditorPreferences},
-    dialog_ui::{ButtonStyle, FormLayout, button, field},
+    dialog_ui::{ButtonFocus, FormLayout, buttons, field},
 };
 
 const DIALOG_WIDTH: u16 = 76;
@@ -583,27 +583,19 @@ impl SettingsDialog {
                 .style(theme::dialog().fg(theme::ERROR)),
             layout.row(10, 2),
         );
-        button(
+        let focus = match self.folder_focus {
+            FolderControl::Cancel => ButtonFocus::Cancel,
+            FolderControl::Continue => ButtonFocus::Action,
+            _ => ButtonFocus::Field,
+        };
+        buttons(
             frame,
-            layout.buttons[0],
-            "Cancel",
-            self.folder_focus == FolderControl::Cancel,
-            ButtonStyle::Secondary,
-        );
-        button(
-            frame,
-            layout.buttons[1],
+            layout.buttons,
             self.folder_action(),
-            self.folder_focus == FolderControl::Continue,
-            if self
-                .confirmation
+            focus,
+            self.confirmation
                 .as_ref()
-                .is_some_and(|confirmation| !confirmation.losses.is_empty())
-            {
-                ButtonStyle::Destructive
-            } else {
-                ButtonStyle::Primary
-            },
+                .is_some_and(|confirmation| !confirmation.losses.is_empty()),
         );
     }
 }

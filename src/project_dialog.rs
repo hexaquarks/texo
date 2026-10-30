@@ -11,7 +11,7 @@ use texo::theme;
 
 use crate::{
     actions::Action,
-    dialog_ui::{ButtonStyle, DialogAction, FormLayout, button, field},
+    dialog_ui::{ButtonFocus, DialogAction, FormLayout, buttons, field},
     resume_project::{ImportPlan, Project},
 };
 
@@ -386,23 +386,17 @@ impl ProjectDialog {
                 layout.row(self.content_rows() - 2, 2),
             );
         }
-        button(
+        let focus = match self.focus {
+            Control::Cancel => ButtonFocus::Cancel,
+            Control::Submit => ButtonFocus::Action,
+            _ => ButtonFocus::Field,
+        };
+        buttons(
             frame,
-            layout.buttons[0],
-            "Cancel",
-            self.focus == Control::Cancel,
-            ButtonStyle::Secondary,
-        );
-        button(
-            frame,
-            layout.buttons[1],
+            layout.buttons,
             self.action_label(),
-            self.focus == Control::Submit,
-            if matches!(self.action, Action::ReloadSource) && !self.losses.is_empty() {
-                ButtonStyle::Destructive
-            } else {
-                ButtonStyle::Primary
-            },
+            focus,
+            matches!(self.action, Action::ReloadSource) && !self.losses.is_empty(),
         );
     }
 }

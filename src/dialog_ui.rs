@@ -125,15 +125,56 @@ impl FormLayout {
     }
 }
 
-pub enum ButtonStyle {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ButtonFocus {
+    Field,
+    Cancel,
+    Action,
+}
+
+pub fn buttons(
+    frame: &mut Frame,
+    areas: [Rect; 2],
+    action: &str,
+    focus: ButtonFocus,
+    destructive: bool,
+) {
+    button(
+        frame,
+        areas[0],
+        "Cancel",
+        focus == ButtonFocus::Cancel,
+        ButtonStyle::Secondary,
+    );
+
+    let action_style = if destructive {
+        ButtonStyle::Destructive
+    } else if focus == ButtonFocus::Cancel {
+        ButtonStyle::Secondary
+    } else {
+        ButtonStyle::Primary
+    };
+    button(
+        frame,
+        areas[1],
+        action,
+        focus == ButtonFocus::Action,
+        action_style,
+    );
+}
+
+enum ButtonStyle {
     Secondary,
     Primary,
     Destructive,
 }
 
-pub fn button(frame: &mut Frame, area: Rect, label: &str, focused: bool, kind: ButtonStyle) {
+fn button(frame: &mut Frame, area: Rect, label: &str, focused: bool, kind: ButtonStyle) {
     let style = match kind {
-        ButtonStyle::Destructive => theme::dialog().bg(theme::ERROR).fg(theme::BACKGROUND),
+        ButtonStyle::Destructive if focused => {
+            theme::dialog().bg(theme::ERROR).fg(theme::BACKGROUND)
+        }
+        ButtonStyle::Destructive => theme::dialog().bg(theme::SELECTION).fg(theme::ERROR),
         ButtonStyle::Primary => theme::dialog().bg(theme::ACCENT).fg(theme::BACKGROUND),
         ButtonStyle::Secondary if focused => {
             theme::dialog().bg(theme::ACCENT).fg(theme::BACKGROUND)
@@ -179,4 +220,40 @@ pub fn field(frame: &mut Frame, area: Rect, input: &TextArea<'_>, focused: bool)
             }),
     );
     frame.render_widget(&input, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn button_pair_highlights_only_the_focused_action() -> anyhow::Result<()> {
+        let areas = [Rect::new(0, 0, 12, 1), Rect::new(14, 0, 16, 1)];
+        for focus in [ButtonFocus::Field, ButtonFocus::Cancel, ButtonFocus::Action] {
+            let mut terminal = Terminal::new(TestBackend::new(30, 1))?;
+            terminal.draw(|frame| buttons(frame, areas, "Rename", focus, false))?;
+            let buffer = terminal.backend().buffer();
+            let cancel_background = if focus == ButtonFocus::Cancel {
+                theme::ACCENT
+            } else {
+                theme::SELECTION
+            };
+            let action_background = if focus == ButtonFocus::Cancel {
+                theme::SELECTION
+            } else {
+                theme::ACCENT
+            };
+
+            assert_eq!(buffer[(0, 0)].bg, cancel_background);
+            assert_eq!(buffer[(14, 0)].bg, action_background);
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .all(|cell| !cell.modifier.contains(Modifier::UNDERLINED))
+            );
+        }
+        Ok(())
+    }
 }

@@ -26,6 +26,13 @@ test('project dialogs share visible controls and preserve work when cancelled', 
         await terminal.press('j');
         await terminal.waitIdle();
         await terminal.screenshot(join(ARTIFACTS, 'dialog-labels-moved.png'));
+        await terminal.getByText('Custom…').click();
+        await paste(terminal, 'Platform');
+        await terminal.getByText('Custom label').expect();
+        await terminal.waitIdle();
+        await terminal.screenshot(join(ARTIFACTS, 'dialog-custom-label.png'));
+        await terminal.press('Escape');
+        await terminal.getByText('No label').expect();
         await terminal.press('Escape');
 
         await action(terminal, 'Reload from disk');
