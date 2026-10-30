@@ -12,6 +12,7 @@ async function changeName(terminal, command, name) {
     await action(terminal, command);
     await paste(terminal, name);
     await terminal.press('Enter');
+    await terminal.getByText(command).expect({ not: true });
     await terminal.getByText(name).first().expect();
 }
 
@@ -122,7 +123,11 @@ test('settings reject unavailable folders, switch workspaces, and persist mode a
         const document = await documentPath(workspace);
         const saved = await readFile(document, 'utf8');
         await prefix(terminal, 's');
-        await terminal.getByText('Resume folder').expect();
+        await terminal.getByText('WORKSPACE').expect();
+        await terminal.getByText('Vim', { whitespace: 'exact' }).click();
+        await terminal.getByText('Apply changes').click();
+        await prefix(terminal, 's');
+        await terminal.getByText('Change…').click();
         await paste(terminal, join(root, 'missing'));
         await terminal.press('Enter');
         await terminal.getByText('Choose an existing folder').expect();
@@ -131,8 +136,8 @@ test('settings reject unavailable folders, switch workspaces, and persist mode a
         const other = join(root, 'other');
         await mkdir(other);
         await replaceField(terminal, other);
-        await terminal.getByText('Vim', { whitespace: 'exact' }).click();
-        await terminal.press('Enter');
+        await terminal.getByText('Continue').click();
+        await terminal.getByText('Switch workspace').click();
         await terminal.getByText('No resumes yet').expect();
         const configPath = join(root, 'config/texo/config.toml');
         assert.match(await readFile(configPath, 'utf8'), /mode = "vim"/);
@@ -151,7 +156,7 @@ test('config reload rejects malformed settings and updates the prefix without lo
         await terminal.press('Ctrl+a');
         await paste(terminal, RESUME);
         await prefix(terminal, 's');
-        await terminal.getByText('Resume folder').expect();
+        await terminal.getByText('WORKSPACE').expect();
         const configPath = join(root, 'config/texo/config.toml');
         await mkdir(dirname(configPath), { recursive: true });
         await writeFile(configPath, 'broken = [');
@@ -160,7 +165,7 @@ test('config reload rejects malformed settings and updates the prefix without lo
         await terminal.press('Escape');
         await terminal.getByText('Terminal workflow resume.').expect();
         await prefix(terminal, 's');
-        await terminal.getByText('Resume folder').expect();
+        await terminal.getByText('WORKSPACE').expect();
         const workspace = join(root, 'resumes');
         await writeFile(configPath, `resume_folder = ${JSON.stringify(workspace)}\n[keybindings]\nprefix = "ctrl+g"\n`);
         await terminal.press('Ctrl+r');

@@ -83,8 +83,10 @@ test('repeated break/fix cycles retain hidden markers, isolate modal input, and 
             await terminal.press('End', 'Home', 'PageDown', 'PageUp');
             await paste(terminal, 'This must not edit the document');
             await terminal.resize(75, 28);
+            await terminal.waitIdle();
             await terminal.press('Escape');
             await terminal.resize(160, 45);
+            await terminal.waitIdle();
             await terminal.getByText('Error details').expect({ not: true });
             await terminal.getByText('!3').expect();
             await terminal.getByText('This must not edit the document').expect({ not: true });

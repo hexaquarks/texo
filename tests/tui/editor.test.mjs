@@ -13,9 +13,9 @@ async function savedSource(terminal, workspace) {
 
 async function enableVim(terminal) {
     await prefix(terminal, 's');
-    await terminal.getByText('Resume folder').expect();
-    await terminal.press('Ctrl+v');
-    await terminal.press('Enter');
+    await terminal.getByText('WORKSPACE').expect();
+    await terminal.press('Right');
+    await terminal.getByText('Apply changes').click();
     await terminal.getByText('NORMAL').expect();
 }
 
@@ -97,9 +97,9 @@ test('pending Vim operators cancel on dialogs and focus changes without consumin
         await enableVim(terminal);
         await terminal.press('g', 'g', 'd');
         await prefix(terminal, 's');
-        await terminal.getByText('Resume folder').expect();
+        await terminal.getByText('WORKSPACE').expect();
         await terminal.press('Escape');
-        await terminal.getByText('Resume folder').expect({ not: true });
+        await terminal.getByText('WORKSPACE').expect({ not: true });
         await terminal.press('w');
         assert.equal(await savedSource(terminal, workspace), source);
 

@@ -34,7 +34,7 @@ test('prefix keeps the footer stable and opens a scrollable shortcut list', asyn
         await terminal.getByText('Prefix: Ctrl-x').expect({ not: true });
         await terminal.resize(120, 35);
         await prefix(terminal, 's');
-        await terminal.getByText('Resume folder').expect();
+        await terminal.getByText('WORKSPACE').expect();
         await terminal.press('Escape');
     }, { env: { NO_COLOR: '' } });
 });

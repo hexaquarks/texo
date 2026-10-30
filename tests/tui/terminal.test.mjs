@@ -45,7 +45,7 @@ test('resize down to one cell, restore, and open settings', async () => {
         await terminal.getByText('Resize test').first().expect();
         await terminal.resize(40, 12);
         await prefix(terminal, 's');
-        await terminal.getByText('Resume folder').expect();
+        await terminal.getByText('WORKSPACE').expect();
         await terminal.screenshot(join(ARTIFACTS, 'small-settings.png'));
         await terminal.press('Escape');
         await terminal.resize(120, 35);
