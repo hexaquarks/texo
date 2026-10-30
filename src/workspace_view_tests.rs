@@ -174,7 +174,7 @@ fn layout_renders_both_panes_and_handles_small_terminals() -> anyhow::Result<()>
     terminal.draw(|frame| app.draw(frame))?;
     let buffer = terminal.backend().buffer();
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-    assert!(text.contains("RESUMES") && text.contains("FILES"));
+    assert!(text.contains("RESUMES") && text.contains("History"));
     assert!(text.contains("texo / chat"));
     assert!(text.contains("Original document"));
 

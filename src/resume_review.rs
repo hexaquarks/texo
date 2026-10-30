@@ -5,6 +5,10 @@ use crate::{assistant::ProposedEdit, proposal::ProposalReview, render_job::Rende
 
 impl App {
     pub(super) fn send_message(&mut self) {
+        if self.session.history.view.is_some() {
+            self.session.status = "Return to Working copy to ask AI for changes.".into();
+            return;
+        }
         if self.session.assistant.input.lines().join("\n").trim() == "/settings" {
             self.session.assistant.clear_input();
             self.open_settings();
@@ -147,6 +151,10 @@ impl App {
     }
 
     pub(super) fn apply_proposal(&mut self) {
+        if self.session.history.view.is_some() {
+            self.session.status = "Return to Working copy to review AI changes.".into();
+            return;
+        }
         self.restore_workspace_panes();
 
         let Some(review) = &self.session.proposal_review else {
@@ -204,6 +212,10 @@ impl App {
     }
 
     pub(super) fn modify_proposal(&mut self) {
+        if self.session.history.view.is_some() {
+            self.session.status = "Return to Working copy to review AI changes.".into();
+            return;
+        }
         self.restore_workspace_panes();
 
         if self.session.proposal_review.is_some() {
@@ -238,6 +250,9 @@ impl App {
     }
 
     pub(super) fn active_preview(&mut self) -> &mut Preview {
+        if let Some(view) = &mut self.session.history.view {
+            return &mut view.preview;
+        }
         if self.session.show_proposed && self.session.proposal_review.is_some() {
             &mut self.session.proposed_preview
         } else {

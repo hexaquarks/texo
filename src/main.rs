@@ -5,6 +5,7 @@ mod assistant_job;
 mod build_diagnostics;
 mod config;
 mod editor;
+mod history;
 mod keybindings;
 mod label_dialog;
 mod login;

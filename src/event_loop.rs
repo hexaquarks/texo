@@ -25,11 +25,14 @@ impl App {
         loop {
             let area = terminal.get_frame().area();
             let previous_preview_area = self.preview_area(area);
+            let was_history_loading = self.history_preview_loading();
             let was_proposed_loading = self.session.proposed_job.is_some();
+            self.receive_history_preview();
             self.receive_render();
             self.receive_assistant();
             self.receive_proposed_render();
-            repaint |= (was_proposed_loading != self.session.proposed_job.is_some()
+            repaint |= (was_history_loading != self.history_preview_loading()
+                || was_proposed_loading != self.session.proposed_job.is_some()
                 || previous_preview_area != self.preview_area(area))
                 && self.active_preview().uses_inline_graphics();
 
@@ -58,6 +61,12 @@ impl App {
 
             let area = terminal.get_frame().area();
             let previous_preview_area = self.preview_area(area);
+            let previous_history = self
+                .session
+                .history
+                .view
+                .as_ref()
+                .map(|view| view.revision.id);
             let previous_version = self.session.show_proposed;
             let previous_document = self.session.editor.path.clone();
             let projects_was_visible = self.projects_visible;
@@ -65,6 +74,7 @@ impl App {
             let review_was_open = self.session.proposal_review.is_some();
             let preview_was_loading = self.session.job.is_some();
             let proposed_was_loading = self.session.proposed_job.is_some();
+            let history_was_loading = self.history_preview_loading();
 
             let quit = drain_ready_events(
                 event::read()?,
@@ -85,8 +95,16 @@ impl App {
             // need a screen clear to remove pixels formerly covered by another placement.
             repaint = self.overlays_require_clear(overlay_was_open)
                 || (self.active_preview().uses_inline_graphics()
-                    && (previous_version != self.session.show_proposed
+                    && (previous_history
+                        != self
+                            .session
+                            .history
+                            .view
+                            .as_ref()
+                            .map(|view| view.revision.id)
+                        || previous_version != self.session.show_proposed
                         || review_was_open != self.session.proposal_review.is_some()
+                        || history_was_loading != self.history_preview_loading()
                         || proposed_was_loading != self.session.proposed_job.is_some()
                         || previous_preview_area != self.preview_area(area)
                         || projects_was_visible != self.projects_visible
@@ -105,7 +123,8 @@ impl App {
 
     fn input_poll_interval(&mut self) -> Duration {
         let preparing_image = !self.overlay_open() && self.active_preview().is_preparing();
-        let running_job = self.session.job.is_some()
+        let running_job = self.history_preview_loading()
+            || self.session.job.is_some()
             || self.session.proposed_job.is_some()
             || self.session.assistant.is_running()
             || self.session.assistant.login_open();
@@ -118,6 +137,7 @@ impl App {
         writer: &mut impl Write,
     ) -> anyhow::Result<()> {
         self.sessions.clear();
+        self.session.history.view = None;
         self.session.preview.clear();
         self.session.proposed_preview.clear();
         self.session.preview.flush_retired_images(writer)?;

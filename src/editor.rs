@@ -638,39 +638,47 @@ impl Editor {
         Ok(())
     }
 
-    pub fn recover_missing(&mut self) -> Result<()> {
-        use std::io::Write;
-
+    pub fn recover_missing(&mut self) -> Result<Option<String>> {
         let source = self.source();
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&self.path)
-            .context("Source already exists or cannot be restored; nothing was overwritten")?;
-        file.write_all(source.as_bytes())?;
+        let warning = crate::history::save(
+            &self.path,
+            None,
+            &source,
+            crate::history::RevisionKind::Save,
+            None,
+        )?;
         self.saved_source = Some(source);
-        Ok(())
+        Ok(warning)
     }
 
-    pub fn save(&mut self) -> Result<()> {
-        ensure!(
-            self.disk_state()? == DiskState::Unchanged,
-            "Source changed or disappeared on disk. Use Manage → Reload source, or Save to restore a missing file"
-        );
+    pub fn save(&mut self) -> Result<Option<String>> {
         let source = self.source();
-        let directory = self
-            .path
-            .parent()
-            .context("The document needs a parent directory")?;
-        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-
-        use std::io::Write;
-        temporary.write_all(source.as_bytes())?;
-        temporary
-            .persist(&self.path)
-            .context("Could not save the TeX document")?;
+        let warning = crate::history::save(
+            &self.path,
+            self.saved_source.as_deref(),
+            &source,
+            crate::history::RevisionKind::Save,
+            None,
+        )?;
         self.saved_source = Some(source);
-        Ok(())
+        Ok(warning)
+    }
+
+    pub fn restore_revision(
+        &mut self,
+        revision: &crate::history::Revision,
+    ) -> Result<Option<String>> {
+        let recovery = self.is_modified().then(|| self.source());
+        let warning = crate::history::save(
+            &self.path,
+            self.saved_source.as_deref(),
+            &revision.source,
+            crate::history::RevisionKind::Restore { from: revision.id },
+            recovery.as_deref(),
+        )?;
+        self.replace_source(&revision.source);
+        self.saved_source = Some(revision.source.clone());
+        Ok(warning)
     }
 
     fn center_cursor(&mut self) {

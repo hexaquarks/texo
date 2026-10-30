@@ -135,7 +135,8 @@ impl App {
     }
 
     fn editor_has_focus(&self) -> bool {
-        self.focus == Focus::Editor
+        self.session.history.view.is_none()
+            && self.focus == Focus::Editor
             && !self.session.empty_workspace
             && self.session.proposal_review.is_none()
             && !self.overlay_open()
@@ -143,7 +144,8 @@ impl App {
     }
 
     fn overlay_open(&self) -> bool {
-        self.shortcuts_open
+        self.session.history.dialog.is_some()
+            || self.shortcuts_open
             || self.diagnostic_details_open()
             || self.project_dialog.is_some()
             || self.label_dialog.is_some()
@@ -163,6 +165,8 @@ impl App {
 mod diagnostic_details;
 #[path = "event_loop.rs"]
 mod event_loop;
+#[path = "history_view.rs"]
+mod history_view;
 #[path = "input.rs"]
 mod input;
 #[path = "label_actions.rs"]
@@ -231,3 +235,7 @@ use {
     texo::theme,
     workspace_view::{WorkspaceLayout, pane_content, preview_header},
 };
+
+#[cfg(test)]
+#[path = "history_tests.rs"]
+mod history_tests;

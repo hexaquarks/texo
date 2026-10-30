@@ -8,7 +8,7 @@ use ratatui::{
 
 use super::{
     App, Focus,
-    workspace_view::{WorkspaceLayout, below_header, pane_content, preview_header},
+    workspace_view::{WorkspaceLayout, pane_content, preview_header},
 };
 use crate::{actions::Action, assistant::Assistant, keybindings::PrefixInput, projects::Projects};
 
@@ -53,6 +53,11 @@ impl App {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
                 return true;
             }
+        }
+
+        if self.session.history.dialog.is_some() {
+            self.handle_history_dialog(event);
+            return false;
         }
 
         if self.shortcuts_open {
@@ -118,6 +123,13 @@ impl App {
             self.prefix.cancel();
         }
 
+        if self.session.history.view.is_some()
+            && matches!(event, Event::Key(key) if key.code == KeyCode::Esc)
+        {
+            self.return_to_working_copy();
+            return false;
+        }
+
         match event {
             Event::Key(key)
                 if self.focus == Focus::Preview
@@ -126,7 +138,7 @@ impl App {
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     && matches!(key.code, KeyCode::Char('+' | '=' | '-' | '0')) =>
             {
-                let body = below_header(pane_content(self.preview_area(area)), 1);
+                let body = self.preview_body_area(self.preview_area(area));
                 if key.code == KeyCode::Char('0') {
                     self.active_preview().reset_zoom(body);
                 } else {
@@ -142,6 +154,7 @@ impl App {
             Event::Paste(text)
                 if self.focus == Focus::Editor
                     && self.session.proposal_review.is_none()
+                    && self.session.history.view.is_none()
                     && !self.session.empty_workspace =>
             {
                 self.session.editor.paste_text(&text);
@@ -165,6 +178,9 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) {
+        if self.history_mouse(mouse, area) {
+            return;
+        }
         let layout = self.workspace_layout(area);
         let position = Position::new(mouse.column, mouse.row);
         if self.focus == Focus::Preview && mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
@@ -173,7 +189,7 @@ impl App {
         }
 
         if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
-            let body = below_header(pane_content(layout.preview), 1);
+            let body = self.preview_body_area(layout.preview);
             let uri = self.active_preview().release_link(body, position);
             if let Some(uri) = uri {
                 self.open_preview_link(&uri);
@@ -248,6 +264,9 @@ impl App {
             } else if layout.files.contains(position) {
                 self.focus = Focus::Projects;
                 self.projects.files_focused = true;
+                if self.projects.select_file_at(layout.files, mouse.row) {
+                    self.activate_projects();
+                }
             } else if layout.projects.contains(position) {
                 self.focus = Focus::Projects;
                 if self.projects.select_at(layout.projects, mouse.row) {
@@ -262,7 +281,7 @@ impl App {
                 );
             } else if layout.preview.contains(position) {
                 self.focus = Focus::Preview;
-                let body = below_header(pane_content(layout.preview), 1);
+                let body = self.preview_body_area(layout.preview);
                 self.active_preview().begin_drag(body, position);
             } else if layout.editor.contains(position) {
                 self.focus = Focus::Editor;
@@ -291,7 +310,7 @@ impl App {
                 _ => {}
             }
         } else if layout.preview.contains(position) {
-            let body = below_header(pane_content(layout.preview), 1);
+            let body = self.preview_body_area(layout.preview);
             match mouse.kind {
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                     if mouse.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -323,6 +342,20 @@ impl App {
     }
 
     pub(super) fn handle_prefix_action(&mut self, code: KeyCode, area: Rect) {
+        if self.session.history.view.is_some() {
+            match code {
+                KeyCode::Char('b') => {
+                    self.build_history_preview();
+                    return;
+                }
+                KeyCode::Char('w' | 'a' | 'm' | 'd' | 'G' | 'F' | 'R') => {
+                    self.session.status =
+                        "Return to Working copy before saving or changing it.".into();
+                    return;
+                }
+                _ => {}
+            }
+        }
         match code {
             KeyCode::Char(character @ ('h' | 'j' | 'k' | 'l')) => {
                 self.select_directional_pane(character, area);
@@ -341,7 +374,10 @@ impl App {
                 self.focus = Focus::Projects;
                 self.projects.files_focused = false;
             }
+            KeyCode::Char('y') => self.open_history(),
             KeyCode::Char('f') => {
+                self.session.history.visible = false;
+                self.return_to_working_copy();
                 self.projects_visible = true;
                 self.focus = Focus::Projects;
                 self.projects.files_focused = true;
@@ -395,7 +431,7 @@ impl App {
         position: Position,
         layout: &WorkspaceLayout,
     ) -> bool {
-        if self.session.proposal_review.is_none() {
+        if self.session.history.view.is_some() || self.session.proposal_review.is_none() {
             return false;
         }
 
@@ -426,6 +462,18 @@ impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> bool {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
             return true;
+        }
+
+        if self.session.history.view.is_some() && self.focus == Focus::Editor {
+            self.handle_historical_source_key(key);
+            return false;
+        }
+        if self.session.history.visible
+            && self.focus == Focus::Projects
+            && self.projects.files_focused
+        {
+            self.handle_history_key(key);
+            return false;
         }
 
         if let Some(review) = &mut self.session.proposal_review {
@@ -491,6 +539,16 @@ impl App {
     }
 
     pub(super) fn handle_control_key(&mut self, key: KeyEvent) {
+        if self.session.history.view.is_some() && matches!(key.code, KeyCode::Char('s' | 'b' | 'e'))
+        {
+            if key.code == KeyCode::Char('b') {
+                self.build_history_preview();
+            } else {
+                self.session.status = "Return to Working copy before saving or exporting.".into();
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Char('j') => {
                 self.focus = if self.focus == Focus::Assistant {
@@ -522,9 +580,10 @@ impl App {
                 self.open_project_dialog(Action::RecoverSource)
             }
             KeyCode::Char('s') => match self.session.editor.save() {
-                Ok(()) => {
-                    self.session.status = "Saved TeX document.".into();
+                Ok(warning) => {
+                    self.session.status = warning.unwrap_or_else(|| "Saved TeX document.".into());
                     self.refresh_projects();
+                    self.refresh_history();
                     self.projects.select_path(&self.session.editor.path);
                 }
                 Err(error) => self.report_error(error),
@@ -595,7 +654,8 @@ impl App {
         match key.code {
             KeyCode::Char('m') if !self.projects.files_focused => self.open_resume_menu(),
             KeyCode::Char('l') if !self.projects.files_focused => self.open_label_dialog(),
-            KeyCode::Tab => self.projects.files_focused = !self.projects.files_focused,
+            KeyCode::Tab if self.projects.files_focused => self.open_history(),
+            KeyCode::Tab => self.projects.files_focused = true,
             KeyCode::Up | KeyCode::Char('k') => {
                 self.projects.move_selection(false);
                 self.activate_projects();
@@ -604,7 +664,10 @@ impl App {
                 self.projects.move_selection(true);
                 self.activate_projects();
             }
-            KeyCode::Enter if self.projects.files_focused => self.focus = Focus::Editor,
+            KeyCode::Enter if self.projects.files_focused => {
+                self.activate_projects();
+                self.focus = Focus::Editor;
+            }
             KeyCode::Enter => self.activate_projects(),
             _ => {}
         }

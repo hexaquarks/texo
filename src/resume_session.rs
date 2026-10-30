@@ -9,6 +9,7 @@ use crate::{
 // A session owns only one resume's state. Application settings and navigation stay in App.
 pub(super) struct ResumeSession {
     pub(super) editor: Editor,
+    pub(super) history: super::history_view::HistoryState,
     pub(super) empty_workspace: bool,
 
     pub(super) preview: Preview,
@@ -42,6 +43,7 @@ impl ResumeSession {
 
         Self {
             editor,
+            history: super::history_view::HistoryState::default(),
             empty_workspace: false,
 
             preview,
