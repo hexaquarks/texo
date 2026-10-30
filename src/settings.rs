@@ -10,7 +10,10 @@ use ratatui::{
 use ratatui_textarea::TextArea;
 use texo::theme;
 
-use crate::config::{EditingMode, EditorPreferences};
+use crate::{
+    config::{EditingMode, EditorPreferences},
+    dialog_ui::{ButtonStyle, FormLayout, button, field},
+};
 
 const DIALOG_WIDTH: u16 = 76;
 const DIALOG_HEIGHT: u16 = 29;
@@ -307,12 +310,20 @@ impl SettingsDialog {
         None
     }
 
+    fn folder_action(&self) -> &str {
+        match &self.confirmation {
+            Some(confirmation) if !confirmation.losses.is_empty() => "Switch & discard",
+            Some(_) => "Switch workspace",
+            None => "Continue",
+        }
+    }
+
+    fn folder_layout(&self, screen: Rect) -> FormLayout {
+        FormLayout::new(screen, 12, 3, self.folder_action())
+    }
+
     fn folder_buttons(&self, screen: Rect) -> [Rect; 2] {
-        let row = self.row(screen, 12, 1);
-        [
-            Rect::new(row.x, row.y, 10, row.height).intersection(row),
-            Rect::new(row.x.saturating_add(12), row.y, 22, row.height).intersection(row),
-        ]
+        self.folder_layout(screen).buttons
     }
 
     fn handle_folder_event(&mut self, event: Event, screen: Rect) -> Option<SettingsAction> {
@@ -357,7 +368,7 @@ impl SettingsDialog {
             Event::Key(key) if key.code == KeyCode::Enter => return self.activate_folder_control(),
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
                 let position = (mouse.column, mouse.row).into();
-                if self.row(screen, 2, 2).contains(position) {
+                if self.folder_layout(screen).row(3, 3).contains(position) {
                     self.folder_focus = FolderControl::Destination;
                 }
                 for (index, button) in self.folder_buttons(screen).into_iter().enumerate() {
@@ -406,26 +417,21 @@ impl SettingsDialog {
     }
 
     pub fn draw(&self, frame: &mut Frame) {
+        if self.folder_open {
+            self.draw_folder(frame);
+            return;
+        }
         let screen = frame.area();
         let area = Self::area(screen);
         frame.render_widget(Clear, area);
         frame.render_widget(
             Block::default()
-                .title(if self.folder_open {
-                    " Change workspace "
-                } else {
-                    " Settings "
-                })
+                .title(" Settings ")
                 .borders(Borders::ALL)
                 .border_style(theme::dialog_title())
                 .style(theme::dialog()),
             area,
         );
-        if self.folder_open {
-            self.draw_folder(frame);
-            return;
-        }
-
         for (row, title) in [(0, "EDITOR"), (7, "WORKSPACE"), (12, "ADVANCED")] {
             frame.render_widget(
                 Paragraph::new(title).style(theme::muted()),
@@ -538,55 +544,66 @@ impl SettingsDialog {
     }
 
     fn draw_folder(&self, frame: &mut Frame) {
-        let screen = frame.area();
-        let destination_label = if self.confirmation.is_some() {
-            "Destination · validated"
-        } else {
-            "Destination"
-        };
-        frame.render_widget(Paragraph::new(destination_label), self.row(screen, 0, 1));
-        frame.render_widget(&self.input, self.row(screen, 2, 2));
-        let message = if let Some(confirmation) = &self.confirmation {
-            if confirmation.losses.is_empty() {
-                "Switch to this workspace?".into()
+        let layout = self.folder_layout(frame.area());
+        layout.draw(frame, "Switch resume folder");
+        frame.render_widget(
+            Paragraph::new("Choose another resume folder.").style(theme::muted()),
+            layout.row(0, 1),
+        );
+        frame.render_widget(
+            Paragraph::new(if self.confirmation.is_some() {
+                "Folder · validated"
             } else {
+                "Folder"
+            }),
+            layout.row(2, 1),
+        );
+        field(
+            frame,
+            layout.row(3, 3),
+            &self.input,
+            self.folder_focus == FolderControl::Destination,
+        );
+        let message = match &self.confirmation {
+            Some(confirmation) if !confirmation.losses.is_empty() => {
                 format!("This discards: {}.", confirmation.losses.join(", "))
             }
-        } else {
-            "Choose the destination folder.".into()
+            Some(_) => "Switch to this workspace?".into(),
+            None => "Resume files stay in their current folders.".into(),
         };
         frame.render_widget(
-            Paragraph::new(message).wrap(Wrap { trim: false }),
-            self.row(screen, 5, 5),
+            Paragraph::new(message)
+                .wrap(Wrap { trim: false })
+                .style(theme::muted()),
+            layout.row(7, 3),
         );
         frame.render_widget(
             Paragraph::new(self.error.as_str())
                 .wrap(Wrap { trim: false })
                 .style(theme::dialog().fg(theme::ERROR)),
-            self.row(screen, 10, 2),
+            layout.row(10, 2),
         );
-        let action = match &self.confirmation {
-            Some(confirmation) if !confirmation.losses.is_empty() => "Switch & discard",
-            Some(_) => "Switch workspace",
-            None => "Continue",
-        };
-        for (index, (area, label)) in self
-            .folder_buttons(screen)
-            .into_iter()
-            .zip(["Cancel", action])
-            .enumerate()
-        {
-            let style = if self.folder_focus == FOLDER_CONTROLS[index + 1] {
-                theme::dialog().fg(theme::BACKGROUND).bg(theme::ACCENT)
+        button(
+            frame,
+            layout.buttons[0],
+            "Cancel",
+            self.folder_focus == FolderControl::Cancel,
+            ButtonStyle::Secondary,
+        );
+        button(
+            frame,
+            layout.buttons[1],
+            self.folder_action(),
+            self.folder_focus == FolderControl::Continue,
+            if self
+                .confirmation
+                .as_ref()
+                .is_some_and(|confirmation| !confirmation.losses.is_empty())
+            {
+                ButtonStyle::Destructive
             } else {
-                theme::dialog().bg(theme::SELECTION)
-            };
-            frame.render_widget(
-                Paragraph::new(label)
-                    .alignment(Alignment::Center)
-                    .style(style),
-                area,
-            );
-        }
+                ButtonStyle::Primary
+            },
+        );
     }
 }

@@ -46,8 +46,8 @@ fn failed_import_returns_to_editable_fields_and_reinspects_the_source() -> anyho
         press(&mut app, KeyCode::Enter);
         if candidate_count == 2 {
             press(&mut app, KeyCode::Down);
-            press(&mut app, KeyCode::Enter);
         }
+        press(&mut app, KeyCode::Enter);
 
         let dialog = app.project_dialog.as_ref().unwrap();
         assert!(!dialog.error.is_empty());
@@ -56,7 +56,7 @@ fn failed_import_returns_to_editable_fields_and_reinspects_the_source() -> anyho
             "A failed import must allow correcting its fields"
         );
         assert!(app.projects.catalog.projects.is_empty());
-        assert!(rendered_dialog(&mut app)?.contains("Display name"));
+        assert!(rendered_dialog(&mut app)?.contains("Resume name"));
 
         // Change a two-entrypoint folder to a single file. Its old selection must not survive.
         let dialog = app.project_dialog.as_mut().unwrap();
@@ -67,6 +67,7 @@ fn failed_import_returns_to_editable_fields_and_reinspects_the_source() -> anyho
         );
         press(&mut app, KeyCode::Tab);
         app.handle_event(Event::Paste("Recovered import".into()), SCREEN);
+        press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Enter);
         app.session.job = None;
 
@@ -144,6 +145,8 @@ fn import_entrypoint_picker_shows_choices_and_bounds_navigation() -> anyhow::Res
         );
     }
     press(&mut app, KeyCode::Esc);
+    assert!(app.project_dialog.as_ref().unwrap().plan.is_none());
+    press(&mut app, KeyCode::Esc);
     assert!(app.project_dialog.is_none());
     assert!(app.projects.catalog.projects.is_empty());
     Ok(())
@@ -210,7 +213,8 @@ fn reload_confirmation_discards_local_changes_only_after_successful_read() -> an
     std::fs::remove_file(project.document())?;
 
     app.perform_action(Action::ReloadSource);
-    assert!(rendered_dialog(&mut app)?.contains("discard local edits"));
+    assert!(rendered_dialog(&mut app)?.contains("Unsaved text changes will be discarded"));
+    press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Enter);
     assert!(app.project_dialog.is_some());
     assert_eq!(app.session.editor.source(), unsaved);
@@ -317,13 +321,14 @@ fn export_requires_reconfirmation_after_destination_changes_and_rejects_stale_bu
     std::fs::write(&first, "first original")?;
     std::fs::write(&second, "second original")?;
     app.open_export();
+    press(&mut app, KeyCode::Tab);
     app.export.as_mut().unwrap().input.select_all();
-    app.handle_event(Event::Paste(first.to_string_lossy().into_owned()), SCREEN);
+    app.handle_event(Event::Paste("first.pdf".into()), SCREEN);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.export.as_ref().unwrap().message, "File exists.");
 
     app.export.as_mut().unwrap().input.select_all();
-    app.handle_event(Event::Paste(second.to_string_lossy().into_owned()), SCREEN);
+    app.handle_event(Event::Paste("second.pdf".into()), SCREEN);
     press(&mut app, KeyCode::Enter);
     assert_eq!(std::fs::read_to_string(&second)?, "second original");
     press(&mut app, KeyCode::Enter);
@@ -370,5 +375,61 @@ fn duplicating_from_an_included_file_copies_all_live_buffers() -> anyhow::Result
     );
     assert_eq!(std::fs::read_to_string(&included)?, "Included saved");
     assert!(!std::fs::read_to_string(project.document())?.starts_with("Main unsaved"));
+    Ok(())
+}
+
+#[test]
+fn reload_defaults_to_cancel_and_reconfirms_new_ai_work() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let project = resume_project::create(workspace.path(), "Safety")?;
+    let mut app = App::with_workspace(
+        Editor::open(project.document())?,
+        Preview::default(),
+        workspace.path().to_owned(),
+    )?;
+    app.session.editor.text.insert_str("Unsaved ");
+    let unsaved = app.session.editor.source();
+    app.open_project_dialog(Action::ReloadSource);
+    assert!(!rendered_dialog(&mut app)?.contains("pending AI proposal"));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.project_dialog.is_none());
+    assert_eq!(app.session.editor.source(), unsaved);
+
+    app.open_project_dialog(Action::ReloadSource);
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: unsaved.clone(),
+        source_after: "Proposal".into(),
+    }));
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Enter);
+    assert!(rendered_dialog(&mut app)?.contains("Session changed"));
+    assert_eq!(app.session.editor.source(), unsaved);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.project_dialog.is_none());
+    assert!(app.session.proposal_review.is_some());
+    Ok(())
+}
+
+#[test]
+fn single_file_import_requires_review_and_can_return_to_fields() -> anyhow::Result<()> {
+    let (_workspace, mut app) = application()?;
+    let source = tempfile::tempdir()?;
+    std::fs::write(
+        source.path().join("main.tex"),
+        crate::editor::STARTER_DOCUMENT,
+    )?;
+    app.open_project_dialog(Action::ImportResume);
+    app.handle_event(Event::Paste(source.path().display().to_string()), SCREEN);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.projects.catalog.projects.is_empty());
+    assert!(rendered_dialog(&mut app)?.contains("Choose the TeX entrypoint"));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.project_dialog.as_ref().unwrap().plan.is_none());
+    assert!(rendered_dialog(&mut app)?.contains("Review import"));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.project_dialog.is_none());
+    assert!(app.projects.catalog.projects.is_empty());
     Ok(())
 }

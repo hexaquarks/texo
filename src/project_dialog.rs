@@ -2,25 +2,35 @@ use std::path::Path;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Position, Rect},
-    widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph},
+    crossterm::event::{Event, KeyCode, MouseButton, MouseEventKind},
+    layout::{Position, Rect},
+    widgets::{List, ListItem, ListState, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea;
 use texo::theme;
 
 use crate::{
     actions::Action,
+    dialog_ui::{ButtonStyle, DialogAction, FormLayout, button, field},
     resume_project::{ImportPlan, Project},
 };
 
-const DIALOG_WIDTH: u16 = 76;
-const DIALOG_HEIGHT: u16 = 18;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Control {
+    Source,
+    Name,
+    Choices,
+    Cancel,
+    Submit,
+}
 
 pub struct ProjectDialog {
     pub action: Action,
     pub name: TextArea<'static>,
     pub source: TextArea<'static>,
-    pub source_focused: bool,
+    focus: Control,
+    context: String,
+    pub losses: Vec<&'static str>,
     pub plan: Option<ImportPlan>,
     pub selection: ListState,
     pub error: String,
@@ -56,167 +66,333 @@ impl ProjectDialog {
             action,
             name,
             source,
-            source_focused: matches!(action, Action::ImportResume),
+            focus: match action {
+                Action::ReloadSource | Action::RecoverSource => Control::Cancel,
+                Action::ImportResume => Control::Source,
+                _ => Control::Name,
+            },
+            context: active
+                .map(|project| {
+                    format!(
+                        "{} · {}",
+                        project.manifest.name,
+                        project.manifest.entrypoint.display()
+                    )
+                })
+                .unwrap_or_default(),
+            losses: Vec::new(),
             plan: None,
             selection: ListState::default().with_selected(Some(0)),
             error: String::new(),
         }
     }
 
+    fn confirmation(&self) -> bool {
+        matches!(self.action, Action::ReloadSource | Action::RecoverSource)
+    }
+
+    fn controls(&self) -> &[Control] {
+        if self.confirmation() {
+            &[Control::Cancel, Control::Submit]
+        } else if self.plan.is_some() {
+            &[Control::Choices, Control::Cancel, Control::Submit]
+        } else if matches!(self.action, Action::ImportResume) {
+            &[
+                Control::Source,
+                Control::Name,
+                Control::Cancel,
+                Control::Submit,
+            ]
+        } else {
+            &[Control::Name, Control::Cancel, Control::Submit]
+        }
+    }
+
     pub fn input(&mut self) -> &mut TextArea<'static> {
-        if self.source_focused {
+        if self.focus == Control::Source {
             &mut self.source
         } else {
             &mut self.name
         }
     }
 
-    pub fn click(&mut self, screen: Rect, position: Position) {
-        let [_, form, _, _] = Self::layout(screen);
+    fn action_label(&self) -> &str {
+        match self.action {
+            Action::ImportResume if self.plan.is_none() => "Review import",
+            Action::ImportResume => "Import resume",
+            Action::RenameResume => "Rename",
+            Action::DuplicateResume => "Duplicate",
+            Action::ReloadSource if !self.losses.is_empty() => "Reload & discard",
+            Action::ReloadSource => "Reload",
+            Action::RecoverSource => "Restore source",
+            _ => "Create resume",
+        }
+    }
 
-        if let Some(plan) = &self.plan {
-            let choices = Block::default()
-                .title("Choose the TeX entrypoint")
-                .inner(form);
-            if choices.contains(position) {
-                let index = self.selection.offset() + usize::from(position.y - choices.y);
-                if index < plan.candidates.len() {
-                    self.selection.select(Some(index));
+    fn content_rows(&self) -> u16 {
+        if self.confirmation() || matches!(self.action, Action::ImportResume) {
+            15
+        } else {
+            12
+        }
+    }
+
+    fn layout(&self, screen: Rect) -> FormLayout {
+        let focus_row = match self.focus {
+            Control::Name if matches!(self.action, Action::ImportResume) => 8,
+            Control::Source | Control::Name => 3,
+            _ => 0,
+        };
+        FormLayout::new(screen, self.content_rows(), focus_row, self.action_label())
+    }
+
+    pub fn handle_event(&mut self, event: Event, screen: Rect) -> Option<DialogAction> {
+        match event {
+            Event::Key(key) if key.code == KeyCode::Esc => {
+                if self.plan.take().is_some() {
+                    self.focus = Control::Source;
+                } else {
+                    return Some(DialogAction::Cancel);
                 }
             }
-            return;
-        }
-
-        if matches!(self.action, Action::ImportResume) {
-            let [_, source, _, name, _] = Self::import_layout(form);
-            if source.contains(position) {
-                self.source_focused = true;
-            } else if name.contains(position) {
-                self.source_focused = false;
+            Event::Key(key) if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) => {
+                let controls = self.controls();
+                let current = controls
+                    .iter()
+                    .position(|control| *control == self.focus)
+                    .unwrap_or(0);
+                let offset = if key.code == KeyCode::BackTab {
+                    controls.len() - 1
+                } else {
+                    1
+                };
+                self.focus = controls[(current + offset) % controls.len()];
             }
+            Event::Key(key) if key.code == KeyCode::Enter => {
+                return Some(if self.focus == Control::Cancel {
+                    DialogAction::Cancel
+                } else {
+                    DialogAction::Submit
+                });
+            }
+            Event::Key(key) if self.focus == Control::Choices => {
+                let count = self.plan.as_ref().map_or(0, |plan| plan.candidates.len());
+                let current = self.selection.selected().unwrap_or(0);
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.selection.select(Some(current.saturating_sub(1)))
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => self
+                        .selection
+                        .select(Some((current + 1).min(count.saturating_sub(1)))),
+                    _ => {}
+                }
+            }
+            Event::Key(key) if matches!(self.focus, Control::Cancel | Control::Submit) => {
+                match key.code {
+                    KeyCode::Left | KeyCode::Char('h') => self.focus = Control::Cancel,
+                    KeyCode::Right | KeyCode::Char('l') => self.focus = Control::Submit,
+                    KeyCode::Up | KeyCode::Char('k') => self.focus = self.controls()[0],
+                    KeyCode::Char(' ') => {
+                        return Some(if self.focus == Control::Cancel {
+                            DialogAction::Cancel
+                        } else {
+                            DialogAction::Submit
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            Event::Key(key) => {
+                self.input().input(key);
+            }
+            Event::Paste(text) if matches!(self.focus, Control::Source | Control::Name) => {
+                self.input().insert_str(text.replace(['\n', '\r'], ""));
+            }
+            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                let position = Position::new(mouse.column, mouse.row);
+                let layout = self.layout(screen);
+                for (index, area) in layout.buttons.iter().enumerate() {
+                    if area.contains(position) {
+                        return Some(if index == 0 {
+                            DialogAction::Cancel
+                        } else {
+                            DialogAction::Submit
+                        });
+                    }
+                }
+                if let Some(plan) = &self.plan {
+                    let choices = layout.row(3, 8);
+                    if choices.contains(position) {
+                        let index = self.selection.offset() + usize::from(position.y - choices.y);
+                        if index < plan.candidates.len() {
+                            self.selection.select(Some(index));
+                            self.focus = Control::Choices;
+                        }
+                    }
+                } else if !self.confirmation() {
+                    if layout.row(3, 3).contains(position) {
+                        self.focus = if matches!(self.action, Action::ImportResume) {
+                            Control::Source
+                        } else {
+                            Control::Name
+                        };
+                    } else if matches!(self.action, Action::ImportResume)
+                        && layout.row(8, 3).contains(position)
+                    {
+                        self.focus = Control::Name;
+                    }
+                }
+            }
+            _ => {}
         }
+        None
     }
 
-    fn layout(screen: Rect) -> [Rect; 4] {
-        let width = screen.width.min(DIALOG_WIDTH);
-        let height = screen.height.min(DIALOG_HEIGHT);
-        let area = Rect::new(
-            screen.x + (screen.width - width) / 2,
-            screen.y + (screen.height - height) / 2,
-            width,
-            height,
-        );
-        let inner = Block::bordered().padding(Padding::uniform(1)).inner(area);
-        let [form, error, help] = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(2),
-            Constraint::Length(1),
-        ])
-        .areas(inner);
-
-        [area, form, error, help]
+    pub fn reset_confirmation(&mut self) {
+        self.focus = Control::Cancel;
+        self.error = "Session changed. Review the consequences before reloading.".into();
     }
 
-    fn import_layout(form: Rect) -> [Rect; 5] {
-        Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(2),
-            Constraint::Length(1),
-            Constraint::Length(2),
-            Constraint::Min(0),
-        ])
-        .areas(form)
+    pub fn review_import(&mut self) {
+        self.focus = Control::Choices;
+    }
+
+    pub fn edit_import(&mut self) {
+        self.plan = None;
+        self.selection.select(Some(0));
+        self.focus = Control::Source;
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
-        let [area, form, error, help] = Self::layout(frame.area());
+        let layout = self.layout(frame.area());
         let title = match self.action {
-            Action::ImportResume => " Import resume ",
-            Action::RenameResume => " Rename resume ",
-            Action::DuplicateResume => " Duplicate resume ",
-            Action::ReloadSource => " Reload source — discard local edits and pending AI? ",
-            Action::RecoverSource => " Restore missing source from the editor? ",
-            _ => " New resume ",
+            Action::ImportResume => "Import resume",
+            Action::RenameResume => "Rename resume",
+            Action::DuplicateResume => "Duplicate resume",
+            Action::ReloadSource => "Reload from disk?",
+            Action::RecoverSource => "Restore missing source?",
+            _ => "New resume",
         };
-
-        let block = Block::bordered()
-            .title(title)
-            .padding(Padding::uniform(1))
-            .style(theme::dialog())
-            .border_style(theme::dialog_title());
-        frame.render_widget(Clear, area);
-        frame.render_widget(block, area);
-
-        for (input, focused) in [
-            (&mut self.source, self.source_focused),
-            (&mut self.name, !self.source_focused),
-        ] {
-            let cursor = if focused {
-                theme::dialog().fg(theme::BACKGROUND).bg(theme::ACCENT)
-            } else {
-                theme::dialog()
-            };
-            input.set_cursor_style(cursor);
-        }
+        layout.draw(frame, title);
+        let intro = if matches!(self.action, Action::ImportResume) {
+            "Choose a .tex file or a project folder."
+        } else {
+            &self.context
+        };
+        frame.render_widget(
+            Paragraph::new(intro).style(theme::muted()),
+            layout.row(0, 1),
+        );
 
         if let Some(plan) = &self.plan {
-            let items: Vec<_> = plan
+            frame.render_widget(
+                Paragraph::new("Choose the TeX entrypoint"),
+                layout.row(2, 1),
+            );
+            let items = plan
                 .candidates
                 .iter()
-                .map(|path| ListItem::new(path.display().to_string()))
-                .collect();
+                .map(|path| ListItem::new(path.display().to_string()));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::default().title("Choose the TeX entrypoint"))
-                    .highlight_style(theme::dialog().bg(theme::SELECTION)),
-                form,
+                    .highlight_style(theme::dialog().bg(theme::SELECTION))
+                    .highlight_symbol("› "),
+                layout.row(3, 8),
                 &mut self.selection,
             );
-        } else if matches!(self.action, Action::ImportResume) {
-            let [source_label, source, name_label, name, note] = Self::import_layout(form);
             frame.render_widget(
-                Paragraph::new("Source .tex file or project folder"),
-                source_label,
+                Paragraph::new("Supporting files are copied; originals stay untouched.")
+                    .style(theme::muted()),
+                layout.row(11, 2),
             );
-            frame.render_widget(&self.source, source);
-            frame.render_widget(Paragraph::new("Display name"), name_label);
-            frame.render_widget(&self.name, name);
+        } else if self.confirmation() {
+            let prompt = if matches!(self.action, Action::ReloadSource) {
+                "Replace the working copy with the file on disk?"
+            } else {
+                "Restore the missing source file from the working copy?"
+            };
             frame.render_widget(
-                Paragraph::new(
-                    "Copies the source folder and its supporting files. Originals stay untouched.",
-                )
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .style(theme::muted()),
-                note,
+                Paragraph::new(prompt).wrap(Wrap { trim: false }),
+                layout.row(2, 2),
             );
-        } else if !matches!(self.action, Action::ReloadSource | Action::RecoverSource) {
             frame.render_widget(
-                &self.name,
-                Rect {
-                    height: form.height.min(1),
-                    ..form
-                },
+                Paragraph::new(self.losses.join("\n\n")).wrap(Wrap { trim: false }),
+                layout.row(5, 6),
             );
+            if matches!(self.action, Action::ReloadSource) {
+                frame.render_widget(
+                    Paragraph::new("The on-disk file will not be changed.").style(theme::muted()),
+                    layout.row(11, 1),
+                );
+            }
+        } else {
+            let importing = matches!(self.action, Action::ImportResume);
+            frame.render_widget(
+                Paragraph::new(if importing { "Source" } else { "Resume name" }),
+                layout.row(2, 1),
+            );
+            if importing {
+                field(
+                    frame,
+                    layout.row(3, 3),
+                    &self.source,
+                    self.focus == Control::Source,
+                );
+                frame.render_widget(Paragraph::new("Resume name"), layout.row(7, 1));
+                field(
+                    frame,
+                    layout.row(8, 3),
+                    &self.name,
+                    self.focus == Control::Name,
+                );
+                frame.render_widget(
+                    Paragraph::new("Review the files before copying.").style(theme::muted()),
+                    layout.row(11, 1),
+                );
+            } else {
+                field(
+                    frame,
+                    layout.row(3, 3),
+                    &self.name,
+                    self.focus == Control::Name,
+                );
+                let note = if matches!(self.action, Action::DuplicateResume) {
+                    "Copies the working copy and supporting files into a new resume."
+                } else {
+                    ""
+                };
+                frame.render_widget(
+                    Paragraph::new(note)
+                        .wrap(Wrap { trim: false })
+                        .style(theme::muted()),
+                    layout.row(7, 3),
+                );
+            }
         }
-
         frame.render_widget(
             Paragraph::new(self.error.as_str())
                 .style(theme::dialog().fg(theme::ERROR))
-                .wrap(ratatui::widgets::Wrap { trim: false }),
-            error,
+                .wrap(Wrap { trim: false }),
+            layout.row(self.content_rows() - 2, 2),
         );
-        let navigation = if self.plan.is_some() {
-            ("↑↓/jk", "navigate")
-        } else {
-            ("Tab", "field")
-        };
-        frame.render_widget(
-            Paragraph::new(theme::shortcuts(&[
-                ("Enter", "confirm"),
-                navigation,
-                ("Esc", "cancel"),
-            ])),
-            help,
+        button(
+            frame,
+            layout.buttons[0],
+            "Cancel",
+            self.focus == Control::Cancel,
+            ButtonStyle::Secondary,
+        );
+        button(
+            frame,
+            layout.buttons[1],
+            self.action_label(),
+            self.focus == Control::Submit,
+            if matches!(self.action, Action::ReloadSource) && !self.losses.is_empty() {
+                ButtonStyle::Destructive
+            } else {
+                ButtonStyle::Primary
+            },
         );
     }
 }

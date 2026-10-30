@@ -232,6 +232,10 @@ fn empty_workspaces_require_project_creation_and_missing_sources_require_confirm
     assert!(!app.session.editor.path.exists());
     app.open_project_dialog(Action::RecoverSource);
     app.handle_project_dialog(
+        Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+        area,
+    );
+    app.handle_project_dialog(
         Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         area,
     );
