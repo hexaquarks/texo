@@ -104,7 +104,7 @@ impl App {
     }
 
     fn input_poll_interval(&mut self) -> Duration {
-        let preparing_image = !self.overlay_open() && self.active_preview().is_refreshing();
+        let preparing_image = !self.overlay_open() && self.active_preview().is_preparing();
         let running_job = self.session.job.is_some()
             || self.session.proposed_job.is_some()
             || self.session.assistant.is_running()

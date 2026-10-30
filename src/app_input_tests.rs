@@ -1432,24 +1432,16 @@ fn pdf_link_click_opens_only_on_release_and_never_after_dragging() -> anyhow::Re
         })
     };
 
+    let original_frame = terminal.backend().buffer().clone();
     let original_focus = app.focus;
-    for exit_event in [
-        mouse(MouseEventKind::Moved, Position::new(0, 0)),
-        mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            Position::new(area.right(), area.bottom()),
-        ),
-        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-        mouse(MouseEventKind::ScrollUp, pointer),
-        Event::Resize(area.width, area.height),
-        Event::FocusLost,
-    ] {
-        app.handle_event(mouse(MouseEventKind::Moved, pointer), area);
-        assert!(app.focus == original_focus, "hover must not focus the PDF");
-        assert!(app.session.preview.is_refreshing());
+    let original_cursor_style = app.terminal_cursor_style();
+    for position in [pointer, Position::new(0, 0), pointer] {
+        app.handle_event(mouse(MouseEventKind::Moved, position), area);
+        terminal.draw(|frame| app.draw(frame))?;
         assert!(!app.session.preview.is_preparing());
-        app.handle_event(exit_event, area);
-        assert!(!app.session.preview.is_refreshing());
+        assert!(app.focus == original_focus);
+        assert_eq!(app.terminal_cursor_style(), original_cursor_style);
+        assert_eq!(terminal.backend().buffer(), &original_frame);
     }
 
     app.session.status.clear();
