@@ -18,7 +18,7 @@ pub struct Settings {
     pub editor: EditorPreferences,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct EditorPreferences {
     pub soft_wrap: bool,

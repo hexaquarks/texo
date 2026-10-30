@@ -1336,9 +1336,11 @@ fn vim_menu_navigation_leaves_editable_fields_and_document_untouched() -> anyhow
     press(&mut app, KeyCode::Esc);
 
     app.open_settings();
+    app.begin_folder_change()?;
     press(&mut app, KeyCode::Char('j'));
     press(&mut app, KeyCode::Char('k'));
     assert_eq!(app.settings.as_ref().unwrap().value(), "jk");
+    press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
 
     app.focus = Focus::Assistant;

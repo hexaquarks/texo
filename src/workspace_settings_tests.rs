@@ -31,16 +31,17 @@ fn reload_shortcut_keeps_settings_open_for_same_new_and_invalid_folders() -> any
     settings.keybindings.prefix = "ctrl+a".into();
     settings.save(&app.settings_path)?;
     assert!(!app.handle_event(reload.clone(), area));
-    let dialog = app
-        .settings
-        .as_ref()
-        .expect("Settings stays open after switching folders");
+    assert_eq!(app.session.editor.source(), source);
+    assert!(app.settings.as_ref().unwrap().confirmation.is_some());
+    app.confirm_folder_change()?;
+    app.open_settings();
+    let dialog = app.settings.as_ref().unwrap();
     assert_eq!(
         dialog.value(),
         crate::workspace::display_path(&target.canonicalize()?)
     );
     assert_eq!(dialog.prefix_label, Prefix::new("ctrl+a")?.label());
-    assert_eq!(dialog.notice, "Configuration reloaded.");
+    assert!(dialog.notice.is_empty());
 
     let saved_value = dialog.value();
     std::fs::write(&app.settings_path, "broken TOML")?;
@@ -103,7 +104,8 @@ fn config_open_reload_and_folder_apply_preserve_prefix_and_reject_invalid_edits(
     std::fs::create_dir(&target)?;
     app.settings.as_mut().unwrap().input =
         ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
-    app.apply_settings()?;
+    app.prepare_folder_change()?;
+    app.confirm_folder_change()?;
     assert_eq!(
         Settings::load(&app.settings_path)?.keybindings.prefix,
         "ctrl+a"
@@ -149,7 +151,8 @@ fn settings_switch_discards_pending_state_and_refreshes_an_empty_workspace() -> 
     app.open_settings();
     app.settings.as_mut().unwrap().input =
         ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
-    app.apply_settings()?;
+    app.prepare_folder_change()?;
+    app.confirm_folder_change()?;
 
     assert!(app.pane_sizes == pane_sizes);
     assert_eq!(app.layout_state_path, Some(layout_state_path));
@@ -191,7 +194,7 @@ fn unchanged_folder_preserves_unsaved_text_and_pending_review() -> anyhow::Resul
     assert!(app.settings.is_none());
     assert_eq!(app.session.editor.source(), source);
     assert!(app.session.proposal_review.is_some());
-    assert!(Settings::load(&app.settings_path)?.resume_folder.is_some());
+    assert!(Settings::load(&app.settings_path)?.resume_folder.is_none());
     Ok(())
 }
 
@@ -217,7 +220,11 @@ fn invalid_or_unsavable_settings_preserve_pending_work() -> anyhow::Result<()> {
     ] {
         app.settings.as_mut().unwrap().input =
             ratatui_textarea::TextArea::new(vec![path.display().to_string()]);
-        assert!(app.apply_settings().is_err());
+        assert!(
+            app.prepare_folder_change()
+                .and_then(|_| app.confirm_folder_change())
+                .is_err()
+        );
         assert_eq!(app.session.editor.source(), source);
         assert_eq!(app.projects.root(), root);
         assert!(app.settings.is_some());
@@ -254,7 +261,7 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(text.contains("Settings") && text.contains("Resume folder"));
+    assert!(text.contains("Settings") && text.contains("WORKSPACE"));
     app.handle_settings_event(
         Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         Rect::new(0, 0, 160, 45),
@@ -321,7 +328,8 @@ fn switching_folders_cancels_old_builds_and_displays_the_new_pdf() -> anyhow::Re
     app.open_settings();
     app.settings.as_mut().unwrap().input =
         ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
-    app.apply_settings()?;
+    app.prepare_folder_change()?;
+    app.confirm_folder_change()?;
 
     assert!(app.session.proposed_job.is_none());
     assert_eq!(app.session.editor.source(), source);
@@ -386,7 +394,7 @@ fn visible_mode_controls_save_or_cancel_without_losing_resume_state() -> anyhow:
     let area = Rect::new(0, 0, 160, 45);
     app.open_settings();
     app.handle_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+        Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
         area,
     );
     assert!(app.settings.as_ref().unwrap().editor_preferences.mode == EditingMode::Vim);
@@ -428,6 +436,10 @@ fn visible_mode_controls_save_or_cancel_without_losing_resume_state() -> anyhow:
         theme::ACCENT
     );
     app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)),
+        area,
+    );
+    app.handle_event(
         Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         area,
     );
@@ -454,19 +466,310 @@ fn visible_mode_controls_save_or_cancel_without_losing_resume_state() -> anyhow:
 
     app.open_settings();
     assert!(app.settings.as_ref().unwrap().editor_preferences.mode == EditingMode::Vim);
-    app.handle_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
-        area,
-    );
-    app.handle_event(
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        area,
-    );
+    for code in [KeyCode::Left, KeyCode::BackTab, KeyCode::Enter] {
+        app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), area);
+    }
     assert!(Settings::load(&app.settings_path)?.editor.mode == EditingMode::Standard);
     app.handle_event(
         Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)),
         area,
     );
     assert!(app.session.editor.is_modified());
+    Ok(())
+}
+
+#[test]
+fn preference_apply_never_switches_workspaces_and_staged_edits_block_navigation()
+-> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    app.settings_path = directory.path().join("config.toml");
+    let other = directory.path().join("other");
+    std::fs::create_dir(&other)?;
+    Settings {
+        resume_folder: Some(other.clone()),
+        ..Settings::default()
+    }
+    .save(&app.settings_path)?;
+    let root = app.projects.root().to_path_buf();
+    app.session.editor.text.insert_str("Unsaved ");
+    let source = app.session.editor.source();
+    app.open_settings();
+    app.settings.as_mut().unwrap().editor_preferences.soft_wrap = false;
+    assert!(app.begin_folder_change().is_err());
+    assert!(app.reload_settings().is_err());
+    assert!(app.editor_preferences.soft_wrap);
+    assert!(!app.settings.as_ref().unwrap().editor_preferences.soft_wrap);
+    app.apply_settings()?;
+    assert_eq!(app.projects.root(), root);
+    assert_eq!(app.session.editor.source(), source);
+    assert!(!app.editor_preferences.soft_wrap);
+    assert_eq!(
+        Settings::load(&app.settings_path)?.resume_folder,
+        Some(other)
+    );
+    Ok(())
+}
+
+#[test]
+fn folder_confirmation_defaults_to_cancel_and_accounts_for_cached_sessions() -> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 100, 35);
+    app.settings_path = directory.path().join("config.toml");
+    app.session.editor.text.insert_str("Cached unsaved ");
+    app.session.assistant.input.insert_str("Draft chat");
+    app.session.proposal_review = Some(ProposalReview::new(&ProposedEdit {
+        source_before: app.session.editor.source(),
+        source_after: "Proposal".into(),
+    }));
+    app.open_document(directory.path().join("second.tex"));
+    app.session.job = None;
+    let root = app.projects.root().to_path_buf();
+    let target = directory.path().join("target");
+    std::fs::create_dir(&target)?;
+    app.open_settings();
+    app.begin_folder_change()?;
+    app.settings.as_mut().unwrap().input =
+        ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
+    app.prepare_folder_change()?;
+    let losses = &app
+        .settings
+        .as_ref()
+        .unwrap()
+        .confirmation
+        .as_ref()
+        .unwrap()
+        .losses;
+    assert_eq!(
+        losses,
+        &["unsaved text", "pending AI work or proposals", "chat"]
+    );
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        area,
+    );
+    assert_eq!(app.projects.root(), root);
+    assert!(!app.settings.as_ref().unwrap().folder_open);
+    assert!(!app.settings_path.exists());
+    assert_eq!(app.sessions.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn changed_destinations_and_new_losses_require_fresh_confirmation() -> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    app.settings_path = directory.path().join("config.toml");
+    let root = app.projects.root().to_path_buf();
+    let first = directory.path().join("first");
+    let second = directory.path().join("second");
+    std::fs::create_dir(&first)?;
+    std::fs::create_dir(&second)?;
+    app.open_settings();
+    app.begin_folder_change()?;
+    app.settings.as_mut().unwrap().input =
+        ratatui_textarea::TextArea::new(vec![first.display().to_string()]);
+    app.prepare_folder_change()?;
+    assert!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .confirmation
+            .as_ref()
+            .unwrap()
+            .losses
+            .is_empty()
+    );
+
+    app.settings.as_mut().unwrap().input =
+        ratatui_textarea::TextArea::new(vec![second.display().to_string()]);
+    app.confirm_folder_change()?;
+    assert_eq!(app.projects.root(), root);
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .confirmation
+            .as_ref()
+            .unwrap()
+            .destination,
+        second.canonicalize()?
+    );
+    app.session.editor.text.insert_str("New unsaved ");
+    app.confirm_folder_change()?;
+    assert_eq!(app.projects.root(), root);
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .confirmation
+            .as_ref()
+            .unwrap()
+            .losses,
+        ["unsaved text"]
+    );
+    app.confirm_folder_change()?;
+    assert_eq!(app.projects.root(), second.canonicalize()?);
+    Ok(())
+}
+
+#[test]
+fn failed_switch_save_and_same_canonical_folder_preserve_session() -> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    app.settings_path = directory.path().join("config.toml");
+    let root = app.projects.root().to_path_buf();
+    let target = directory.path().join("target");
+    std::fs::create_dir(&target)?;
+    app.session.editor.text.insert_str("Unsaved ");
+    let source = app.session.editor.source();
+    app.open_settings();
+    app.begin_folder_change()?;
+    app.settings.as_mut().unwrap().input =
+        ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
+    app.prepare_folder_change()?;
+    std::fs::create_dir(&app.settings_path)?;
+    assert!(app.confirm_folder_change().is_err());
+    assert_eq!(app.projects.root(), root);
+    assert_eq!(app.session.editor.source(), source);
+    std::fs::remove_dir(&app.settings_path)?;
+
+    app.settings.as_mut().unwrap().input =
+        ratatui_textarea::TextArea::new(vec![root.join(".").display().to_string()]);
+    app.prepare_folder_change()?;
+    assert!(app.settings.is_none());
+    assert_eq!(app.session.editor.source(), source);
+    assert_eq!(app.projects.root(), root);
+    Ok(())
+}
+
+#[test]
+fn grouped_settings_support_keyboard_toggle_cancel_and_small_screens() -> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    app.settings_path = directory.path().join("config.toml");
+    app.open_settings();
+    let screen = Rect::new(0, 0, 100, 35);
+    for code in [KeyCode::Right, KeyCode::Tab, KeyCode::Char(' ')] {
+        app.handle_settings_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), screen);
+    }
+    assert!(!app.settings.as_ref().unwrap().editor_preferences.soft_wrap);
+    assert!(app.editor_preferences.soft_wrap);
+    for (width, height) in [(100, 35), (40, 12), (20, 5), (1, 1)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+        for control in [
+            crate::settings::SettingsControl::Mode,
+            crate::settings::SettingsControl::Apply,
+        ] {
+            app.settings.as_mut().unwrap().focus = control;
+            terminal.draw(|frame| app.draw(frame))?;
+        }
+    }
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        screen,
+    );
+    assert!(app.editor_preferences.soft_wrap);
+    assert!(app.editor_preferences.mode == crate::config::EditingMode::Standard);
+    assert!(!app.settings_path.exists());
+    Ok(())
+}
+
+#[test]
+fn preference_save_failure_keeps_staged_values_and_live_work() -> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    app.settings_path = directory.path().join("blocked-config");
+    std::fs::create_dir(&app.settings_path)?;
+    app.session.editor.text.insert_str("Unsaved ");
+    let source = app.session.editor.source();
+    app.open_settings();
+    app.settings.as_mut().unwrap().editor_preferences.soft_wrap = false;
+    assert!(app.apply_settings().is_err());
+    assert!(!app.settings.as_ref().unwrap().editor_preferences.soft_wrap);
+    assert!(app.editor_preferences.soft_wrap);
+    assert_eq!(app.session.editor.source(), source);
+    Ok(())
+}
+
+#[test]
+fn editing_a_validated_destination_removes_the_confirmation() -> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    app.settings_path = directory.path().join("config.toml");
+    let target = directory.path().join("target");
+    std::fs::create_dir(&target)?;
+    app.open_settings();
+    app.begin_folder_change()?;
+    app.settings.as_mut().unwrap().input =
+        ratatui_textarea::TextArea::new(vec![target.display().to_string()]);
+    app.prepare_folder_change()?;
+    assert!(app.settings.as_ref().unwrap().confirmation.is_some());
+    let screen = Rect::new(0, 0, 100, 35);
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)),
+        screen,
+    );
+    app.handle_settings_event(Event::Paste("changed".into()), screen);
+    assert!(app.settings.as_ref().unwrap().confirmation.is_none());
+    assert_eq!(app.projects.root(), directory.path());
+    Ok(())
+}
+
+#[test]
+fn settings_vim_navigation_follows_rows_and_preserves_folder_typing() -> anyhow::Result<()> {
+    use crate::settings::SettingsControl;
+
+    let (_directory, mut app) = application()?;
+    let screen = Rect::new(0, 0, 100, 35);
+    app.open_settings();
+    for (key, focus) in [
+        ('j', SettingsControl::Wrap),
+        ('j', SettingsControl::ChangeFolder),
+        ('j', SettingsControl::OpenConfig),
+        ('l', SettingsControl::ReloadConfig),
+        ('j', SettingsControl::Apply),
+        ('h', SettingsControl::Cancel),
+        ('k', SettingsControl::OpenConfig),
+        ('k', SettingsControl::ChangeFolder),
+        ('k', SettingsControl::Wrap),
+        ('k', SettingsControl::Mode),
+    ] {
+        app.handle_settings_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+            screen,
+        );
+        assert!(app.settings.as_ref().unwrap().focus == focus);
+    }
+    for (key, mode) in [
+        ('l', crate::config::EditingMode::Vim),
+        ('h', crate::config::EditingMode::Standard),
+    ] {
+        app.handle_settings_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+            screen,
+        );
+        assert!(app.settings.as_ref().unwrap().editor_preferences.mode == mode);
+    }
+
+    app.begin_folder_change()?;
+    for key in ['h', 'j', 'k', 'l'] {
+        app.handle_settings_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+            screen,
+        );
+    }
+    assert_eq!(app.settings.as_ref().unwrap().value(), "hjkl");
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        screen,
+    );
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+        screen,
+    );
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
+        screen,
+    );
+    app.handle_settings_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        screen,
+    );
+    assert!(!app.settings.as_ref().unwrap().folder_open);
     Ok(())
 }

@@ -83,6 +83,15 @@ impl Assistant {
         }
     }
 
+    pub fn has_chat(&self) -> bool {
+        !self.messages.is_empty()
+            || self
+                .input
+                .lines()
+                .iter()
+                .any(|line| !line.trim().is_empty())
+    }
+
     pub fn clear_input(&mut self) {
         self.input = new_input();
     }

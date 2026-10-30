@@ -32,7 +32,7 @@ test('PDF navigation, zoom, pan, drag, and reset remain usable across resizing a
         await terminal.mouse.drag(90, 16, 85, 12);
         await terminal.screenshot(join(ARTIFACTS, 'preview-drag.png'));
         await prefix(terminal, 's');
-        await terminal.getByText('Resume folder').expect();
+        await terminal.getByText('WORKSPACE').expect();
         await terminal.resize(60, 16);
         await terminal.press('Escape');
         await terminal.resize(120, 35);

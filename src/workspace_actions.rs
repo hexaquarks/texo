@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use anyhow::Context;
+
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
     layout::{Position, Rect},
@@ -14,7 +16,7 @@ use crate::{
     project_dialog::ProjectDialog,
     projects::Projects,
     resume_project::{self, ImportPlan},
-    settings::SettingsDialog,
+    settings::{SettingsAction, SettingsDialog},
 };
 
 impl App {
@@ -32,82 +34,138 @@ impl App {
             self.prefix.label(),
         );
         dialog.editor_preferences = self.editor_preferences;
+        dialog.original_preferences = self.editor_preferences;
         self.settings = Some(dialog);
     }
 
     pub(super) fn handle_settings_event(&mut self, event: Event, screen: Rect) {
-        if let Event::Key(key) = event
-            && key.code == KeyCode::Char('v')
-            && key.modifiers == KeyModifiers::CONTROL
-        {
-            if let Some(dialog) = &mut self.settings {
-                dialog.toggle_mode();
+        let action = self
+            .settings
+            .as_mut()
+            .and_then(|dialog| dialog.handle_event(event, screen));
+        let result = match action {
+            Some(SettingsAction::Cancel) => {
+                self.settings = None;
+                Ok(())
             }
-            return;
-        }
-
-        if let Event::Key(key) = event
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('o' | 'r'))
-        {
-            let result = if key.code == KeyCode::Char('o') {
-                self.open_config_with(crate::config::open_editor)
-            } else {
-                self.reload_settings()
-            };
-            if let Some(dialog) = &mut self.settings {
-                match result {
-                    Ok(()) => {
-                        dialog.error.clear();
-                        dialog.notice = if key.code == KeyCode::Char('o') {
-                            "Opened config in your text editor."
-                        } else {
-                            "Configuration reloaded."
-                        }
-                        .into();
-                    }
-                    Err(error) => {
-                        dialog.notice.clear();
-                        dialog.error = error.to_string();
+            Some(SettingsAction::Apply) => self.apply_settings(),
+            Some(SettingsAction::OpenConfig) => self.open_config_with(crate::config::open_editor),
+            Some(SettingsAction::ReloadConfig) => self.reload_settings(),
+            Some(SettingsAction::ChangeFolder) => self.begin_folder_change(),
+            Some(SettingsAction::PrepareFolder) => self.prepare_folder_change(),
+            Some(SettingsAction::SwitchFolder) => self.confirm_folder_change(),
+            None => return,
+        };
+        if let Some(dialog) = &mut self.settings {
+            match result {
+                Ok(()) => {
+                    dialog.error.clear();
+                    if matches!(action, Some(SettingsAction::OpenConfig)) {
+                        dialog.notice = "Opened config in your text editor.".into();
                     }
                 }
-            }
-            return;
-        }
-
-        match event {
-            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(dialog) = &mut self.settings {
-                    dialog.select_mode_at(screen, Position::new(mouse.column, mouse.row));
-                }
-            }
-            Event::Key(key) if key.code == KeyCode::Esc => self.settings = None,
-            Event::Key(key) if key.code == KeyCode::Enter => {
-                if let Err(error) = self.apply_settings()
-                    && let Some(dialog) = &mut self.settings
-                {
+                Err(error) => {
+                    dialog.notice.clear();
                     dialog.error = error.to_string();
                 }
             }
-            Event::Key(key) => {
-                if let Some(dialog) = &mut self.settings {
-                    dialog.input.input(key);
-                    dialog.error.clear();
-                }
-            }
-            Event::Paste(text) => {
-                if let Some(dialog) = &mut self.settings {
-                    let text = text.trim();
-                    if text.contains(['\r', '\n']) {
-                        dialog.error = "Enter a single folder path".into();
-                    } else {
-                        dialog.input.insert_str(text);
-                        dialog.error.clear();
-                    }
-                }
-            }
-            _ => {}
         }
+    }
+
+    fn require_resolved_preferences(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self
+                .settings
+                .as_ref()
+                .is_some_and(SettingsDialog::has_staged_preferences),
+            "Apply or cancel preference changes before changing workspaces or reloading config."
+        );
+        Ok(())
+    }
+
+    pub(super) fn begin_folder_change(&mut self) -> anyhow::Result<()> {
+        self.require_resolved_preferences()?;
+        if let Some(dialog) = &mut self.settings {
+            dialog.reload_folder = false;
+            dialog.begin_folder_change();
+        }
+        Ok(())
+    }
+
+    fn workspace_losses(&self) -> Vec<&'static str> {
+        let sessions: Vec<_> = std::iter::once(&self.session)
+            .chain(self.sessions.values())
+            .collect();
+        let mut losses = Vec::new();
+        if sessions
+            .iter()
+            .any(|session| session.editor.is_modified() && !session.empty_workspace)
+        {
+            losses.push("unsaved text");
+        }
+        if sessions
+            .iter()
+            .any(|session| session.assistant.is_running() || session.proposal_review.is_some())
+        {
+            losses.push("pending AI work or proposals");
+        }
+        if sessions.iter().any(|session| session.assistant.has_chat()) {
+            losses.push("chat");
+        }
+        losses
+    }
+
+    pub(super) fn prepare_folder_change(&mut self) -> anyhow::Result<()> {
+        self.require_resolved_preferences()?;
+        let dialog = self.settings.as_ref().context("Settings is closed")?;
+        let root = crate::config::resume_folder(&dialog.value())?;
+        let mut settings = Settings::load(&self.settings_path)?;
+        settings.resume_folder = Some(root.clone());
+        if !dialog.reload_folder {
+            settings.editor = self.editor_preferences;
+        }
+        let save = !dialog.reload_folder;
+        if self.projects.root().canonicalize()? == root {
+            return self.replace_workspace(root, settings, save);
+        }
+        // Validate the complete replacement while all current sessions and workers remain live.
+        let _prepared = self.prepare_workspace(root.clone(), &settings)?;
+        let losses = self.workspace_losses();
+        self.settings.as_mut().unwrap().confirm_folder(root, losses);
+        Ok(())
+    }
+
+    pub(super) fn confirm_folder_change(&mut self) -> anyhow::Result<()> {
+        self.require_resolved_preferences()?;
+        let dialog = self.settings.as_ref().context("Settings is closed")?;
+        let confirmation = dialog
+            .confirmation
+            .as_ref()
+            .context("Validate the destination first")?;
+        let root = crate::config::resume_folder(&dialog.value())?;
+        let losses = self.workspace_losses();
+        if confirmation.input != dialog.value()
+            || confirmation.destination != root
+            || confirmation.losses != losses
+        {
+            return self.prepare_folder_change();
+        }
+        let save = !dialog.reload_folder;
+        let mut settings = Settings::load(&self.settings_path)?;
+        if save {
+            settings.resume_folder = Some(root.clone());
+            settings.editor = self.editor_preferences;
+        } else {
+            let configured = settings
+                .resume_folder
+                .as_deref()
+                .unwrap_or(std::path::Path::new("~/resumes"));
+            anyhow::ensure!(
+                crate::config::resume_folder(&configured.to_string_lossy())? == root,
+                "Config destination changed. Reload config again."
+            );
+        }
+        self.replace_workspace(root, settings, save)
     }
 
     pub(super) fn open_config_with(
@@ -121,17 +179,30 @@ impl App {
     }
 
     pub(super) fn reload_settings(&mut self) -> anyhow::Result<()> {
+        self.require_resolved_preferences()?;
         let settings = Settings::load(&self.settings_path)?;
         let folder = settings
             .resume_folder
             .as_deref()
             .unwrap_or(std::path::Path::new("~/resumes"));
         let root = crate::config::resume_folder(&folder.to_string_lossy())?;
-        let keep_settings_open = self.settings.is_some();
-        self.replace_workspace(root, settings, false)?;
-
-        if keep_settings_open {
+        let keep_open = self.settings.is_some();
+        if self.projects.root().canonicalize()? != root {
+            let _prepared = self.prepare_workspace(root.clone(), &settings)?;
             self.open_settings();
+            let losses = self.workspace_losses();
+            let dialog = self.settings.as_mut().unwrap();
+            dialog.input =
+                ratatui_textarea::TextArea::new(vec![crate::workspace::display_path(&root)]);
+            dialog.begin_folder_change();
+            dialog.reload_folder = true;
+            dialog.confirm_folder(root, losses);
+            return Ok(());
+        }
+        self.replace_workspace(root, settings, false)?;
+        if keep_open {
+            self.open_settings();
+            self.settings.as_mut().unwrap().notice = "Configuration reloaded.".into();
         }
         Ok(())
     }
@@ -140,11 +211,32 @@ impl App {
         let Some(dialog) = &self.settings else {
             return Ok(());
         };
-        let root = crate::config::resume_folder(&dialog.value())?;
+        let preferences = dialog.editor_preferences;
         let mut settings = Settings::load(&self.settings_path)?;
-        settings.resume_folder = Some(root.clone());
-        settings.editor = dialog.editor_preferences;
-        self.replace_workspace(root, settings, true)
+        settings.editor = preferences;
+        settings.save(&self.settings_path)?;
+        self.apply_editor_preferences(preferences);
+        self.settings = None;
+        Ok(())
+    }
+
+    fn prepare_workspace(&self, root: PathBuf, settings: &Settings) -> anyhow::Result<Self> {
+        let prefix = Prefix::new(&settings.keybindings.prefix)?;
+        let workspace = crate::workspace::Workspace::resolve(Some(&root))?;
+        let editor = if workspace.empty {
+            Editor::placeholder(workspace.document)?
+        } else {
+            Editor::open(workspace.document)?
+        };
+        let mut replacement =
+            Self::with_workspace(editor, self.session.preview.empty_like(), root)?;
+        replacement.session.empty_workspace = workspace.empty;
+        replacement.settings_path = self.settings_path.clone();
+        replacement.pane_sizes = self.pane_sizes;
+        replacement.layout_state_path = self.layout_state_path.clone();
+        replacement.prefix = prefix;
+        replacement.apply_editor_preferences(settings.editor);
+        Ok(replacement)
     }
 
     pub(super) fn replace_workspace(
@@ -171,22 +263,8 @@ impl App {
             return Ok(());
         }
 
-        // Prepare the replacement before discarding anything. Failed reads or saves
-        // leave the current editor, proposals, chat, and workers untouched.
-        let workspace = crate::workspace::Workspace::resolve(Some(&root))?;
-        let editor = if workspace.empty {
-            Editor::placeholder(workspace.document)?
-        } else {
-            Editor::open(workspace.document)?
-        };
-        let mut replacement =
-            Self::with_workspace(editor, self.session.preview.empty_like(), root)?;
-        replacement.session.empty_workspace = workspace.empty;
-        replacement.settings_path = self.settings_path.clone();
-        replacement.pane_sizes = self.pane_sizes;
-        replacement.layout_state_path = self.layout_state_path.clone();
-        replacement.prefix = prefix;
-        replacement.apply_editor_preferences(settings.editor);
+        // Prepare again at confirmation so unreadable or changed destinations cannot replace live work.
+        let replacement = self.prepare_workspace(root, &settings)?;
         if save {
             settings.save(&self.settings_path)?;
         }
