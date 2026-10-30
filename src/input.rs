@@ -248,6 +248,9 @@ impl App {
             } else if layout.files.contains(position) {
                 self.focus = Focus::Projects;
                 self.projects.files_focused = true;
+                if self.projects.select_file_at(layout.files, mouse.row) {
+                    self.activate_projects();
+                }
             } else if layout.projects.contains(position) {
                 self.focus = Focus::Projects;
                 if self.projects.select_at(layout.projects, mouse.row) {
@@ -604,7 +607,10 @@ impl App {
                 self.projects.move_selection(true);
                 self.activate_projects();
             }
-            KeyCode::Enter if self.projects.files_focused => self.focus = Focus::Editor,
+            KeyCode::Enter if self.projects.files_focused => {
+                self.activate_projects();
+                self.focus = Focus::Editor;
+            }
             KeyCode::Enter => self.activate_projects(),
             _ => {}
         }

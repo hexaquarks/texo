@@ -340,3 +340,35 @@ fn export_requires_reconfirmation_after_destination_changes_and_rejects_stale_bu
     assert!(!workspace.path().join("resume-export.pdf").exists());
     Ok(())
 }
+
+#[test]
+fn duplicating_from_an_included_file_copies_all_live_buffers() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let root = workspace.path().canonicalize()?;
+    let project = resume_project::create(&root, "Original")?;
+    let included = project.root.join("included.tex");
+    std::fs::write(&included, "Included saved")?;
+    let mut app = App::with_workspace(Editor::open(project.document())?, Preview::default(), root)?;
+    app.session.editor.text.insert_str("Main unsaved ");
+    let main = app.session.editor.source();
+    app.open_document(included.clone());
+    app.session.job = None;
+    app.session.editor.text.insert_str("Included unsaved ");
+    let supporting = app.session.editor.source();
+
+    let mut dialog =
+        crate::project_dialog::ProjectDialog::new(Action::DuplicateResume, Some(&project), None);
+    dialog.name.select_all();
+    dialog.name.insert_str("Copy");
+    assert!(app.finish_project_dialog(&mut dialog)?);
+    app.session.job = None;
+    let copy = app.projects.project_for(&app.session.editor.path).unwrap();
+    assert_eq!(std::fs::read_to_string(copy.document())?, main);
+    assert_eq!(
+        std::fs::read_to_string(copy.root.join("included.tex"))?,
+        supporting
+    );
+    assert_eq!(std::fs::read_to_string(&included)?, "Included saved");
+    assert!(!std::fs::read_to_string(project.document())?.starts_with("Main unsaved"));
+    Ok(())
+}

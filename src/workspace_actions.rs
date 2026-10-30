@@ -406,6 +406,17 @@ impl App {
         self.project_dialog = Some(dialog);
     }
 
+    fn project_working_copies(&self, root: &std::path::Path) -> Vec<(PathBuf, String)> {
+        self.sessions
+            .values()
+            .chain(std::iter::once(&self.session))
+            .filter_map(|session| {
+                let relative = session.editor.path.strip_prefix(root).ok()?;
+                Some((relative.to_path_buf(), session.editor.source()))
+            })
+            .collect()
+    }
+
     pub(super) fn finish_project_dialog(
         &mut self,
         dialog: &mut ProjectDialog,
@@ -451,11 +462,12 @@ impl App {
                     .projects
                     .project_for(&self.session.editor.path)
                     .ok_or_else(|| anyhow::anyhow!("Select a resume"))?;
+                let working_copies = self.project_working_copies(&project.root);
                 Some(resume_project::duplicate(
                     &root,
                     project,
                     &name,
-                    &self.session.editor.source(),
+                    &working_copies,
                 )?)
             }
             Action::ReloadSource => {

@@ -349,7 +349,7 @@ impl ImportPlan {
     }
 
     pub fn import(&self, workspace: &Path, name: &str, entrypoint: &Path) -> Result<Project> {
-        self.copy_project(workspace, name, entrypoint, None)
+        self.copy_project(workspace, name, entrypoint, &[])
     }
 
     fn copy_project(
@@ -357,7 +357,7 @@ impl ImportPlan {
         workspace: &Path,
         name: &str,
         entrypoint: &Path,
-        current_source: Option<&str>,
+        working_copies: &[(PathBuf, String)],
     ) -> Result<Project> {
         ensure!(
             self.candidates
@@ -391,8 +391,19 @@ impl ImportPlan {
                     fs::copy(self.source.join(relative), target)?;
                 }
 
-                if let Some(source) = current_source {
-                    fs::write(destination.join(entrypoint), source)?;
+                for (relative, source) in working_copies {
+                    ensure!(
+                        relative
+                            .components()
+                            .all(|part| matches!(part, Component::Normal(_)))
+                            && relative
+                                .extension()
+                                .is_some_and(|extension| extension == "tex"),
+                        "Working copies must be TeX files inside the resume"
+                    );
+                    let target = destination.join(relative);
+                    fs::create_dir_all(target.parent().unwrap())?;
+                    fs::write(target, source)?;
                 }
                 Ok(())
             },
@@ -400,7 +411,7 @@ impl ImportPlan {
     }
 }
 
-fn source_files(root: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn source_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut total_bytes = 0;
     for entry in WalkBuilder::new(root)
@@ -451,7 +462,7 @@ pub fn duplicate(
     workspace: &Path,
     project: &Project,
     name: &str,
-    current_source: &str,
+    working_copies: &[(PathBuf, String)],
 ) -> Result<Project> {
     let plan = ImportPlan {
         source: project.root.clone(),
@@ -462,7 +473,7 @@ pub fn duplicate(
         workspace,
         name,
         &project.manifest.entrypoint,
-        Some(current_source),
+        working_copies,
     )
 }
 
@@ -486,7 +497,12 @@ mod tests {
         assert_eq!(project.manifest.label, Some(label.clone()));
         assert_eq!(fs::read_to_string(project.document())?, source);
 
-        let copy = duplicate(workspace.path(), &project, "Copy", "unsaved source")?;
+        let copy = duplicate(
+            workspace.path(),
+            &project,
+            "Copy",
+            &[(project.manifest.entrypoint.clone(), "unsaved source".into())],
+        )?;
         assert_eq!(copy.manifest.label, Some(label.clone()));
         assert_ne!(copy.manifest.id, project.manifest.id);
         assert_eq!(fs::read_to_string(copy.document())?, "unsaved source");
@@ -584,7 +600,15 @@ mod tests {
             "\\documentclass{article}"
         );
 
-        let duplicate = duplicate(workspace.path(), &imported, "General", "unsaved duplicate")?;
+        let duplicate = duplicate(
+            workspace.path(),
+            &imported,
+            "General",
+            &[(
+                imported.manifest.entrypoint.clone(),
+                "unsaved duplicate".into(),
+            )],
+        )?;
         assert_ne!(duplicate.manifest.id, imported.manifest.id);
         assert_eq!(
             fs::read_to_string(duplicate.document())?,
