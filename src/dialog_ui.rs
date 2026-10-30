@@ -132,31 +132,31 @@ pub enum ButtonStyle {
 }
 
 pub fn button(frame: &mut Frame, area: Rect, label: &str, focused: bool, kind: ButtonStyle) {
-    let emphasized = focused || matches!(kind, ButtonStyle::Primary | ButtonStyle::Destructive);
-    let color = if matches!(kind, ButtonStyle::Destructive) {
-        theme::ERROR
-    } else if emphasized {
-        theme::ACCENT
-    } else {
-        theme::TEXT
+    let style = match kind {
+        ButtonStyle::Destructive => theme::dialog().bg(theme::ERROR).fg(theme::BACKGROUND),
+        ButtonStyle::Primary => theme::dialog().bg(theme::ACCENT).fg(theme::BACKGROUND),
+        ButtonStyle::Secondary if focused => {
+            theme::dialog().bg(theme::ACCENT).fg(theme::BACKGROUND)
+        }
+        ButtonStyle::Secondary => theme::dialog().bg(theme::SELECTION),
     };
-    let mut style = theme::dialog().fg(color);
-    if focused {
-        style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    }
+    let label = if focused {
+        format!("› {label}")
+    } else {
+        label.to_owned()
+    };
+    let style = if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    };
 
-    // Terminal borders sit inside cells; full-cell fills otherwise look taller
-    // than neighboring outlines even when their layout rectangles are equal.
-    let border = if emphasized {
-        theme::dialog().fg(color)
-    } else {
-        theme::muted()
-    };
+    // Use full-cell backgrounds for every button so their visible bounds match.
     frame.render_widget(
         Paragraph::new(label)
             .alignment(Alignment::Center)
             .style(style)
-            .block(Block::bordered().border_style(border)),
+            .block(Block::default().padding(Padding::vertical(1))),
         area,
     );
 }

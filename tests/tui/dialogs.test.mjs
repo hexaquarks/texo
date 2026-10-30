@@ -24,7 +24,15 @@ test('project dialogs share visible controls and preserve work when cancelled', 
             await terminal.getByText('Resume name').expect();
             await terminal.waitIdle();
             await terminal.screenshot(join(ARTIFACTS, `dialog-${name.toLowerCase()}.png`));
-            await terminal.press('Tab', 'Enter');
+            await terminal.press('Tab');
+            await terminal.getByText('› Cancel').expect();
+            await terminal.waitIdle();
+            await terminal.screenshot(join(ARTIFACTS, `dialog-${name.toLowerCase()}-cancel-focus.png`));
+            await terminal.press('Tab');
+            await terminal.getByText(`› ${name}`).expect();
+            await terminal.waitIdle();
+            await terminal.screenshot(join(ARTIFACTS, `dialog-${name.toLowerCase()}-action-focus.png`));
+            await terminal.press('Shift+Tab', 'Enter');
             await terminal.getByText(`${name} resume`).expect({ not: true });
         }
 
