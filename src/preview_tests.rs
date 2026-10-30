@@ -37,7 +37,6 @@ fn failed_preview_does_not_retry_until_the_viewport_changes() {
     let (sender, result) = mpsc::channel();
 
     preview.pending = Some(ViewportJob {
-        hovered_link: None,
         source: preview.source_page.clone().unwrap(),
         pixels: (
             u32::from(area.width) * u32::from(font.width),
@@ -70,7 +69,6 @@ fn pending_image_work_does_not_block_or_replace_a_new_page() {
     let source = preview.source_page.clone().unwrap();
     let (sender, result) = mpsc::channel();
     preview.pending = Some(ViewportJob {
-        hovered_link: None,
         source: source.clone(),
         pixels: (100, 100),
         scroll: 0,
@@ -209,7 +207,6 @@ fn loading_continues_until_the_replacement_image_is_ready() -> anyhow::Result<()
     let font = preview.picker.font_size();
     let (sender, result) = mpsc::channel();
     preview.pending = Some(ViewportJob {
-        hovered_link: None,
         source: source.clone(),
         pixels: (
             u32::from(content.width) * u32::from(font.width),
@@ -557,7 +554,6 @@ fn late_zoom_work_cannot_replace_the_latest_scale_or_pan() {
     let source = preview.source_page.clone().unwrap();
     let (sender, result) = mpsc::channel();
     preview.pending = Some(ViewportJob {
-        hovered_link: None,
         source: source.clone(),
         pixels: (100, 100),
         scroll: 0,
@@ -673,7 +669,6 @@ fn native_page_preparation_remains_valid_when_zoom_changes_before_completion() {
     let source = preview.source_page.clone().unwrap();
     let (sender, result) = mpsc::channel();
     preview.pending = Some(ViewportJob {
-        hovered_link: None,
         source: source.clone(),
         pixels: (200, 200),
         scroll: 0,
@@ -1115,170 +1110,4 @@ fn links_sharing_one_cell_require_a_single_distinct_target() {
         mapping.link_at(&links, Position::new(2, 2)),
         Some(links[0].uri.as_str())
     );
-}
-
-#[test]
-fn hover_tint_changes_only_the_annotation_and_preserves_legibility() {
-    let mut pixels = image::RgbImage::from_pixel(20, 20, image::Rgb([255; 3]));
-    pixels.put_pixel(10, 10, image::Rgb([0; 3]));
-    let mut image = DynamicImage::ImageRgb8(pixels);
-    highlight_link(&mut image, [0.25, 0.25, 0.75, 0.75]);
-    let pixels = image.to_rgb8();
-
-    assert_eq!(pixels.get_pixel(4, 10).0, [255; 3]);
-    assert_eq!(pixels.get_pixel(15, 10).0, [255; 3]);
-    let tinted_paper = pixels.get_pixel(6, 6).0;
-    assert!(tinted_paper[0] < tinted_paper[2]);
-    assert!(tinted_paper.iter().all(|channel| *channel > 220));
-    assert!(
-        pixels
-            .get_pixel(10, 10)
-            .0
-            .iter()
-            .all(|channel| *channel < 32)
-    );
-}
-
-#[test]
-#[ignore = "requires Poppler; reports hover preparation timing"]
-fn hover_reuses_preparation_until_target_changes_and_preserves_clicks() -> Result<()> {
-    let area = Rect::new(2, 2, 80, 40);
-    for protocol in [ProtocolType::Halfblocks, ProtocolType::Kitty] {
-        let pages = PdfPages::render(
-            std::path::Path::new("tests/fixtures/links.pdf"),
-            &std::sync::atomic::AtomicBool::new(false),
-        )?;
-        let mut preview = Preview::default();
-        preview.picker.set_protocol_type(protocol);
-        preview.set_pages(pages)?;
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 60))?;
-        finish_viewport(&mut preview, preview_content(area));
-        terminal.draw(|frame| preview.draw(frame, area))?;
-        let original_frame = terminal.backend().buffer().clone();
-        let source = preview.source_page.clone().unwrap();
-        let original_pixels = source.as_bytes().to_vec();
-        let position = link_position(&preview, area, "https://example.com/icon");
-        let original_geometry = preview.displayed_page;
-
-        let enter_started = Instant::now();
-        preview.hover_at(area, position);
-        assert_eq!(preview.hovered_link, Some(0));
-        assert!(preview.is_refreshing());
-        assert!(
-            !preview.is_preparing(),
-            "hover must not change the loading title"
-        );
-        preview.prepare_viewport(preview_content(area));
-        assert!(!preview.is_preparing());
-        preview.begin_drag(area, position);
-        finish_viewport(&mut preview, preview_content(area));
-        terminal.draw(|frame| preview.draw(frame, area))?;
-        let enter_time = enter_started.elapsed();
-        assert_eq!(preview.image_hovered_link, Some(0));
-        assert_eq!(preview.displayed_page, original_geometry);
-        assert_eq!(
-            preview.release_link(area, position).as_deref(),
-            Some("https://example.com/icon")
-        );
-        assert_ne!(terminal.backend().buffer(), &original_frame);
-        assert!(Arc::ptr_eq(preview.source_page.as_ref().unwrap(), &source));
-        assert_eq!(source.as_bytes(), original_pixels);
-
-        let motion_started = Instant::now();
-        for _ in 0..1000 {
-            preview.hover_at(area, position);
-            preview.prepare_viewport(preview_content(area));
-            assert!(
-                preview.pending.is_none(),
-                "same-link motion must not schedule encoding"
-            );
-        }
-        let motion_time = motion_started.elapsed();
-
-        let leave_started = Instant::now();
-        preview.hover_at(area, Position::new(0, 0));
-        assert_eq!(preview.hovered_link, None);
-        finish_viewport(&mut preview, preview_content(area));
-        terminal.draw(|frame| preview.draw(frame, area))?;
-        let leave_time = leave_started.elapsed();
-        assert_eq!(preview.image_hovered_link, None);
-        if protocol == ProtocolType::Halfblocks {
-            assert_eq!(terminal.backend().buffer(), &original_frame);
-        }
-        eprintln!(
-            "{protocol:?}: enter {enter_time:?}, 1000 same-link moves {motion_time:?} (0 preparations), leave {leave_time:?}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn late_hover_preparation_cannot_replace_a_cleared_highlight() {
-    let mut preview = Preview::default();
-    preview.set_source(Some(patterned_page(120, 200)));
-    let area = Rect::new(0, 0, 12, 8);
-    finish_viewport(&mut preview, area);
-    let source = preview.source_page.clone().unwrap();
-    let font = preview.picker.font_size();
-    let pixels = (
-        u32::from(area.width) * u32::from(font.width),
-        u32::from(area.height) * u32::from(font.height),
-    );
-    let (sender, result) = mpsc::channel();
-    preview.pending = Some(ViewportJob {
-        hovered_link: Some(0),
-        source: source.clone(),
-        pixels,
-        scroll: 0,
-        result,
-        zoom_percent: FIT_WIDTH_PERCENT,
-        horizontal: 0,
-    });
-    sender
-        .send(
-            prepare_image(
-                Picker::halfblocks(),
-                source.clone(),
-                area,
-                0,
-                0,
-                FIT_WIDTH_PERCENT,
-            )
-            .map(PreparedImage::Raster),
-        )
-        .unwrap();
-
-    preview.clear_hover();
-    assert!(preview.receive_prepared_viewport(&source, pixels));
-    assert_eq!(preview.image_hovered_link, None);
-    assert!(preview.pending.is_none());
-}
-
-#[test]
-fn failed_hover_encoding_does_not_retry_every_frame() {
-    let mut preview = Preview::default();
-    preview.set_source(Some(patterned_page(120, 200)));
-    let area = Rect::new(0, 0, 12, 8);
-    finish_viewport(&mut preview, area);
-    let source = preview.source_page.clone().unwrap();
-    let pixels = preview.viewport_pixels.unwrap();
-    let (sender, result) = mpsc::channel();
-    preview.hovered_link = Some(0);
-    preview.pending = Some(ViewportJob {
-        hovered_link: Some(0),
-        source: source.clone(),
-        pixels,
-        scroll: 0,
-        result,
-        zoom_percent: FIT_WIDTH_PERCENT,
-        horizontal: 0,
-    });
-    sender
-        .send(Err(anyhow!("Synthetic hover encoding failure")))
-        .unwrap();
-
-    assert!(!preview.receive_prepared_viewport(&source, pixels));
-    preview.prepare_viewport(area);
-    assert!(preview.pending.is_none());
-    assert!(!preview.is_refreshing());
 }

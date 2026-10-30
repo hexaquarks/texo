@@ -32,7 +32,7 @@ use crate::{
 
 #[path = "preview_links.rs"]
 mod links;
-use links::{DisplayedPage, highlight_link};
+use links::DisplayedPage;
 
 const EMPTY_STATE_HEIGHT: u16 = 7;
 const LOADING_FRAME_MS: u128 = 100;
@@ -53,8 +53,6 @@ pub struct Preview {
     page_index: usize,
     image: Option<PreparedImage>,
     image_source: Option<Arc<DynamicImage>>,
-    image_hovered_link: Option<usize>,
-    hovered_link: Option<usize>,
     terminal_images: TerminalImages,
     image_presented: bool,
     source_page: Option<Arc<DynamicImage>>,
@@ -93,7 +91,6 @@ struct RetainedViewport {
 }
 
 struct ViewportJob {
-    hovered_link: Option<usize>,
     source: Arc<DynamicImage>,
     pixels: (u32, u32),
     scroll: u32,
@@ -112,8 +109,6 @@ impl Default for Preview {
             page_index: 0,
             image: None,
             image_source: None,
-            image_hovered_link: None,
-            hovered_link: None,
             terminal_images: TerminalImages::default(),
             image_presented: false,
             source_page: None,
@@ -184,7 +179,6 @@ impl Preview {
 
     /// Keep one animation clock across compilation and terminal image preparation.
     pub fn begin_loading(&mut self) {
-        self.clear_hover();
         self.displayed_page = None;
         self.end_drag();
         self.loading_started = Some(Instant::now());
@@ -243,7 +237,6 @@ impl Preview {
     }
 
     fn set_source(&mut self, source: Option<DynamicImage>) {
-        self.clear_hover();
         self.source_page = source.map(Arc::new);
         if self.source_page.is_some() {
             self.loading_started.get_or_insert_with(Instant::now);
@@ -265,21 +258,6 @@ impl Preview {
             self.image_source = None;
             self.image_presented = false;
         }
-    }
-
-    /// Update the visual target only; image copying and encoding stay in the viewport worker.
-    pub fn hover_at(&mut self, area: Rect, position: Position) {
-        self.hovered_link = self
-            .displayed_page
-            .filter(|mapping| mapping.pane == preview_content(area))
-            .and_then(|mapping| {
-                let pages = self.pages.as_ref()?;
-                mapping.link_index_at(pages.links(self.page_index), position)
-            });
-    }
-
-    pub fn clear_hover(&mut self) {
-        self.hovered_link = None;
     }
 
     pub fn begin_drag(&mut self, area: Rect, position: Position) {
@@ -327,7 +305,6 @@ impl Preview {
 
     /// Move the paper with the pointer, including when it crosses the pane boundary.
     pub fn drag_to(&mut self, position: Position) -> bool {
-        self.clear_hover();
         self.link_press = None;
         let Some(previous) = self.drag_position else {
             return false;
@@ -361,7 +338,6 @@ impl Preview {
     }
 
     pub fn scroll(&mut self, up: bool) {
-        self.clear_hover();
         let Some((_, page_height)) = self.scaled_page_size else {
             return;
         };
@@ -383,25 +359,7 @@ impl Preview {
     }
 
     pub fn is_preparing(&self) -> bool {
-        let changing_view = self.pending.as_ref().is_some_and(|job| {
-            self.viewport_pixels != Some(job.pixels)
-                || self.displayed_scroll != Some(job.scroll)
-                || self.displayed_horizontal != Some(job.horizontal)
-                || self
-                    .image_source
-                    .as_ref()
-                    .is_none_or(|source| !Arc::ptr_eq(source, &job.source))
-        });
-
-        self.source_page.is_some() && (self.viewport_pixels.is_none() || changing_view)
-    }
-
-    /// Hover encoding needs fast polling without changing the PDF's loading title.
-    pub fn is_refreshing(&self) -> bool {
-        self.source_page.is_some()
-            && (self.pending.is_some()
-                || self.viewport_pixels.is_none()
-                || self.image_hovered_link != self.hovered_link)
+        self.source_page.is_some() && (self.pending.is_some() || self.viewport_pixels.is_none())
     }
 
     /// The page point under the cursor stays in place unless an edge clamps the viewport.
@@ -455,7 +413,6 @@ impl Preview {
     }
 
     fn set_zoom(&mut self, percent: u16, area: Rect, position: Position) {
-        self.clear_hover();
         self.end_drag();
         let Some(source) = &self.source_page else {
             return;
@@ -501,7 +458,6 @@ impl Preview {
     }
 
     pub fn pan_horizontal(&mut self, left: bool) {
-        self.clear_hover();
         let Some((page_width, _)) = self.scaled_page_size else {
             return;
         };
@@ -551,7 +507,6 @@ impl Preview {
                 .view
                 .supports_placeholders();
         let retained_ready = retain_page
-            && self.image_hovered_link == self.hovered_link
             && matches!(self.image, Some(PreparedImage::Retained(_)))
             && self
                 .image_source
@@ -569,7 +524,6 @@ impl Preview {
         }
 
         if !retain_page
-            && self.image_hovered_link == self.hovered_link
             && self.viewport_pixels == Some(pixels)
             && self.displayed_scroll == Some(self.scroll_pixels)
             && self.displayed_horizontal == Some(self.horizontal_pixels)
@@ -598,7 +552,6 @@ impl Preview {
             // when the user changes the view before the first upload has finished.
             let retained = matches!(&result, Ok(PreparedImage::Retained(_)));
             let current = Arc::ptr_eq(&job.source, source)
-                && job.hovered_link == self.hovered_link
                 && (retained
                     || (job.pixels == pixels
                         && job.scroll == self.scroll_pixels
@@ -619,7 +572,6 @@ impl Preview {
                         }
 
                         self.image = Some(prepared);
-                        self.image_hovered_link = self.hovered_link;
                         self.image_source = Some(source.clone());
                         self.image_presented = false;
                     }
@@ -633,7 +585,6 @@ impl Preview {
                         } else {
                             // Keep the error visible instead of spawning another failed worker
                             // every frame. A new page or viewport can try again.
-                            self.image_hovered_link = self.hovered_link;
                             self.viewport_pixels = Some(pixels);
                             self.displayed_scroll = Some(self.scroll_pixels);
                             self.displayed_horizontal = Some(self.horizontal_pixels);
@@ -660,26 +611,11 @@ impl Preview {
         let horizontal = self.horizontal_pixels;
         let zoom_percent = self.zoom_percent;
         let terminal_images = self.terminal_images.clone();
-        let hovered_link = self.hovered_link;
-        let hover_bounds = self.pages.as_ref().and_then(|pages| {
-            pages
-                .links(self.page_index)
-                .get(hovered_link?)
-                .map(|link| link.bounds)
-        });
         let (sender, result) = mpsc::channel();
 
         let worker = thread::Builder::new()
             .name("texo-preview".into())
             .spawn(move || {
-                let worker_source = if let Some(bounds) = hover_bounds {
-                    let mut highlighted = worker_source.as_ref().clone();
-                    highlight_link(&mut highlighted, bounds);
-                    Arc::new(highlighted)
-                } else {
-                    worker_source
-                };
-
                 let prepared = if retain_page {
                     RetainedImage::new(&picker, worker_source.as_ref().clone(), terminal_images)
                         .map(PreparedImage::Retained)
@@ -701,7 +637,6 @@ impl Preview {
         match worker {
             Ok(_) => {
                 self.pending = Some(ViewportJob {
-                    hovered_link,
                     source,
                     pixels,
                     scroll,
@@ -712,7 +647,6 @@ impl Preview {
             }
             Err(error) => {
                 self.notice = format!("Could not prepare the preview: {error}");
-                self.image_hovered_link = self.hovered_link;
                 self.viewport_pixels = Some(pixels);
                 self.displayed_scroll = Some(self.scroll_pixels);
                 self.displayed_horizontal = Some(self.horizontal_pixels);
@@ -823,13 +757,6 @@ impl Preview {
     }
 
     fn draw_preview(&mut self, frame: &mut Frame, area: Rect, cached_only: bool) {
-        let resized = self
-            .displayed_page
-            .is_some_and(|mapping| mapping.pane != preview_content(area));
-        if cached_only || resized {
-            self.clear_hover();
-        }
-
         self.displayed_page = None;
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::PREVIEW)),
