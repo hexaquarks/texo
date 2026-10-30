@@ -316,7 +316,7 @@ fn export_requires_reconfirmation_after_destination_changes_and_rejects_stale_bu
     let second = workspace.path().join("second.pdf");
     std::fs::write(&first, "first original")?;
     std::fs::write(&second, "second original")?;
-    app.perform_action(Action::Export);
+    app.open_export();
     app.export.as_mut().unwrap().input.select_all();
     app.handle_event(Event::Paste(first.to_string_lossy().into_owned()), SCREEN);
     press(&mut app, KeyCode::Enter);
@@ -332,7 +332,7 @@ fn export_requires_reconfirmation_after_destination_changes_and_rejects_stale_bu
     assert_eq!(std::fs::read_to_string(&second)?, "compiled PDF");
     assert_eq!(std::fs::read_to_string(&build)?, "compiled PDF");
 
-    app.perform_action(Action::Export);
+    app.open_export();
     app.session.editor.text.insert_str("New draft ");
     press(&mut app, KeyCode::Enter);
     assert!(app.export.is_none());

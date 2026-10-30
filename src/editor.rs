@@ -655,7 +655,7 @@ impl Editor {
     pub fn save(&mut self) -> Result<()> {
         ensure!(
             self.disk_state()? == DiskState::Unchanged,
-            "Source changed or disappeared on disk. Use Reload or Restore source in Actions"
+            "Source changed or disappeared on disk. Use Manage → Reload source, or Save to restore a missing file"
         );
         let source = self.source();
         let directory = self

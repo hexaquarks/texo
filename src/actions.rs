@@ -20,90 +20,29 @@ const MENU_FRAME_HEIGHT: u16 = 6;
 
 #[derive(Clone, Copy)]
 pub enum Action {
-    Settings,
     NewResume,
     ImportResume,
     RenameResume,
     LabelResume,
     DuplicateResume,
-    FocusResumes,
-    FocusFiles,
     ReloadSource,
     RecoverSource,
-    WorkspaceWarnings,
-    Build,
-    Export,
-    Save,
-    ToggleProjects,
-    PreviousPage,
-    NextPage,
-    ScrollUp,
-    ScrollDown,
-    FocusAssistant,
-    ReviewEdit,
-    ClearChat,
-    Quit,
 }
 
-const ACTIONS: [(Action, &str, Option<&str>); 23] = [
-    (Action::NewResume, "New resume", None),
-    (
-        Action::ImportResume,
-        "Import resume (copy source/project)",
-        None,
-    ),
-    (Action::RenameResume, "Rename resume", None),
-    (Action::LabelResume, "Set resume label", None),
-    (Action::DuplicateResume, "Duplicate resume", None),
-    (Action::FocusResumes, "Focus resumes", None),
-    (Action::FocusFiles, "Focus files", None),
-    (
-        Action::ReloadSource,
-        "Reload source from disk (confirm)",
-        None,
-    ),
-    (
-        Action::RecoverSource,
-        "Restore missing source (confirm)",
-        None,
-    ),
-    (Action::WorkspaceWarnings, "Show workspace warnings", None),
-    (Action::Settings, "Settings", None),
-    (Action::Build, "Build PDF", None),
-    (Action::Export, "Export PDF", None),
-    (Action::Save, "Save TeX", None),
-    (Action::ToggleProjects, "Show / hide projects", None),
-    (Action::PreviousPage, "Previous PDF page", None),
-    (Action::NextPage, "Next PDF page", None),
-    (Action::ScrollUp, "Scroll PDF up", None),
-    (Action::ScrollDown, "Scroll PDF down", None),
-    (Action::FocusAssistant, "Focus assistant / editor", None),
-    (Action::ReviewEdit, "Review suggested TeX edit", None),
-    (Action::ClearChat, "Clear conversation", None),
-    (Action::Quit, "Quit", Some("Ctrl+Q")),
-];
-
-const RESUME_ACTIONS: [(Action, &str, Option<&str>); 3] = [
-    (Action::RenameResume, "Rename resume", None),
-    (Action::LabelResume, "Set or change label", None),
-    (Action::DuplicateResume, "Duplicate resume", None),
+const RESUME_ACTIONS: [(Action, &str); 4] = [
+    (Action::RenameResume, "Rename resume"),
+    (Action::LabelResume, "Set resume label"),
+    (Action::DuplicateResume, "Duplicate resume"),
+    (Action::ReloadSource, "Reload source from disk (confirm)"),
 ];
 
 pub struct ActionMenu {
     state: ListState,
-    entries: &'static [(Action, &'static str, Option<&'static str>)],
+    entries: &'static [(Action, &'static str)],
     title: String,
 }
 
 impl ActionMenu {
-    pub fn open() -> Self {
-        Self {
-            state: ListState::default().with_selected(Some(0)),
-            entries: &ACTIONS,
-            title: "Actions".into(),
-        }
-    }
-
     pub fn for_resume(name: &str) -> Self {
         Self {
             state: ListState::default().with_selected(Some(0)),
@@ -155,40 +94,26 @@ impl ActionMenu {
         Some(self.selected())
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, prefix: &str) {
+    pub fn draw(&mut self, frame: &mut Frame) {
         let [area, choices, help] = self.layout(frame.area());
         frame.render_widget(Clear, area);
         let title = Line::styled(format!(" {} ", self.title), theme::dialog_title());
         frame.render_widget(dialog_block(title), area);
         let selected = self.state.selected();
-        let rows =
-            self.entries
-                .iter()
-                .enumerate()
-                .map(|(index, (action, description, shortcut))| {
-                    let prefix_action = match action {
-                        Action::Settings => Some('s'),
-                        Action::Build => Some('b'),
-                        Action::Export => Some('e'),
-                        Action::Save => Some('w'),
-                        Action::ToggleProjects => Some('t'),
-                        _ => None,
-                    };
-                    let configured_shortcut = prefix_action.map(|key| format!("{prefix} {key}"));
-                    let shortcut = configured_shortcut.as_deref().or(*shortcut);
-                    let line = match shortcut {
-                        Some(key) => theme::shortcuts(&[(key, description)]),
-                        None => Line::from(format!(" {description}")),
-                    };
-                    let style = if selected == Some(index) {
-                        theme::dialog().fg(theme::ACCENT).bg(theme::SELECTION)
-                    } else {
-                        theme::dialog()
-                    };
+        let rows = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, (_, description))| {
+                let line = Line::from(format!(" {description}"));
+                let style = if selected == Some(index) {
+                    theme::dialog().fg(theme::ACCENT).bg(theme::SELECTION)
+                } else {
+                    theme::dialog()
+                };
 
-                    // Apply selection before the spans, so it does not overwrite keycap shading.
-                    ListItem::new(line).style(style)
-                });
+                ListItem::new(line).style(style)
+            });
 
         let list = List::new(rows).style(theme::dialog());
         frame.render_stateful_widget(list, choices, &mut self.state);
@@ -309,15 +234,6 @@ fn dialog_block<'a>(title: impl Into<Line<'a>>) -> Block<'a> {
         .style(theme::dialog())
 }
 
-#[cfg(test)]
-fn menu_area(screen: Rect) -> Rect {
-    centered(
-        screen,
-        DIALOG_WIDTH,
-        ACTIONS.len() as u16 + MENU_FRAME_HEIGHT,
-    )
-}
-
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
@@ -334,37 +250,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selected_action_keeps_keycaps_distinct_from_its_description() -> Result<()> {
+    fn resume_menu_selects_recovery_without_a_global_actions_menu() -> Result<()> {
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut menu = ActionMenu::open();
-        let settings = ACTIONS
-            .iter()
-            .position(|(action, _, _)| matches!(action, Action::Settings))
-            .unwrap();
-        menu.state.select(Some(settings));
+        let mut menu = ActionMenu::for_resume("Example");
         let mut terminal = Terminal::new(TestBackend::new(80, 30))?;
-        terminal.draw(|frame| menu.draw(frame, "ctrl-x"))?;
-        let area = menu_area(terminal.backend().buffer().area);
-        let row = area.y + 2 + settings as u16;
-        let column = area.x + 2;
-        let buffer = terminal.backend().buffer();
+        terminal.draw(|frame| menu.draw(frame))?;
+        let [_, choices, help] = menu.layout(terminal.backend().buffer().area);
 
-        assert_eq!(buffer[(column + 1, row)].symbol(), "c");
-        assert_eq!(buffer[(column + 1, row)].bg, theme::KEYCAP);
-        let description_column = column + "ctrl-x s".len() as u16 + 3;
-        assert_eq!(buffer[(description_column, row)].symbol(), "S");
-        assert_eq!(buffer[(description_column, row)].bg, theme::SELECTION);
-        assert_eq!(
-            buffer[(area.x + 1, area.y + 1)].bg,
-            theme::DIALOG_BACKGROUND
+        assert!(
+            menu.click(terminal.backend().buffer().area, help.x, help.y)
+                .is_none()
         );
-        assert_eq!(buffer[(area.x + 2, area.y)].fg, theme::ACCENT);
-        let [_, _, help] = menu.layout(buffer.area);
-        assert!(menu.click(buffer.area, help.x, help.y).is_none());
         assert!(matches!(
-            menu.click(buffer.area, column, row),
-            Some(Action::Settings)
+            menu.click(terminal.backend().buffer().area, choices.x, choices.y + 3),
+            Some(Action::ReloadSource)
         ));
         Ok(())
     }

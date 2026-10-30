@@ -839,7 +839,10 @@ impl Preview {
                 .areas(content);
                 let notice = if self.source_page.is_none() {
                     let mut notice = Text::from(EMPTY_NOTICE);
-                    notice.extend([Line::default(), Line::from("Build PDF from Actions.")]);
+                    notice.extend([
+                        Line::default(),
+                        Line::from("Build PDF with the build shortcut."),
+                    ]);
                     notice
                 } else {
                     Text::from(self.notice.as_str())

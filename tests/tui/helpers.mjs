@@ -83,7 +83,8 @@ export async function documentPath(workspace) {
 }
 
 export async function action(terminal, name) {
-    await prefix(terminal, 'p');
+    await terminal.waitIdle();
+    await terminal.getByText('Manage', { whitespace: 'exact' }).click();
     await terminal.getByText(name).expect();
     await terminal.getByText(name).click();
 }

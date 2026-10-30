@@ -282,7 +282,7 @@ impl App {
             .is_some()
             && !self.session.editor.path.is_file()
         {
-            self.session.status = "Source missing · Actions → Restore source".into();
+            self.session.status = "Source missing · Save to restore source".into();
             return;
         }
         if self.session.proposal_review.is_some() {

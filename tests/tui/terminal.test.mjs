@@ -35,7 +35,7 @@ test('create, paste Unicode, save, build, and export through the terminal', asyn
     });
 });
 
-test('resize down to one cell, restore, and click a scrolled action', async () => {
+test('resize down to one cell, restore, and open settings', async () => {
     await withTexo('resize-menu', async ({ terminal }) => {
         await createResume(terminal, 'Resize test');
         for (const [cols, rows] of [[80, 24], [40, 12], [20, 5], [1, 1], [120, 35]]) {
@@ -44,14 +44,7 @@ test('resize down to one cell, restore, and click a scrolled action', async () =
         }
         await terminal.getByText('Resize test').first().expect();
         await terminal.resize(40, 12);
-        await prefix(terminal, 'p');
-        await terminal.getByText('New resume').expect();
-        const settingsIndex = 10;
-        for (let index = 0; index < settingsIndex; index += 1) {
-            await terminal.press('Down');
-        }
-        await terminal.getByText('Settings').expect();
-        await terminal.getByText('Settings').click();
+        await prefix(terminal, 's');
         await terminal.getByText('Resume folder').expect();
         await terminal.screenshot(join(ARTIFACTS, 'small-settings.png'));
         await terminal.press('Escape');
