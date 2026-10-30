@@ -55,6 +55,11 @@ impl App {
             }
         }
 
+        if self.shortcuts_open {
+            self.handle_shortcut_help(event, area);
+            return false;
+        }
+
         if self.diagnostic_details_open() {
             self.handle_diagnostic_details(event, area);
             return false;
@@ -374,7 +379,11 @@ impl App {
                     Focus::Preview | Focus::Projects => Focus::Editor,
                 };
             }
-            KeyCode::Char('s' | '?') => self.open_settings(),
+            KeyCode::Char('s') => self.open_settings(),
+            KeyCode::Char('?') => {
+                self.shortcuts_open = true;
+                self.shortcut_scroll = 0;
+            }
             _ => {}
         }
     }

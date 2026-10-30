@@ -265,3 +265,48 @@ fn a_completed_proposal_keeps_current_pdf_visible_until_settings_closes() -> any
     assert!(wire_since(&mut wire, start)?.contains("a=T"));
     Ok(())
 }
+
+#[test]
+#[ignore = "requires Poppler"]
+fn shortcuts_preserve_cached_pdf_pixels_without_uploading_again() -> anyhow::Result<()> {
+    for protocol in [ProtocolType::Kitty, ProtocolType::Halfblocks] {
+        let (_directory, mut app) = application()?;
+        let area = Rect::new(0, 0, 160, 50);
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(protocol);
+        app.session.preview = Preview::with_picker(picker);
+        app.session.preview.set_pages(texo::pdf::PdfPages::render(
+            std::path::Path::new("tests/fixtures/two-pages.pdf"),
+            &AtomicBool::new(false),
+        )?)?;
+        app.focus = Focus::Preview;
+        app.workspace_expansion = Some(Focus::Preview);
+
+        let mut wire = tempfile::tempfile()?;
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(wire.try_clone()?),
+            TerminalOptions {
+                viewport: Viewport::Fixed(area),
+            },
+        )?;
+        let before = ready_preview(&mut app, &mut terminal)?;
+        let start = wire.metadata()?.len();
+        let image = image_area(&app, area);
+
+        app.handle_prefix_action(KeyCode::Char('?'), area);
+        let during = draw(&mut app, &mut terminal)?;
+        assert_image_matches(&before, &during, image, app.shortcut_modal_area(area));
+        app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            area,
+        );
+        let after = draw(&mut app, &mut terminal)?;
+        assert_image_matches(&before, &after, image, Rect::default());
+        assert!(app.workspace_expansion == Some(Focus::Preview));
+
+        let output = wire_since(&mut wire, start)?;
+        assert!(!output.contains(&Clear(ClearType::All).to_string()));
+        assert!(!output.contains("a=T"), "Help must reuse the uploaded PDF");
+    }
+    Ok(())
+}

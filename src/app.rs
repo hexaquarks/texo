@@ -50,6 +50,8 @@ struct App {
     export: Option<ExportDialog>,
     focus: Focus,
     workspace_expansion: Option<Focus>,
+    shortcuts_open: bool,
+    shortcut_scroll: usize,
 }
 
 pub fn run(
@@ -104,6 +106,8 @@ impl App {
             export: None,
             focus: Focus::Editor,
             workspace_expansion: None,
+            shortcuts_open: false,
+            shortcut_scroll: 0,
         })
     }
 
@@ -135,7 +139,8 @@ impl App {
     }
 
     fn overlay_open(&self) -> bool {
-        self.diagnostic_details_open()
+        self.shortcuts_open
+            || self.diagnostic_details_open()
             || self.project_dialog.is_some()
             || self.label_dialog.is_some()
             || self.actions.is_some()
@@ -166,6 +171,8 @@ mod pane_navigation;
 mod problem_actions;
 #[path = "resume_review.rs"]
 mod resume_review;
+#[path = "shortcut_help.rs"]
+mod shortcut_help;
 #[path = "workspace_actions.rs"]
 mod workspace_actions;
 #[path = "workspace_view.rs"]
