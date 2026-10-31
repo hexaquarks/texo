@@ -187,9 +187,27 @@ impl Store {
 
 pub fn revisions(document: &Path) -> Result<Vec<Revision>> {
     let mut store = Store::open(document)?;
-    let source = read_source(document)?;
-    store.initial(source.as_deref())?;
+
+    // An existing empty journal means the user deleted its revisions.
+    if !store.path.exists() {
+        let source = read_source(document)?;
+        store.initial(source.as_deref())?;
+    }
+
     Ok(std::mem::take(&mut store.journal.revisions))
+}
+
+pub fn delete(document: &Path, id: Uuid) -> Result<()> {
+    let mut store = Store::open(document)?;
+    let index = store
+        .journal
+        .revisions
+        .iter()
+        .position(|revision| revision.id == id)
+        .context("Revision no longer exists")?;
+
+    store.journal.revisions.remove(index);
+    store.persist()
 }
 
 fn read_source(document: &Path) -> Result<Option<String>> {
@@ -296,6 +314,44 @@ fn publish_source(document: &Path, source: &str, expected: Option<&str>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deletion_persists_without_changing_source_or_recreating_last_revision() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let document = directory.path().join("main.tex");
+        fs::write(&document, "Initial")?;
+        let initial = revisions(&document)?[0].id;
+        save(
+            &document,
+            Some("Initial"),
+            "Edited",
+            RevisionKind::Save,
+            None,
+        )?;
+        let saved = revisions(&document)?[1].id;
+
+        delete(&document, initial)?;
+        let remaining = revisions(&document)?;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, saved);
+        assert_eq!(fs::read_to_string(&document)?, "Edited");
+        assert!(delete(&document, initial).is_err());
+
+        delete(&document, saved)?;
+        assert!(revisions(&document)?.is_empty());
+        assert_eq!(fs::read_to_string(&document)?, "Edited");
+
+        save(
+            &document,
+            Some("Edited"),
+            "New edit",
+            RevisionKind::Save,
+            None,
+        )?;
+        assert_eq!(revisions(&document)?.last().unwrap().source, "New edit");
+
+        Ok(())
+    }
 
     #[test]
     fn initial_and_changed_saves_survive_reopening_without_duplicates() -> Result<()> {

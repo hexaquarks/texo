@@ -42,6 +42,7 @@ pub(super) struct HistoricalView {
 pub(super) enum HistoryDialog {
     Menu(ActionMenu),
     Restore(Revision),
+    Delete { revision: Revision, number: usize },
 }
 
 impl HistoricalView {
@@ -297,6 +298,23 @@ impl App {
         Ok(())
     }
 
+    fn delete_history_revision(&mut self, revision: &Revision) -> anyhow::Result<()> {
+        history::delete(&self.session.editor.path, revision.id)?;
+
+        let deleting_preview = self
+            .session
+            .history
+            .view
+            .as_ref()
+            .is_some_and(|view| view.revision.id == revision.id);
+        if deleting_preview {
+            self.return_to_working_copy();
+        }
+
+        self.session.status = "Deleted revision. Working copy unchanged.".into();
+        Ok(())
+    }
+
     pub(super) fn handle_history_dialog(&mut self, event: Event, screen: Rect) {
         let Some(mut dialog) = self.session.history.dialog.take() else {
             return;
@@ -326,6 +344,14 @@ impl App {
                     Action::OpenRevision => self.open_selected_revision(),
                     Action::RestoreRevision => self
                         .handle_history_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+                    Action::DeleteRevision => {
+                        if let Some(revision) = self.selected_revision() {
+                            let index = self.session.history.selection.selected().unwrap();
+                            let number = self.session.history.revisions.len() - index + 1;
+                            self.session.history.dialog =
+                                Some(HistoryDialog::Delete { revision, number });
+                        }
+                    }
                     _ => {}
                 }
                 return;
@@ -340,6 +366,9 @@ impl App {
                 let result = match &dialog {
                     HistoryDialog::Menu(_) => unreachable!(),
                     HistoryDialog::Restore(revision) => self.restore_history_revision(revision),
+                    HistoryDialog::Delete { revision, .. } => {
+                        self.delete_history_revision(revision)
+                    }
                 };
                 match result {
                     Ok(()) => {
@@ -619,6 +648,7 @@ impl App {
         let title = match dialog {
             HistoryDialog::Menu(_) => unreachable!(),
             HistoryDialog::Restore(_) => "Restore revision?",
+            HistoryDialog::Delete { .. } => "Delete revision?",
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -638,6 +668,12 @@ impl App {
                 let message = format!(
                     "Restore {}? Unsaved work will be kept as a recovery checkpoint. All revisions remain.",
                     revision.label()
+                );
+                frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), body);
+            }
+            HistoryDialog::Delete { number, .. } => {
+                let message = format!(
+                    "Permanently delete revision-{number}? This cannot be undone. Your working copy will not change."
                 );
                 frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), body);
             }
