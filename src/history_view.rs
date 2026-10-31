@@ -5,9 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
-use ratatui_textarea::TextArea;
 use texo::{preview::Preview, theme};
-use uuid::Uuid;
 
 use super::{App, Focus};
 use crate::{
@@ -44,10 +42,6 @@ pub(super) struct HistoricalView {
 pub(super) enum HistoryDialog {
     Menu(ActionMenu),
     Restore(Revision),
-    Name {
-        id: Uuid,
-        input: Box<TextArea<'static>>,
-    },
 }
 
 impl HistoricalView {
@@ -83,16 +77,6 @@ impl App {
                     })
                     .map_or(0, |index| index + 1);
                 self.session.history.selection.select(Some(index));
-                if let Some(view) = &mut self.session.history.view
-                    && let Some(revision) = self
-                        .session
-                        .history
-                        .revisions
-                        .iter()
-                        .find(|revision| revision.id == view.revision.id)
-                {
-                    view.revision.name.clone_from(&revision.name);
-                }
             }
             Err(error) => self.session.history.error = Some(format!("History: {error:#}")),
         }
@@ -226,16 +210,6 @@ impl App {
                     self.session.history.dialog = Some(HistoryDialog::Restore(revision));
                 }
             }
-            KeyCode::Char('n') => {
-                if let Some(revision) = self.selected_revision() {
-                    let mut input = TextArea::new(vec![revision.name.unwrap_or_default()]);
-                    input.set_style(theme::dialog());
-                    self.session.history.dialog = Some(HistoryDialog::Name {
-                        id: revision.id,
-                        input: Box::new(input),
-                    });
-                }
-            }
             KeyCode::Tab => {
                 self.projects.history_focused = false;
             }
@@ -352,8 +326,6 @@ impl App {
                     Action::OpenRevision => self.open_selected_revision(),
                     Action::RestoreRevision => self
                         .handle_history_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
-                    Action::RenameRevision => self
-                        .handle_history_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
                     _ => {}
                 }
                 return;
@@ -368,9 +340,6 @@ impl App {
                 let result = match &dialog {
                     HistoryDialog::Menu(_) => unreachable!(),
                     HistoryDialog::Restore(revision) => self.restore_history_revision(revision),
-                    HistoryDialog::Name { id, input } => {
-                        history::rename(&self.session.editor.path, *id, &input.lines().join(""))
-                    }
                 };
                 match result {
                     Ok(()) => {
@@ -378,16 +347,6 @@ impl App {
                         return;
                     }
                     Err(error) => self.session.history.error = Some(format!("{error:#}")),
-                }
-            }
-            Event::Key(key) => {
-                if let HistoryDialog::Name { input, .. } = &mut dialog {
-                    input.input(key);
-                }
-            }
-            Event::Paste(text) => {
-                if let HistoryDialog::Name { input, .. } = &mut dialog {
-                    input.insert_str(text.replace(['\n', '\r'], ""));
                 }
             }
             _ => {}
@@ -483,11 +442,8 @@ impl App {
                         )
                     },
                 );
-                let detail = format!("{} · {date}", revision.label());
-                ListItem::new(vec![
-                    Line::from(label),
-                    Line::styled(detail, theme::muted()),
-                ])
+
+                ListItem::new(vec![Line::from(label), Line::styled(date, theme::muted())])
             });
         // Keep the working copy outside the scrolling list so it always remains reachable.
         let mut state = ListState::default()
@@ -663,7 +619,6 @@ impl App {
         let title = match dialog {
             HistoryDialog::Menu(_) => unreachable!(),
             HistoryDialog::Restore(_) => "Restore revision?",
-            HistoryDialog::Name { .. } => "Name revision",
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -686,7 +641,6 @@ impl App {
                 );
                 frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), body);
             }
-            HistoryDialog::Name { input, .. } => frame.render_widget(input.as_ref(), body),
         }
         frame.render_widget(
             Paragraph::new(self.session.history.error.as_deref().unwrap_or(""))

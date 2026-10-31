@@ -12,7 +12,6 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 pub const DIRECTORY: &str = ".texo-history";
-pub const MAX_REVISION_NAME_CHARS: usize = 80;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RevisionKind {
@@ -27,7 +26,6 @@ pub struct Revision {
     pub id: Uuid,
     pub timestamp: i64,
     pub kind: RevisionKind,
-    pub name: Option<String>,
     pub source: String,
 }
 
@@ -37,18 +35,17 @@ impl Revision {
             id: Uuid::new_v4(),
             timestamp: OffsetDateTime::now_utc().unix_timestamp(),
             kind,
-            name: None,
             source: source.into(),
         }
     }
 
     pub fn label(&self) -> &str {
-        self.name.as_deref().unwrap_or(match self.kind {
+        match self.kind {
             RevisionKind::Initial => "Initial",
             RevisionKind::Save => "Saved",
             RevisionKind::Restore { .. } => "Restored",
             RevisionKind::Recovery => "Recovery",
-        })
+        }
     }
 
     pub fn date_label(&self) -> String {
@@ -140,7 +137,6 @@ impl Store {
                 // A failed write or an external edit is not evidence of a saved revision.
                 // Keep the staged text recoverable without claiming that it reached disk.
                 pending.kind = RevisionKind::Recovery;
-                pending.name = Some("Interrupted save".into());
             }
             store.commit_revision(pending);
             store.persist()?;
@@ -230,8 +226,7 @@ pub fn save(
     if let Some(previous) = previous.as_deref()
         && latest.is_some_and(|entry| entry.source != previous)
     {
-        let mut checkpoint = Revision::new(previous, RevisionKind::Recovery);
-        checkpoint.name = Some("Disk checkpoint".into());
+        let checkpoint = Revision::new(previous, RevisionKind::Recovery);
         store.journal.revisions.push(checkpoint);
         store.persist()?;
     }
@@ -296,23 +291,6 @@ fn publish_source(document: &Path, source: &str, expected: Option<&str>) -> Resu
             .context("Source appeared while saving; nothing was overwritten")?;
     }
     Ok(())
-}
-
-pub fn rename(document: &Path, id: Uuid, name: &str) -> Result<()> {
-    let name = name.trim();
-    ensure!(
-        name.chars().count() <= MAX_REVISION_NAME_CHARS && !name.chars().any(char::is_control),
-        "Use at most {MAX_REVISION_NAME_CHARS} characters without line breaks"
-    );
-    let mut store = Store::open(document)?;
-    let revision = store
-        .journal
-        .revisions
-        .iter_mut()
-        .find(|revision| revision.id == id)
-        .context("Revision no longer exists")?;
-    revision.name = (!name.is_empty()).then(|| name.into());
-    store.persist()
 }
 
 #[cfg(test)]
@@ -391,27 +369,6 @@ mod tests {
     }
 
     #[test]
-    fn names_change_metadata_only_and_files_are_isolated() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let first = directory.path().join("first.tex");
-        let second = directory.path().join("second.tex");
-        fs::write(&first, "First")?;
-        fs::write(&second, "Second")?;
-        let initial = revisions(&first)?[0].clone();
-        rename(&first, initial.id, "Application")?;
-        let renamed = revisions(&first)?;
-        assert_eq!(renamed.len(), 1);
-        assert_eq!(renamed[0].source, initial.source);
-        assert_eq!(renamed[0].id, initial.id);
-        assert_eq!(renamed[0].name.as_deref(), Some("Application"));
-        assert_eq!(revisions(&second)?[0].source, "Second");
-        assert!(rename(&first, initial.id, "bad\nname").is_err());
-        rename(&first, initial.id, "")?;
-        assert!(revisions(&first)?[0].name.is_none());
-        Ok(())
-    }
-
-    #[test]
     fn interrupted_save_is_finalized_only_when_source_was_published() -> Result<()> {
         for published in [false, true] {
             let directory = tempfile::tempdir()?;
@@ -434,7 +391,6 @@ mod tests {
                 assert_eq!(entries[1].kind, RevisionKind::Save);
             } else {
                 assert_eq!(entries[1].kind, RevisionKind::Recovery);
-                assert_eq!(entries[1].name.as_deref(), Some("Interrupted save"));
             }
             assert_eq!(revisions(&document)?.len(), entries.len());
         }
