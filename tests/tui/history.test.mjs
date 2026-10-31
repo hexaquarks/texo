@@ -12,7 +12,7 @@ async function replaceDocument(terminal, source) {
     await paste(terminal, source);
 }
 
-test('history previews, restores with recovery, names revisions, and survives restart', async () => {
+test('history previews, restores with recovery and survives restart', async () => {
     await withTexo('history-lifecycle', async ({ terminal, workspace, restart }) => {
         await terminal.resize(160, 45);
         await createResume(terminal, 'History');
@@ -59,7 +59,7 @@ test('history previews, restores with recovery, names revisions, and survives re
         await terminal.getByText('Restore revision?').expect();
         await terminal.press('Enter');
         await terminal.getByText('Restore revision?').expect({ not: true });
-        await terminal.getByText('Restored', { whitespace: 'exact' }).expect();
+        await terminal.getByText('revision-5').expect();
         assert.equal(await readFile(document, 'utf8'), RESUME);
 
         const historyPath = join(dirname(document), '.texo-history/main.tex.json');
@@ -67,22 +67,13 @@ test('history previews, restores with recovery, names revisions, and survives re
         assert.equal(journal.revisions.length, 5);
         assert.equal(journal.revisions[3].kind, 'Recovery');
         assert.equal(journal.revisions[3].source, unsaved);
-        await terminal.press('Down', 'm');
-        await terminal.getByText('Rename').click();
-        await terminal.getByText('Name revision').expect();
-        await paste(terminal, 'Application ready');
-        await terminal.press('Enter');
-        await terminal.getByText('Name revision').expect({ not: true });
-        await terminal.getByText('Application ready').expect();
-        const renamed = JSON.parse(await readFile(historyPath, 'utf8'));
-        assert.equal(renamed.revisions.length, 5);
-        assert.equal(renamed.revisions.at(-1).name, 'Application ready');
+        assert.ok(journal.revisions.every(revision => !('name' in revision)));
 
         await restart();
         await terminal.getByText('PDF current').expect();
         await prefix(terminal, 'y');
-        await terminal.getByText('Application ready').expect();
-        await terminal.getByText('Recovery', { whitespace: 'exact' }).expect();
+        await terminal.getByText('revision-4').expect();
+        await terminal.getByText('Recovery', { whitespace: 'exact' }).expect({ not: true });
         await terminal.screenshot(join(ARTIFACTS, 'history-restarted.png'));
     }, { env: { NO_COLOR: '' } });
 });
@@ -96,6 +87,7 @@ test('permanent history and resume switching preserve unsaved working copies', a
         await terminal.getByText('revision-1').expect();
         await terminal.getByText('⋯').first().click();
         await terminal.getByText('Restore').expect();
+        await terminal.getByText('Rename', { whitespace: 'exact' }).expect({ not: true });
         await terminal.screenshot(join(ARTIFACTS, 'history-menu.png'));
         await terminal.getByText('Open', { whitespace: 'exact' }).click();
         await terminal.getByText('read-only').expect();
@@ -130,5 +122,34 @@ test('permanent history and resume switching preserve unsaved working copies', a
         await terminal.resize(90, 30);
         await terminal.getByText('History', { whitespace: 'exact' }).expect();
         await terminal.screenshot(join(ARTIFACTS, 'history-narrow.png'));
+    });
+});
+
+test('revision deletion requires confirmation and survives restart', async () => {
+    await withTexo('history-delete', async ({ terminal, workspace, restart }) => {
+        await createResume(terminal, 'History cleanup');
+        const document = await documentPath(workspace);
+        const savedSource = await readFile(document, 'utf8');
+
+        await terminal.getByText('⋯').first().click();
+        await terminal.getByText('Delete', { whitespace: 'exact' }).click();
+        await terminal.getByText('Delete revision?').expect();
+        await terminal.press('Escape');
+        await terminal.getByText('revision-1').expect();
+
+        await terminal.getByText('⋯').first().click();
+        await terminal.getByText('Delete', { whitespace: 'exact' }).click();
+        await terminal.getByText('Delete revision?').expect();
+        await terminal.press('Enter');
+        await terminal.getByText('Delete revision?').expect({ not: true });
+        await terminal.getByText('revision-1').expect({ not: true });
+        await terminal.getByText('Working copy').expect();
+        assert.equal(await readFile(document, 'utf8'), savedSource);
+
+        await restart();
+        await terminal.getByText('PDF current').expect();
+        await terminal.getByText('Working copy').expect();
+        await terminal.getByText('revision-1').expect({ not: true });
+        await terminal.screenshot(join(ARTIFACTS, 'history-deleted.png'));
     });
 });

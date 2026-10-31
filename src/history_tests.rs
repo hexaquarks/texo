@@ -308,6 +308,30 @@ fn failed_source_write_does_not_create_a_saved_revision() -> anyhow::Result<()> 
 }
 
 #[test]
+fn history_rows_show_revision_numbers_and_dates_without_names() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    app.session.history.revisions[0].timestamp = time::OffsetDateTime::UNIX_EPOCH.unix_timestamp();
+
+    let mut terminal = Terminal::new(TestBackend::new(SCREEN.width, SCREEN.height))?;
+    terminal.draw(|frame| app.draw_history_sidebar(frame, SCREEN))?;
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+
+    assert!(text.contains("Working copy"));
+    assert!(text.contains("Saved"));
+    assert!(text.contains("revision-1"));
+    assert!(text.contains("01-01 00:00"));
+    assert!(!text.contains("Initial"));
+
+    Ok(())
+}
+
+#[test]
 fn permanent_history_uses_real_filename_and_pins_working_copy_when_scrolling() -> anyhow::Result<()>
 {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -465,5 +489,51 @@ fn revision_menu_cancels_safely_and_restoring_still_requires_confirmation() -> a
     assert!(app.session.history.dialog.is_none());
     assert!(app.session.status.contains("Resolve the AI proposal"));
     assert_eq!(app.session.editor.source(), source);
+    Ok(())
+}
+
+#[test]
+fn deleting_previewed_revision_confirms_and_preserves_unsaved_work() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    app.session.editor.text.insert_str("Unsaved ");
+    let source = app.session.editor.source();
+    let cursor = app.session.editor.text.cursor();
+
+    app.open_history();
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    app.session.history.view.as_mut().unwrap().job = None;
+
+    for confirm in [false, true] {
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.session.history.dialog,
+            Some(history_view::HistoryDialog::Delete { .. })
+        ));
+        assert_eq!(history::revisions(&app.session.editor.path)?.len(), 1);
+
+        press(
+            &mut app,
+            if confirm {
+                KeyCode::Enter
+            } else {
+                KeyCode::Esc
+            },
+        );
+        assert_eq!(app.session.editor.source(), source);
+        assert_eq!(app.session.editor.text.cursor(), cursor);
+        assert!(app.session.editor.is_modified());
+    }
+
+    assert!(app.session.history.view.is_none());
+    assert!(app.session.history.revisions.is_empty());
+    assert!(history::revisions(&app.session.editor.path)?.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&app.session.editor.path)?,
+        "Original document"
+    );
     Ok(())
 }

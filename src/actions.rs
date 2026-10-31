@@ -32,7 +32,7 @@ pub enum Action {
     RecoverSource,
     OpenRevision,
     RestoreRevision,
-    RenameRevision,
+    DeleteRevision,
 }
 
 const RESUME_ACTIONS: [(Action, &str); 4] = [
@@ -52,7 +52,7 @@ pub struct ActionMenu {
 const REVISION_ACTIONS: [(Action, &str); 3] = [
     (Action::OpenRevision, "Open"),
     (Action::RestoreRevision, "Restore"),
-    (Action::RenameRevision, "Rename"),
+    (Action::DeleteRevision, "Delete"),
 ];
 
 impl ActionMenu {
