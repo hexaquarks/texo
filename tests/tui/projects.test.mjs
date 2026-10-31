@@ -9,7 +9,7 @@ async function manifestAt(document) {
 }
 
 async function changeName(terminal, command, name) {
-    await action(terminal, command);
+    await action(terminal, command.replace(' resume', ''));
     await paste(terminal, name);
     await terminal.press('Enter');
     await terminal.getByText(command).expect({ not: true });
@@ -55,7 +55,7 @@ test('labels validate custom input, persist, reuse choices, and can be removed',
     await withTexo('labels', async ({ terminal, workspace, restart }) => {
         await createResume(terminal, 'Labelled');
         const document = await documentPath(workspace);
-        await action(terminal, 'Set resume label');
+        await action(terminal, 'Change label');
         await terminal.getByText('Custom…').click();
         await terminal.getByText('Custom label').expect();
         await paste(terminal, 'one two three four five');
@@ -70,11 +70,11 @@ test('labels validate custom input, persist, reuse choices, and can be removed',
 
         await restart();
         await terminal.getByText('Backend').first().expect();
-        await action(terminal, 'Set resume label');
+        await action(terminal, 'Change label');
         await terminal.getByText('No label').click();
         await terminal.getByText('Resume label').expect({ not: true });
         assert.doesNotMatch(await manifestAt(document), /\[label\]/);
-        await action(terminal, 'Set resume label');
+        await action(terminal, 'Change label');
         await terminal.getByText('Backend').click();
         await terminal.getByText('Resume label').expect({ not: true });
         assert.match(await manifestAt(document), /name = "Backend"/);
@@ -94,12 +94,12 @@ test('external edits block saving, reload safely, and deleted source can be rest
         assert.equal(await readFile(document, 'utf8'), external);
         await terminal.getByText('Error details').expect();
         await terminal.press('Escape');
-        await action(terminal, 'Reload source from disk');
-        await terminal.getByText('discard local edits').expect();
+        await action(terminal, 'Reload from disk');
+        await terminal.getByText('Unsaved text changes will be discarded').expect();
         await terminal.press('Escape');
         await terminal.getByText('Terminal workflow resume.').expect();
-        await action(terminal, 'Reload source from disk');
-        await terminal.press('Enter');
+        await action(terminal, 'Reload from disk');
+        await terminal.press('Right', 'Enter');
         await terminal.getByText('External edit resume.').expect();
         await terminal.getByText('PDF current').expect();
 
@@ -110,7 +110,7 @@ test('external edits block saving, reload safely, and deleted source can be rest
         await assert.rejects(readFile(document), { code: 'ENOENT' });
         await prefix(terminal, 'w');
         await terminal.getByText('Restore missing source').expect();
-        await terminal.press('Enter');
+        await terminal.press('Right', 'Enter');
         await terminal.getByText('Restore missing source').expect({ not: true });
         assert.equal(await readFile(document, 'utf8'), external);
         await terminal.getByText('PDF current').expect();

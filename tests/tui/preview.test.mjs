@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ARTIFACTS, RESUME, createResume, documentPath, paste, prefix, replaceField, withTexo } from './helpers.mjs';
+import {
+    exportDestination, ARTIFACTS, RESUME, createResume, documentPath, paste, prefix, withTexo,
+} from './helpers.mjs';
 
 const TWO_PAGES = '\\documentclass{article}\n\\begin{document}\n\\Huge First page\\newpage Second page\n\\end{document}\n';
 
@@ -64,7 +66,7 @@ test('failed build preserves the published PDF, refuses export, and recovers thr
         await prefix(terminal, 'b');
         await terminal.getByText('PDF current').expect();
         await prefix(terminal, 'e');
-        await terminal.getByText('Export PDF').expect();
+        await terminal.getByText('Export PDF').first().expect();
         await terminal.press('Escape');
     });
 });
@@ -76,25 +78,25 @@ test('export rejects its build output and missing folders, then requires overwri
         const pdf = document.replace(/\.tex$/, '.pdf');
         const original = await readFile(pdf);
         await prefix(terminal, 'e');
-        await terminal.getByText('Export PDF').expect();
-        await replaceField(terminal, pdf);
+        await terminal.getByText('Export PDF').first().expect();
+        await exportDestination(terminal, pdf);
         await terminal.press('Enter');
         await terminal.getByText('different from the build output').expect();
-        await replaceField(terminal, join(root, 'missing/application.pdf'));
+        await exportDestination(terminal, join(root, 'missing/application.pdf'));
         await terminal.press('Enter');
         await terminal.getByText('directory does not exist').expect();
 
         const exported = join(root, 'existing.pdf');
         await writeFile(exported, 'Previous application');
-        await replaceField(terminal, exported);
+        await exportDestination(terminal, exported);
         await terminal.press('Enter');
         await terminal.getByText('File exists.').expect();
         assert.equal(await readFile(exported, 'utf8'), 'Previous application');
         await terminal.press('Escape');
         assert.equal(await readFile(exported, 'utf8'), 'Previous application');
         await prefix(terminal, 'e');
-        await terminal.getByText('Export PDF').expect();
-        await replaceField(terminal, exported);
+        await terminal.getByText('Export PDF').first().expect();
+        await exportDestination(terminal, exported);
         await terminal.press('Enter');
         await terminal.getByText('File exists.').expect();
         await terminal.press('Enter');

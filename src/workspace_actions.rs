@@ -4,13 +4,14 @@ use anyhow::Context;
 
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
-    layout::{Position, Rect},
+    layout::Rect,
 };
 
 use super::{App, resume_session::ResumeSession};
 use crate::{
     actions::{Action, ActionMenu, ExportDialog},
     config::Settings,
+    dialog_ui::DialogAction,
     editor::Editor,
     keybindings::Prefix,
     project_dialog::ProjectDialog,
@@ -288,7 +289,15 @@ impl App {
             return;
         }
 
-        self.export = Some(ExportDialog::new(&self.session.editor.path));
+        let mut dialog = ExportDialog::new(&self.session.editor.path);
+        if let Some(project) = self.projects.project_for(&self.session.editor.path) {
+            dialog.context = format!(
+                "{} · {}",
+                project.manifest.name,
+                project.manifest.entrypoint.display()
+            );
+        }
+        self.export = Some(dialog);
     }
 
     fn ensure_export_ready(&self) -> anyhow::Result<()> {
@@ -317,6 +326,15 @@ impl App {
     }
 
     pub(super) fn handle_overlay(&mut self, event: Event, area: Rect) -> bool {
+        if let Some(dialog) = &mut self.export {
+            match dialog.handle_event(event, area) {
+                Some(DialogAction::Cancel) => self.export = None,
+                Some(DialogAction::Submit) => self.finish_export(),
+                None => {}
+            }
+            return false;
+        }
+
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
@@ -336,17 +354,6 @@ impl App {
                         }
                         _ => {}
                     }
-                } else if key.code == KeyCode::Enter {
-                    self.finish_export();
-                } else if let Some(dialog) = &mut self.export {
-                    dialog.input.input(key);
-                    dialog.edited();
-                }
-            }
-            Event::Paste(text) => {
-                if let Some(dialog) = &mut self.export {
-                    dialog.edited();
-                    dialog.input.insert_str(text.replace(['\n', '\r'], ""));
                 }
             }
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
@@ -403,7 +410,13 @@ impl App {
         let Some(project) = self.projects.project_for(&self.session.editor.path) else {
             return;
         };
-        self.actions = Some(ActionMenu::for_resume(&project.manifest.name));
+        let mut menu = ActionMenu::for_resume(&project.manifest.name);
+        menu.context = Some(format!(
+            "{} · {}",
+            project.manifest.name,
+            project.manifest.entrypoint.display()
+        ));
+        self.actions = Some(menu);
         self.prefix.cancel();
     }
 
@@ -416,7 +429,7 @@ impl App {
 
         self.actions = None;
         self.prefix.cancel();
-        self.project_dialog = Some(ProjectDialog::new(
+        let mut dialog = ProjectDialog::new(
             action,
             active,
             self.projects
@@ -424,7 +437,27 @@ impl App {
                 .loose_files
                 .first()
                 .map(PathBuf::as_path),
-        ));
+        );
+        if matches!(action, Action::ReloadSource) {
+            dialog.losses = self.reload_losses();
+        }
+        self.project_dialog = Some(dialog);
+    }
+
+    fn reload_losses(&self) -> Vec<&'static str> {
+        let mut losses = Vec::new();
+
+        if self.session.editor.is_modified() {
+            losses.push("Unsaved text changes will be discarded.");
+        }
+        if self.session.assistant.is_running() {
+            losses.push("The running AI request will be cancelled.");
+        }
+        if self.session.proposal_review.is_some() {
+            losses.push("The pending AI proposal will be discarded.");
+        }
+
+        losses
     }
 
     pub(super) fn handle_project_dialog(&mut self, event: Event, area: Rect) {
@@ -432,54 +465,19 @@ impl App {
             return;
         };
 
-        match event {
-            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                dialog.click(area, Position::new(mouse.column, mouse.row));
-            }
-            Event::Key(key) if key.code == KeyCode::Esc => return,
-            Event::Key(key) if key.code == KeyCode::Enter => {
-                match self.finish_project_dialog(&mut dialog) {
-                    Ok(true) => return,
-                    Ok(false) => {}
-                    Err(error) => {
-                        // Let the user correct the fields and inspect the source again on retry.
-                        if matches!(dialog.action, Action::ImportResume) {
-                            dialog.plan = None;
-                            dialog.selection.select(Some(0));
-                        }
-
-                        dialog.error = error.to_string();
+        match dialog.handle_event(event, area) {
+            Some(DialogAction::Cancel) => return,
+            Some(DialogAction::Submit) => match self.finish_project_dialog(&mut dialog) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    if matches!(dialog.action, Action::ImportResume) {
+                        dialog.edit_import();
                     }
+                    dialog.error = error.to_string();
                 }
-            }
-            Event::Key(key)
-                if dialog.plan.is_some()
-                    && matches!(
-                        key.code,
-                        KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
-                    ) =>
-            {
-                let current = dialog.selection.selected().unwrap_or(0);
-                let count = dialog.plan.as_ref().unwrap().candidates.len();
-                let next = if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
-                    current.saturating_sub(1)
-                } else {
-                    (current + 1).min(count - 1)
-                };
-                dialog.selection.select(Some(next));
-            }
-            Event::Key(key)
-                if key.code == KeyCode::Tab && matches!(dialog.action, Action::ImportResume) =>
-            {
-                dialog.source_focused = !dialog.source_focused;
-            }
-            Event::Key(key) if dialog.plan.is_none() => {
-                dialog.input().input(key);
-            }
-            Event::Paste(text) if dialog.plan.is_none() => {
-                dialog.input().insert_str(text.replace(['\n', '\r'], ""));
-            }
-            _ => {}
+            },
+            None => {}
         }
         self.project_dialog = Some(dialog);
     }
@@ -515,11 +513,9 @@ impl App {
                         PathBuf::from(source.trim())
                     };
                     let plan = ImportPlan::inspect(&path)?;
-                    let ambiguous = plan.candidates.len() > 1;
                     dialog.plan = Some(plan);
-                    if ambiguous {
-                        return Ok(false);
-                    }
+                    dialog.review_import();
+                    return Ok(false);
                 }
                 let plan = dialog.plan.as_ref().unwrap();
                 let entrypoint = &plan.candidates[dialog.selection.selected().unwrap_or(0)];
@@ -549,6 +545,13 @@ impl App {
                 )?)
             }
             Action::ReloadSource => {
+                // An AI reply may arrive while the confirmation is open.
+                let losses = self.reload_losses();
+                if losses != dialog.losses {
+                    dialog.losses = losses;
+                    dialog.reset_confirmation();
+                    return Ok(false);
+                }
                 self.session.editor.reload()?;
                 self.return_to_working_copy();
                 self.refresh_history();

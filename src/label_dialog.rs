@@ -6,18 +6,22 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph},
+    widgets::{
+        Block, BorderType, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Padding,
+        Paragraph,
+    },
 };
 use ratatui_textarea::TextArea;
 use texo::theme;
 
 use crate::{
+    dialog_ui::field,
     resume_label::{LabelColor, MAX_LABEL_CHARS, MAX_LABEL_WORDS, ResumeLabel},
     resume_project::Project,
 };
 
 const DIALOG_WIDTH: u16 = 52;
-const DIALOG_HEIGHT: u16 = 17;
+const DIALOG_HEIGHT: u16 = 21;
 const NO_LABEL_INDEX: usize = 0;
 
 pub enum LabelResult {
@@ -90,16 +94,17 @@ impl LabelDialog {
     fn block() -> Block<'static> {
         Block::bordered()
             .title(" Resume label ")
-            .padding(Padding::horizontal(1))
+            .border_type(BorderType::Rounded)
+            .padding(Padding::uniform(1))
             .style(theme::dialog())
             .border_style(theme::dialog_title())
     }
 
     fn rows(screen: Rect) -> [Rect; 4] {
         Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(0),
             Constraint::Length(2),
+            Constraint::Min(0),
+            Constraint::Length(3),
             Constraint::Length(1),
         ])
         .areas(Self::block().inner(Self::panel(screen)))
@@ -108,7 +113,7 @@ impl LabelDialog {
     fn custom_rows(form: Rect) -> [Rect; 5] {
         Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(3),
             Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Min(0),
@@ -264,13 +269,8 @@ impl LabelDialog {
 
         if self.custom {
             let [name_label, name, limits, colors, _] = Self::custom_rows(form);
-            self.name.set_cursor_style(if self.color_focused {
-                Style::default()
-            } else {
-                theme::dialog().bg(theme::ACCENT).fg(theme::BACKGROUND)
-            });
             frame.render_widget(Paragraph::new("Custom label"), name_label);
-            frame.render_widget(&self.name, name);
+            field(frame, name, &self.name, !self.color_focused);
             frame.render_widget(
                 Paragraph::new(format!(
                     "Up to {MAX_LABEL_WORDS} words · {MAX_LABEL_CHARS} characters"
@@ -299,7 +299,10 @@ impl LabelDialog {
             }));
             items.push(ListItem::new("Custom…"));
             frame.render_stateful_widget(
-                List::new(items).highlight_style(Style::default().bg(theme::SELECTION)),
+                List::new(items)
+                    .highlight_symbol("› ")
+                    .highlight_spacing(HighlightSpacing::Always)
+                    .highlight_style(Style::default().bg(theme::SELECTION)),
                 form,
                 &mut self.selection,
             );
@@ -309,8 +312,7 @@ impl LabelDialog {
             let position = self.selection.selected().unwrap_or(0) + 1;
             let count = self.choices.len() + 2;
             frame.render_widget(
-                Paragraph::new(format!("{position}/{count} · ↑↓ or j/k · PgUp/PgDn"))
-                    .style(theme::muted()),
+                Paragraph::new(format!("{position}/{count}")).style(theme::muted()),
                 error,
             );
         } else {
@@ -320,10 +322,16 @@ impl LabelDialog {
             );
         }
         let bindings = if self.custom {
-            vec![("Enter", "Save"), ("Tab", "Name/color"), ("Esc", "Back")]
+            vec![("Tab", "move"), ("Enter", "save"), ("Esc", "back")]
         } else {
-            vec![("Enter", "Select"), ("Esc", "Cancel")]
+            vec![("j/k", "move"), ("Enter", "select"), ("Esc", "close")]
         };
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(theme::muted()),
+            Rect::new(help.x, help.y.saturating_sub(1), help.width, 1),
+        );
         frame.render_widget(Paragraph::new(theme::shortcuts(&bindings)), help);
     }
 }

@@ -183,11 +183,14 @@ fn empty_workspace_to_revised_resume_export_and_reopen() -> Result<()> {
 
     let exported = root.join("application.pdf");
     app.open_export();
-    app.export.as_mut().unwrap().input.select_all();
+    app.export.as_mut().unwrap().folder.select_all();
     app.handle_event(
-        Event::Paste(exported.to_string_lossy().into_owned()),
+        Event::Paste(exported.parent().unwrap().display().to_string()),
         SCREEN,
     );
+    press(&mut app, KeyCode::Tab);
+    app.export.as_mut().unwrap().input.select_all();
+    app.handle_event(Event::Paste("application.pdf".into()), SCREEN);
     press(&mut app, KeyCode::Enter);
     assert!(app.export.is_none());
     assert_eq!(fs::read(&exported)?, fs::read(&published_pdf)?);
@@ -239,11 +242,14 @@ fn export_rechecks_pending_review_before_overwriting_an_existing_pdf() -> Result
     fs::write(&exported, "Existing application")?;
     let sender = app.session.assistant.pending_request(FULL_RESUME.into());
     app.open_export();
-    app.export.as_mut().unwrap().input.select_all();
+    app.export.as_mut().unwrap().folder.select_all();
     app.handle_event(
-        Event::Paste(exported.to_string_lossy().into_owned()),
+        Event::Paste(exported.parent().unwrap().display().to_string()),
         SCREEN,
     );
+    press(&mut app, KeyCode::Tab);
+    app.export.as_mut().unwrap().input.select_all();
+    app.handle_event(Event::Paste("application.pdf".into()), SCREEN);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.export.as_ref().unwrap().message, "File exists.");
 
@@ -480,6 +486,7 @@ fn external_source_change_blocks_save_and_reload_cancels_pending_work() -> Resul
 
     let sender = app.session.assistant.pending_request(accepted);
     app.perform_action(Action::ReloadSource);
+    press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Enter);
     wait_for_reviews(&mut app)?;
     assert!(sender.send(Err(anyhow::anyhow!("Late result"))).is_err());

@@ -3,9 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::dialog_ui::{ButtonFocus, DialogAction, FormLayout, buttons, field};
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
+    crossterm::event::{Event, KeyCode, MouseButton, MouseEventKind},
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::Line,
@@ -15,7 +17,8 @@ use ratatui_textarea::TextArea;
 use texo::theme;
 
 const DIALOG_WIDTH: u16 = 64;
-const EXPORT_HEIGHT: u16 = 8;
+const RESUME_MENU_WIDTH: u16 = 76;
+const RESUME_MENU_HEIGHT: u16 = 15;
 const MENU_FRAME_HEIGHT: u16 = 6;
 
 #[derive(Clone, Copy)]
@@ -33,16 +36,17 @@ pub enum Action {
 }
 
 const RESUME_ACTIONS: [(Action, &str); 4] = [
-    (Action::RenameResume, "Rename resume"),
-    (Action::LabelResume, "Set resume label"),
-    (Action::DuplicateResume, "Duplicate resume"),
-    (Action::ReloadSource, "Reload source from disk (confirm)"),
+    (Action::RenameResume, "Rename"),
+    (Action::LabelResume, "Change label"),
+    (Action::DuplicateResume, "Duplicate"),
+    (Action::ReloadSource, "Reload from disk"),
 ];
 
 pub struct ActionMenu {
     state: ListState,
     entries: &'static [(Action, &'static str)],
     title: String,
+    pub context: Option<String>,
 }
 
 const REVISION_ACTIONS: [(Action, &str); 3] = [
@@ -57,6 +61,7 @@ impl ActionMenu {
             state: ListState::default().with_selected(Some(0)),
             entries: &REVISION_ACTIONS,
             title: format!("revision-{number}"),
+            context: None,
         }
     }
 
@@ -64,7 +69,8 @@ impl ActionMenu {
         Self {
             state: ListState::default().with_selected(Some(0)),
             entries: &RESUME_ACTIONS,
-            title: format!("Manage {name}"),
+            title: "Manage resume".into(),
+            context: Some(name.into()),
         }
     }
 
@@ -83,6 +89,19 @@ impl ActionMenu {
     }
 
     fn layout(&self, screen: Rect) -> [Rect; 3] {
+        if self.context.is_some() {
+            let area = centered(screen, RESUME_MENU_WIDTH, RESUME_MENU_HEIGHT);
+            let inner = dialog_block("").padding(Padding::uniform(1)).inner(area);
+            let [_, choices, _, help] = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .areas(inner);
+            return [area, choices, help];
+        }
+
         let area = centered(
             screen,
             DIALOG_WIDTH,
@@ -116,6 +135,21 @@ impl ActionMenu {
         frame.render_widget(Clear, area);
         let title = Line::styled(format!(" {} ", self.title), theme::dialog_title());
         frame.render_widget(dialog_block(title), area);
+        if let Some(context) = &self.context {
+            let inner = dialog_block("").padding(Padding::uniform(1)).inner(area);
+            frame.render_widget(
+                Paragraph::new(context.as_str()).style(theme::muted()),
+                Rect { height: 2, ..inner },
+            );
+            if matches!(self.selected(), Action::ReloadSource) {
+                frame.render_widget(
+                    Paragraph::new("Replace the working copy with the source currently on disk.")
+                        .style(theme::muted())
+                        .wrap(ratatui::widgets::Wrap { trim: false }),
+                    Rect::new(choices.x, choices.bottom(), choices.width, 2),
+                );
+            }
+        }
         let selected = self.state.selected();
         let rows = self
             .entries
@@ -132,8 +166,19 @@ impl ActionMenu {
                 ListItem::new(line).style(style)
             });
 
-        let list = List::new(rows).style(theme::dialog());
+        let list = List::new(rows)
+            .style(theme::dialog())
+            .highlight_symbol("› ");
         frame.render_stateful_widget(list, choices, &mut self.state);
+        if self.context.is_some() {
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(theme::muted()),
+                Rect::new(help.x, help.y.saturating_sub(1), help.width, 1),
+            );
+        }
+
         frame.render_widget(
             Paragraph::new(theme::shortcuts(&[
                 ("j/k", "move"),
@@ -146,8 +191,19 @@ impl ActionMenu {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportControl {
+    Folder,
+    Filename,
+    Cancel,
+    Submit,
+}
+
 pub struct ExportDialog {
     pub input: TextArea<'static>,
+    pub folder: TextArea<'static>,
+    pub context: String,
+    focus: ExportControl,
     pub message: String,
     overwrite_path: Option<PathBuf>,
 }
@@ -155,13 +211,26 @@ pub struct ExportDialog {
 impl ExportDialog {
     pub fn new(document: &Path) -> Self {
         let stem = document.file_stem().unwrap_or_default().to_string_lossy();
-        let destination = document.with_file_name(format!("{stem}-export.pdf"));
-        let mut input = TextArea::new(vec![destination.display().to_string()]);
+        let mut input = TextArea::new(vec![format!("{stem}-export.pdf")]);
         input.set_style(theme::dialog());
         input.set_cursor_line_style(Style::default());
         input.set_cursor_style(Style::default().bg(theme::ACCENT).fg(theme::BACKGROUND));
+        input.select_all();
+
+        let mut folder = TextArea::new(vec![crate::workspace::display_path(
+            document.parent().unwrap_or(Path::new(".")),
+        )]);
+        folder.select_all();
+
         Self {
             input,
+            folder,
+            context: document
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            focus: ExportControl::Folder,
             message: String::new(),
             overwrite_path: None,
         }
@@ -173,8 +242,16 @@ impl ExportDialog {
     }
 
     pub fn export(&mut self, source: &Path, document: &Path) -> Result<Option<PathBuf>> {
-        let path = self.input.lines().join("");
-        ensure!(!path.trim().is_empty(), "Enter a destination path");
+        let filename = self.input.lines().join("");
+        ensure!(!filename.trim().is_empty(), "Enter a filename");
+        ensure!(
+            Path::new(&filename)
+                .file_name()
+                .is_some_and(|name| name == filename.as_str()),
+            "Filename must not contain a folder path"
+        );
+        let path = self.folder.lines().join("");
+        ensure!(!path.trim().is_empty(), "Enter a destination folder");
         let destination = if let Some(relative) = path.strip_prefix("~/") {
             PathBuf::from(std::env::var_os("HOME").context("Could not locate home")?).join(relative)
         } else {
@@ -183,6 +260,7 @@ impl ExportDialog {
                 .context("Document has no directory")?
                 .join(path)
         };
+        let destination = destination.join(filename);
         ensure!(
             destination
                 .extension()
@@ -213,32 +291,153 @@ impl ExportDialog {
         Ok(Some(destination))
     }
 
-    pub fn draw(&mut self, frame: &mut Frame) {
-        let area = centered(frame.area(), DIALOG_WIDTH, EXPORT_HEIGHT);
-        frame.render_widget(Clear, area);
-        let panel = dialog_block(" Export PDF ").padding(Padding::uniform(1));
-        let content = panel.inner(area);
-        frame.render_widget(panel, area);
-        let [label, input, message] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(2),
-            Constraint::Min(1),
-        ])
-        .areas(content);
-        frame.render_widget(Paragraph::new("Destination"), label);
-        frame.render_widget(&self.input, input);
-
-        let action = if self.overwrite_path.is_some() {
-            "replace"
+    fn action_label(&self) -> &str {
+        if self.overwrite_path.is_some() {
+            "Replace PDF"
         } else {
-            "export"
-        };
-        let mut hint = Line::from(self.message.clone());
-        if !self.message.is_empty() {
-            hint.push_span(" ");
+            "Export PDF"
         }
-        hint.extend(theme::shortcuts(&[("Enter", action), ("Esc", "cancel")]).spans);
-        frame.render_widget(Paragraph::new(hint).style(theme::muted()), message);
+    }
+
+    fn layout(&self, screen: Rect) -> FormLayout {
+        let row = if self.focus == ExportControl::Filename {
+            8
+        } else {
+            3
+        };
+        FormLayout::new(screen, 14, row, self.action_label())
+    }
+
+    pub fn handle_event(&mut self, event: Event, screen: Rect) -> Option<DialogAction> {
+        let before = (self.folder.lines().join(""), self.input.lines().join(""));
+        match event {
+            Event::Key(key) if key.code == KeyCode::Esc => return Some(DialogAction::Cancel),
+            Event::Key(key) if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) => {
+                let controls = [
+                    ExportControl::Folder,
+                    ExportControl::Filename,
+                    ExportControl::Cancel,
+                    ExportControl::Submit,
+                ];
+                let current = controls
+                    .iter()
+                    .position(|control| *control == self.focus)
+                    .unwrap();
+                let offset = if key.code == KeyCode::BackTab {
+                    controls.len() - 1
+                } else {
+                    1
+                };
+                self.focus = controls[(current + offset) % controls.len()];
+            }
+            Event::Key(key) if key.code == KeyCode::Enter => {
+                return Some(if self.focus == ExportControl::Cancel {
+                    DialogAction::Cancel
+                } else {
+                    DialogAction::Submit
+                });
+            }
+            Event::Key(key)
+                if matches!(self.focus, ExportControl::Cancel | ExportControl::Submit) =>
+            {
+                match key.code {
+                    KeyCode::Char('h') | KeyCode::Left => self.focus = ExportControl::Cancel,
+                    KeyCode::Char('l') | KeyCode::Right => self.focus = ExportControl::Submit,
+                    KeyCode::Char('k') | KeyCode::Up => self.focus = ExportControl::Filename,
+                    KeyCode::Char(' ') => {
+                        return Some(if self.focus == ExportControl::Cancel {
+                            DialogAction::Cancel
+                        } else {
+                            DialogAction::Submit
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            Event::Key(key) => {
+                let input = if self.focus == ExportControl::Folder {
+                    &mut self.folder
+                } else {
+                    &mut self.input
+                };
+                input.input(key);
+            }
+            Event::Paste(text)
+                if matches!(self.focus, ExportControl::Folder | ExportControl::Filename) =>
+            {
+                let input = if self.focus == ExportControl::Folder {
+                    &mut self.folder
+                } else {
+                    &mut self.input
+                };
+                input.insert_str(text.replace(['\n', '\r'], ""));
+            }
+            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                let position = (mouse.column, mouse.row).into();
+                let layout = self.layout(screen);
+                if layout.row(2, 4).contains(position) {
+                    self.focus = ExportControl::Folder;
+                }
+                if layout.row(7, 4).contains(position) {
+                    self.focus = ExportControl::Filename;
+                }
+                for (index, area) in layout.buttons.iter().enumerate() {
+                    if area.contains(position) {
+                        return Some(if index == 0 {
+                            DialogAction::Cancel
+                        } else {
+                            DialogAction::Submit
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+        if before != (self.folder.lines().join(""), self.input.lines().join("")) {
+            self.edited();
+        }
+        None
+    }
+
+    pub fn draw(&mut self, frame: &mut Frame) {
+        let layout = self.layout(frame.area());
+        layout.draw(frame, "Export PDF");
+        frame.render_widget(
+            Paragraph::new(self.context.as_str()).style(theme::muted()),
+            layout.row(0, 1),
+        );
+        frame.render_widget(Paragraph::new("Folder"), layout.row(2, 1));
+        field(
+            frame,
+            layout.row(3, 3),
+            &self.folder,
+            self.focus == ExportControl::Folder,
+        );
+        frame.render_widget(Paragraph::new("Filename"), layout.row(7, 1));
+        field(
+            frame,
+            layout.row(8, 3),
+            &self.input,
+            self.focus == ExportControl::Filename,
+        );
+        frame.render_widget(
+            Paragraph::new(self.message.as_str())
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .style(theme::dialog().fg(theme::ERROR)),
+            layout.row(11, 3),
+        );
+        let focus = match self.focus {
+            ExportControl::Cancel => ButtonFocus::Cancel,
+            ExportControl::Submit => ButtonFocus::Action,
+            _ => ButtonFocus::Field,
+        };
+        buttons(
+            frame,
+            layout.buttons,
+            self.action_label(),
+            focus,
+            self.overwrite_path.is_some(),
+        );
     }
 }
 
@@ -303,6 +502,64 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(destination)?, "new pdf");
         assert_eq!(fs::read_to_string(source)?, "new pdf");
+        Ok(())
+    }
+
+    #[test]
+    fn export_navigation_preserves_confirmation_but_field_edits_invalidate_it() -> Result<()> {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("main.pdf");
+        let document = directory.path().join("main.tex");
+        fs::write(&source, "pdf")?;
+        fs::write(directory.path().join("main-export.pdf"), "existing")?;
+        let mut dialog = ExportDialog::new(&document);
+        assert!(dialog.export(&source, &document)?.is_none());
+
+        let screen = Rect::new(0, 0, 100, 30);
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        dialog.handle_event(key(KeyCode::Right), screen);
+        assert!(dialog.overwrite_path.is_some());
+        dialog.handle_event(key(KeyCode::Tab), screen);
+        assert!(dialog.overwrite_path.is_some());
+        dialog.handle_event(Event::Paste("other.pdf".into()), screen);
+        assert!(dialog.overwrite_path.is_none());
+        assert!(dialog.message.is_empty());
+
+        dialog.input.select_all();
+        dialog.handle_event(Event::Paste("../outside.pdf".into()), screen);
+        assert!(
+            dialog
+                .export(&source, &document)
+                .unwrap_err()
+                .to_string()
+                .contains("folder path")
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("main-export.pdf"))?,
+            "existing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn manage_and_export_fit_tiny_terminals_without_activating_the_footer() -> Result<()> {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut menu = ActionMenu::for_resume("Example");
+        let mut export = ExportDialog::new(Path::new("/tmp/main.tex"));
+        for (width, height) in [(100, 30), (40, 16), (20, 8), (1, 1)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+            terminal.draw(|frame| menu.draw(frame))?;
+            terminal.draw(|frame| export.draw(frame))?;
+        }
+
+        let screen = Rect::new(0, 0, 100, 30);
+        let mut terminal = Terminal::new(TestBackend::new(screen.width, screen.height))?;
+        terminal.draw(|frame| menu.draw(frame))?;
+        let [_, choices, _] = menu.layout(screen);
+        assert!(menu.click(screen, choices.x, choices.bottom()).is_none());
         Ok(())
     }
 }
