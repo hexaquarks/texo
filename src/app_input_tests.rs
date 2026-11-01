@@ -1587,3 +1587,91 @@ fn removed_actions_shortcuts_do_not_open_an_overlay() -> anyhow::Result<()> {
     assert!(!app.overlay_open());
     Ok(())
 }
+
+#[test]
+fn treeview_toggle_reclaims_space_and_keeps_navigation_in_visible_panes() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    app.pane_sizes.sidebar = Some(30);
+    app.pane_sizes.preview = Some(50);
+    let original = app.workspace_layout(area);
+    let source = app.session.editor.source();
+
+    pane_prefix(&mut app, 't', KeyModifiers::NONE, area);
+    let hidden = app.workspace_layout(area);
+    assert!(!app.projects_visible);
+    assert!(hidden.projects.is_empty());
+    assert!(hidden.files.is_empty());
+    assert_eq!(hidden.editor.x, area.x);
+    assert!(hidden.editor.width > original.editor.width);
+    assert!(hidden.preview.width > original.preview.width);
+    assert_eq!(hidden.assistant.width, hidden.editor.width);
+    assert_eq!(hidden.editor.width + hidden.preview.width, area.width);
+    // The PDF keeps its 50/130 share of the content width, rounded to a cell.
+    assert_eq!(hidden.preview.width, 62);
+
+    pane_prefix(&mut app, 'h', KeyModifiers::NONE, area);
+    assert!(app.focus == Focus::Editor);
+    app.focus = Focus::Preview;
+    pane_prefix(&mut app, 'c', KeyModifiers::NONE, area);
+    assert!(app.focus == Focus::Editor);
+
+    pane_prefix(&mut app, 't', KeyModifiers::NONE, area);
+    assert!(app.projects_visible);
+    assert!(app.focus == Focus::Projects);
+    let restored = app.workspace_layout(area);
+    assert_eq!(restored.projects, original.projects);
+    assert_eq!(restored.editor, original.editor);
+    assert_eq!(restored.preview, original.preview);
+
+    pane_prefix(&mut app, 't', KeyModifiers::NONE, area);
+    assert!(app.focus == Focus::Editor);
+    assert_eq!(app.session.editor.source(), source);
+    Ok(())
+}
+
+#[test]
+fn treeview_starts_visible_after_loading_saved_pane_sizes() -> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    let path = directory.path().join("layout.json");
+    app.restore_layout(path.clone());
+    pane_prefix(&mut app, 't', KeyModifiers::NONE, area);
+    pane_prefix(&mut app, 'L', KeyModifiers::SHIFT, area);
+    assert!(!app.projects_visible);
+    assert!(path.exists());
+
+    let editor = Editor::open(app.session.editor.path.clone())?;
+    let mut reopened = App::new(editor, Preview::default())?;
+    reopened.restore_layout(path);
+    assert!(reopened.projects_visible);
+    assert!(!reopened.workspace_layout(area).projects.is_empty());
+    Ok(())
+}
+
+#[test]
+fn custom_prefix_toggles_treeview_in_narrow_terminals_without_editing_chat() -> anyhow::Result<()> {
+    for area in [Rect::new(0, 0, 70, 30), Rect::new(0, 0, 40, 10)] {
+        let (_directory, mut app) = application()?;
+        app.prefix = crate::keybindings::Prefix::new("alt+a")?;
+        app.focus = Focus::Assistant;
+        app.session.assistant.input.insert_str("Keep this prompt");
+
+        for visible in [false, true, false] {
+            app.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT)),
+                area,
+            );
+            app.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
+                area,
+            );
+            assert_eq!(app.projects_visible, visible);
+            assert_eq!(app.workspace_layout(area).projects.is_empty(), !visible);
+        }
+
+        assert!(app.focus == Focus::Editor);
+        assert_eq!(app.session.assistant.input.lines(), &["Keep this prompt"]);
+    }
+    Ok(())
+}

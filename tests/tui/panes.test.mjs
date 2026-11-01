@@ -45,3 +45,21 @@ test('workspace expansion restores on build and PDF controls use the enlarged pa
         await terminal.getByText('texo / chat').expect();
     });
 });
+
+test('treeview toggle updates the footer and resets on launch', async () => {
+    await withTexo('treeview-toggle', async ({ terminal, restart }) => {
+        await terminal.getByText('Hide tree').expect();
+        await prefix(terminal, 't');
+        await terminal.getByText('No resumes yet').expect({ not: true });
+        await terminal.getByText('Show tree').expect();
+
+        await prefix(terminal, 't');
+        await terminal.getByText('No resumes yet').expect();
+        await terminal.getByText('Hide tree').expect();
+
+        await prefix(terminal, 't');
+        await restart();
+        await terminal.getByText('No resumes yet').expect();
+        await terminal.getByText('Hide tree').expect();
+    });
+});

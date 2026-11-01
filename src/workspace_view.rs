@@ -157,13 +157,21 @@ impl App {
         let prefix = self.prefix.label();
         let help = format!("{prefix} ?");
         let settings = format!("{prefix} s");
+        let tree = format!("{prefix} t");
+        let tree_action = if self.projects_visible {
+            "Hide tree"
+        } else {
+            "Show tree"
+        };
+
         let mut hint = theme::shortcuts(&[
             (&prefix, "Prefix"),
             (&help, "Shortcuts"),
             (&settings, "Settings"),
+            (&tree, tree_action),
         ]);
         if hint.width() > usize::from(area.width) {
-            hint = theme::shortcuts(&[(&help, "Help"), (&settings, "Settings")]);
+            hint = theme::shortcuts(&[(&help, "Help"), (&tree, tree_action)]);
         }
         if hint.width() > usize::from(area.width) {
             hint = theme::shortcuts(&[(&help, "Help")]);
@@ -719,24 +727,29 @@ impl WorkspaceLayout {
             return layout;
         }
 
-        let sidebar_width = if show_projects {
-            sizes
-                .sidebar
-                .unwrap_or(SIDEBAR_WIDTH)
-                .clamp(MIN_PANE_WIDTH, body.width - 2 * MIN_PANE_WIDTH)
+        let visible_sidebar_width = sidebar_width(body.width, sizes);
+        let visible_content_width = body.width - visible_sidebar_width;
+        let preview_width = sizes
+            .preview
+            .unwrap_or_else(|| (u32::from(body.width) * u32::from(PREVIEW_PERCENT) / 100) as u16);
+        let preview_width = preview_width.min(visible_content_width);
+
+        // Saved widths describe the layout with the tree visible. Share its space
+        // proportionally between the center column and PDF when it is hidden.
+        let (sidebar_width, preview_width) = if show_projects {
+            (visible_sidebar_width, preview_width)
         } else {
-            0
+            (
+                0,
+                scale_pane_width(preview_width, visible_content_width, body.width),
+            )
         };
-        let preview_constraint = match sizes.preview {
-            Some(width) => Constraint::Length(
-                width.clamp(MIN_PANE_WIDTH, body.width - sidebar_width - MIN_PANE_WIDTH),
-            ),
-            None => Constraint::Percentage(PREVIEW_PERCENT),
-        };
+        let preview_width =
+            preview_width.clamp(MIN_PANE_WIDTH, body.width - sidebar_width - MIN_PANE_WIDTH);
         let [sidebar, center, preview] = Layout::horizontal([
             Constraint::Length(sidebar_width),
             Constraint::Min(MIN_PANE_WIDTH),
-            preview_constraint,
+            Constraint::Length(preview_width),
         ])
         .areas(body);
         let [editor, assistant] = Layout::vertical([
@@ -767,4 +780,17 @@ fn editor_constraint(sizes: &PaneSizes, height: u16) -> Constraint {
         Some(rows) => Constraint::Length(rows.clamp(MIN_EDITOR_HEIGHT, height - MIN_CHAT_HEIGHT)),
         None => Constraint::Percentage(EDITOR_PERCENT),
     }
+}
+
+pub(super) fn sidebar_width(workspace_width: u16, sizes: &PaneSizes) -> u16 {
+    sizes
+        .sidebar
+        .unwrap_or(SIDEBAR_WIDTH)
+        .clamp(MIN_PANE_WIDTH, workspace_width - 2 * MIN_PANE_WIDTH)
+}
+
+pub(super) fn scale_pane_width(width: u16, old_total: u16, new_total: u16) -> u16 {
+    let scaled = u32::from(width) * u32::from(new_total);
+    let rounded = (scaled + u32::from(old_total) / 2) / u32::from(old_total);
+    rounded as u16
 }
