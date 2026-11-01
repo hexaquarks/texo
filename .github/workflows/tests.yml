@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   test:
-    # ARM64 hosted runners can fail to acquire capacity before the queue expires.
-    runs-on: macos-15-intel
+    name: Compiler and sandbox (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -57,5 +61,65 @@ jobs:
         with:
           use_oidc: true
           files: target/lcov.info
+          flags: ${{ matrix.runner }}
           disable_search: true
           fail_ci_if_error: true
+
+  compatibility:
+    name: Core and terminal engines (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Check all targets
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run portable Rust tests
+        run: cargo test --locked --all-targets
+
+      - name: Build application
+        run: cargo build --locked
+
+      - name: Install Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install terminal test dependencies
+        id: terminal-dependencies
+        run: npm ci --prefix tests/tui
+
+      - name: Test Alacritty engine
+        run: node --test tests/tui/compatibility.test.mjs
+        env:
+          TEXO_TUI_BACKEND: alacritty
+          NO_COLOR: ''
+
+      - name: Test Ghostty engine
+        if: ${{ !cancelled() && steps.terminal-dependencies.outcome == 'success' }}
+        run: node --test tests/tui/compatibility.test.mjs
+        env:
+          TEXO_TUI_BACKEND: ghostty
+          NO_COLOR: ''
+
+      - name: Upload terminal artifacts
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: terminal-${{ matrix.runner }}
+          path: target/tui-artifacts
+          if-no-files-found: ignore
