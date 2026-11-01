@@ -375,9 +375,7 @@ impl App {
             KeyCode::Char('w') => {
                 self.handle_control_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
             }
-            KeyCode::Char('t') => {
-                self.handle_control_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL))
-            }
+            KeyCode::Char('t') => self.toggle_treeview(),
             KeyCode::Char('D') if self.session.build_diagnostics.is_some() => {
                 self.toggle_problem_summary()
             }
@@ -543,14 +541,7 @@ impl App {
             }
             KeyCode::Char('b') => self.start_render(),
             KeyCode::Char('e') => self.open_export(),
-            KeyCode::Char('t') => {
-                self.projects_visible = !self.projects_visible;
-                if self.projects_visible {
-                    self.focus = Focus::Projects;
-                } else if self.focus == Focus::Projects {
-                    self.focus = Focus::Editor;
-                }
-            }
+            KeyCode::Char('t') => self.toggle_treeview(),
             KeyCode::Char('s') if self.session.empty_workspace => {
                 self.open_project_dialog(Action::NewResume)
             }

@@ -2,12 +2,25 @@ use ratatui::layout::Rect;
 
 use super::{
     App, Focus,
-    workspace_view::{MIN_CHAT_HEIGHT, MIN_EDITOR_HEIGHT, MIN_PANE_WIDTH, WorkspaceLayout},
+    workspace_view::{
+        MIN_CHAT_HEIGHT, MIN_EDITOR_HEIGHT, MIN_PANE_WIDTH, WorkspaceLayout, scale_pane_width,
+        sidebar_width,
+    },
 };
 
 pub(super) const PANE_RESIZE_CELLS: u16 = 10;
 
 impl App {
+    pub(super) fn toggle_treeview(&mut self) {
+        self.projects_visible = !self.projects_visible;
+
+        if self.projects_visible {
+            self.focus = Focus::Projects;
+        } else if self.focus == Focus::Projects {
+            self.focus = Focus::Editor;
+        }
+    }
+
     pub(super) fn select_directional_pane(&mut self, direction: char, area: Rect) {
         self.workspace_expansion = None;
 
@@ -126,7 +139,17 @@ impl App {
                 MIN_PANE_WIDTH,
                 right,
             );
-            self.pane_sizes.preview = Some(center.width + layout.preview.width - center_width);
+            let content_width = center.width + layout.preview.width;
+            let mut preview_width = content_width - center_width;
+
+            if !self.projects_visible {
+                let visible_content_width =
+                    content_width - sidebar_width(content_width, &self.pane_sizes);
+                preview_width =
+                    scale_pane_width(preview_width, content_width, visible_content_width);
+            }
+
+            self.pane_sizes.preview = Some(preview_width);
         } else if !layout.projects.is_empty() && layout.projects.right() == center.x {
             self.pane_sizes.sidebar = Some(moved_divider_size(
                 layout.projects.width,
