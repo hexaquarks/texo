@@ -665,6 +665,36 @@ fn directional_prefix_selects_neighbors_without_editing_chat() -> anyhow::Result
 }
 
 #[test]
+fn moving_right_from_tree_prefers_editor_across_layouts_and_expansions() -> anyhow::Result<()> {
+    for area in [
+        Rect::new(0, 0, 160, 45),
+        Rect::new(0, 0, 70, 30),
+        Rect::new(0, 0, 40, 10),
+    ] {
+        for expansion in [None, Some(Focus::Assistant), Some(Focus::Editor)] {
+            for history_focused in [false, true] {
+                let (_directory, mut app) = application()?;
+                app.focus = Focus::Projects;
+                app.projects.history_focused = history_focused;
+                app.session.column_expansion = expansion;
+                app.pane_sizes.editor = Some(workspace_view::MIN_EDITOR_HEIGHT);
+                app.session.assistant.input.insert_str("Keep this prompt");
+                let source = app.session.editor.source();
+
+                pane_prefix(&mut app, 'l', KeyModifiers::NONE, area);
+
+                assert!(app.focus == Focus::Editor);
+                assert!(!app.workspace_layout(area).editor.is_empty());
+                assert!(app.session.column_expansion != Some(Focus::Assistant));
+                assert_eq!(app.session.editor.source(), source);
+                assert_eq!(app.session.assistant.input.lines(), &["Keep this prompt"]);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn resize_moves_dividers_like_tmux_from_either_side() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     let area = Rect::new(0, 0, 160, 80);

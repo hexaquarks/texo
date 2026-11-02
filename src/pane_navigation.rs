@@ -24,6 +24,13 @@ impl App {
     pub(super) fn select_directional_pane(&mut self, direction: char, area: Rect) {
         self.workspace_expansion = None;
 
+        // Leaving the tree focuses the editor, regardless of pane heights or history focus.
+        if self.focus == Focus::Projects && direction == 'l' {
+            self.focus = Focus::Editor;
+            self.restore_hidden_column_pane();
+            return;
+        }
+
         if self.focus == Focus::Projects && matches!(direction, 'j' | 'k') {
             self.projects.history_focused = direction == 'j';
             return;
