@@ -83,19 +83,23 @@ pub fn compile(source: &str, directory: &Path, cancelled: &AtomicBool) -> Result
 }
 
 pub fn build(source: &str, directory: &Path, cancelled: &AtomicBool) -> Result<CompiledDraft> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        compile_macos(source, directory, cancelled)
+        compile_isolated(source, directory, cancelled)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = (source, directory, cancelled);
-        anyhow::bail!("Isolated compilation is currently supported on macOS only")
+        anyhow::bail!("Isolated compilation requires macOS or Linux (including WSL)")
     }
 }
 
-#[cfg(target_os = "macos")]
-fn compile_macos(source: &str, directory: &Path, cancelled: &AtomicBool) -> Result<CompiledDraft> {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn compile_isolated(
+    source: &str,
+    directory: &Path,
+    cancelled: &AtomicBool,
+) -> Result<CompiledDraft> {
     use anyhow::{Context, ensure};
     use std::{io::Write, time::Duration};
 
@@ -108,8 +112,7 @@ fn compile_macos(source: &str, directory: &Path, cancelled: &AtomicBool) -> Resu
         .canonicalize()?;
 
     let home = directories::BaseDirs::new().context("Cannot locate the local TeX cache")?;
-    let cache = home.cache_dir().join("TectonicProject.Tectonic").canonicalize()
-        .context("Local LaTeX resources are missing. Prepare Tectonic's cache before using offline compilation")?;
+    let cache = tectonic_cache()?;
 
     let directory = directory.canonicalize()?;
     let project_root = project_root(&directory);
@@ -137,7 +140,8 @@ fn compile_macos(source: &str, directory: &Path, cancelled: &AtomicBool) -> Resu
         ])
         .arg(&input_directory)
         .arg(input.path())
-        .env("HOME", home.home_dir());
+        .env("HOME", home.home_dir())
+        .env("TECTONIC_CACHE_DIR", &cache);
 
     let diagnostics = crate::process::run(&mut command, COMPILE_TIMEOUT, cancelled)?;
     ensure!(
@@ -152,9 +156,24 @@ fn compile_macos(source: &str, directory: &Path, cancelled: &AtomicBool) -> Resu
     })
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn tectonic_cache() -> Result<PathBuf> {
+    use anyhow::Context;
+
+    let project = directories::ProjectDirs::from("", "TectonicProject", "Tectonic")
+        .context("Cannot locate the local TeX cache")?;
+    let cache = std::env::var_os("TECTONIC_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project.cache_dir().to_path_buf());
+
+    cache.canonicalize().context(
+        "Local LaTeX resources are missing. Prepare Tectonic's cache before using offline compilation",
+    )
+}
+
 // Mirror only the directories leading to the entrypoint. Linking a whole parent directory
 // would put the draft outside temporary storage; flattening it breaks ../ includes.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn link_project_assets(root: &Path, directory: &Path, build: &Path) -> Result<PathBuf> {
     use std::fs;
 
@@ -196,7 +215,7 @@ pub const PROJECT_MANIFEST_FILE: &str = "texo.toml";
 pub const MAX_PROJECT_MANIFEST_BYTES: u64 = 16 * 1024;
 
 /// A nested entrypoint may include assets elsewhere in its own project, never in a sibling project.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn project_root(directory: &Path) -> PathBuf {
     #[derive(serde::Deserialize)]
     struct CompileManifest {
@@ -272,7 +291,66 @@ fn isolated_command(
     Ok(command)
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn isolated_command(
+    compiler: &Path,
+    cache: &Path,
+    resume: &Path,
+    build: &Path,
+) -> Result<std::process::Command> {
+    use anyhow::Context;
+
+    let sandbox = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join("bwrap"))
+        .find(|path| path.is_file())
+        .context("Install Bubblewrap (bwrap) to compile resumes safely")?
+        .canonicalize()?;
+    let mut command = std::process::Command::new(sandbox);
+    command.args([
+        "--unshare-all",
+        "--die-with-parent",
+        "--new-session",
+        "--cap-drop",
+        "ALL",
+    ]);
+
+    // Start with an empty filesystem and share only installed runtimes and fonts.
+    // Mounting the host root would expose unrelated documents and credentials.
+    for system_path in [
+        "/usr/lib",
+        "/usr/lib64",
+        "/lib",
+        "/lib64",
+        "/usr/share/fonts",
+        "/etc/fonts",
+        "/etc/ld.so.cache",
+        // Nix installs the compiler's immutable loader/library closure here.
+        "/nix/store",
+    ] {
+        if Path::new(system_path).exists() {
+            command.args(["--ro-bind", system_path, system_path]);
+        }
+    }
+
+    for path in [compiler, cache, resume] {
+        let path = path.canonicalize()?;
+        command.arg("--ro-bind").arg(&path).arg(&path);
+    }
+
+    let build = build.canonicalize()?;
+    command.arg("--bind").arg(&build).arg(&build);
+    command.args(["--proc", "/proc", "--dev", "/dev"]);
+    command.arg("--chdir").arg(resume.canonicalize()?);
+    command.arg("--").arg(compiler.canonicalize()?);
+    command
+        .env_clear()
+        .env("TMPDIR", &build)
+        .env("PATH", "/usr/bin:/bin");
+
+    Ok(command)
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use super::*;
 
@@ -341,10 +419,19 @@ mod tests {
     }
 
     fn command(program: &str, resume: &Path, build: &Path) -> std::process::Command {
-        isolated_command(Path::new(program), build, resume, build).unwrap()
+        let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|directory| directory.join(program))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| panic!("Install {program} to run sandbox tests"));
+
+        isolated_command(&executable, resume, resume, build).unwrap()
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires Bubblewrap and user namespaces"
+    )]
     fn sandbox_blocks_outside_reads_symlink_escapes_and_source_writes() {
         let resume = tempfile::tempdir().unwrap();
         let build = tempfile::tempdir().unwrap();
@@ -360,7 +447,7 @@ mod tests {
         std::fs::write(&local, "local asset").unwrap();
 
         for denied in [&secret, &link] {
-            let result = command("/bin/cat", resume.path(), build.path())
+            let result = command("cat", resume.path(), build.path())
                 .arg(denied)
                 .output()
                 .unwrap();
@@ -369,7 +456,7 @@ mod tests {
             assert!(!String::from_utf8_lossy(&result.stdout).contains("synthetic-private-marker"));
         }
 
-        let result = command("/bin/cat", resume.path(), build.path())
+        let result = command("cat", resume.path(), build.path())
             .arg(&local)
             .output()
             .unwrap();
@@ -377,7 +464,7 @@ mod tests {
         assert!(result.status.success());
         assert_eq!(result.stdout, b"local asset");
 
-        let result = command("/bin/bash", resume.path(), build.path())
+        let result = command("bash", resume.path(), build.path())
             .args(["-c", "printf changed > \"$1\"", "test"])
             .arg(&local)
             .output()
@@ -386,9 +473,19 @@ mod tests {
         assert!(!result.status.success());
         assert_eq!(std::fs::read_to_string(local).unwrap(), "local asset");
 
+        let outside_output = outside.path().join("denied.txt");
+        let result = command("bash", resume.path(), build.path())
+            .args(["-c", "printf changed > \"$1\"", "test"])
+            .arg(&outside_output)
+            .output()
+            .unwrap();
+
+        assert!(!result.status.success());
+        assert!(!outside_output.exists());
+
         let output = build.path().join("allowed.txt");
 
-        let result = command("/bin/bash", resume.path(), build.path())
+        let result = command("bash", resume.path(), build.path())
             .args(["-c", "printf allowed > \"$1\"", "test"])
             .arg(&output)
             .output()
@@ -398,34 +495,83 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_blocks_network_subprocesses_and_inherited_secrets() {
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires Bubblewrap and user namespaces"
+    )]
+    fn sandbox_blocks_network_and_inherited_secrets() {
         let resume = tempfile::tempdir().unwrap();
         let build = tempfile::tempdir().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
 
-        let result = command("/usr/bin/curl", resume.path(), build.path())
-            .args(["--silent", "--max-time", "1"])
-            .arg(format!("http://{}", listener.local_addr().unwrap()))
+        let connect = ["-c", "exec 3<>/dev/tcp/127.0.0.1/$1", "test"];
+        let port = listener.local_addr().unwrap().port().to_string();
+        let available = std::process::Command::new("bash")
+            .args(connect)
+            .arg(&port)
+            .output()
+            .unwrap();
+        assert!(available.status.success(), "{available:?}");
+        assert!(listener.accept().is_ok());
+
+        let result = command("bash", resume.path(), build.path())
+            .args(connect)
+            .arg(&port)
             .output()
             .unwrap();
 
         assert!(!result.status.success());
         assert!(listener.accept().is_err());
 
-        let result = command("/bin/bash", resume.path(), build.path())
-            .args(["-c", "exec /bin/cat /dev/null"])
-            .output()
-            .unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            let result = command("bash", resume.path(), build.path())
+                .args(["-c", "exec /bin/cat /dev/null"])
+                .output()
+                .unwrap();
 
-        assert!(!result.status.success());
+            assert!(!result.status.success());
+        }
 
-        let environment = command("/bin/bash", resume.path(), build.path());
+        let environment = command("bash", resume.path(), build.path());
         assert!(
             !environment
                 .get_envs()
                 .any(|(key, _)| key == "OPENAI_API_KEY" || key == "ANTHROPIC_API_KEY")
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires Bubblewrap and user namespaces"
+    )]
+    fn sandbox_keeps_cache_read_only() {
+        let resume = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let build = tempfile::tempdir().unwrap();
+        let cached = cache.path().join("resource.txt");
+        std::fs::write(&cached, "cached resource").unwrap();
+        let shell = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|directory| directory.join("bash"))
+            .find(|path| path.is_file())
+            .expect("Install bash to run sandbox tests");
+
+        let result = isolated_command(&shell, cache.path(), resume.path(), build.path())
+            .unwrap()
+            .args([
+                "-c",
+                "read -r line < \"$1\"; printf '%s' \"$line\"; printf changed > \"$1\"",
+                "test",
+            ])
+            .arg(&cached)
+            .output()
+            .unwrap();
+
+        assert_eq!(result.stdout, b"cached resource");
+        assert!(!result.status.success());
+        assert_eq!(std::fs::read_to_string(cached).unwrap(), "cached resource");
     }
 
     #[test]
@@ -449,7 +595,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod project_compile_tests {
     use super::*;
 
