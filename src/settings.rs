@@ -16,8 +16,20 @@ use crate::{
 };
 
 const DIALOG_WIDTH: u16 = 76;
-const DIALOG_HEIGHT: u16 = 29;
-const PAGE_ROWS: u16 = 25;
+const DIALOG_HEIGHT: u16 = 20;
+const PAGE_ROWS: u16 = 16;
+const EDITOR_HEADING_ROW: u16 = 0;
+const MODE_ROW: u16 = 1;
+const WRAP_ROW: u16 = 2;
+const WORKSPACE_HEADING_ROW: u16 = 4;
+const WORKSPACE_ROW: u16 = 5;
+const ADVANCED_HEADING_ROW: u16 = 7;
+const PREFIX_ROW: u16 = 8;
+const CONFIG_PATH_ROW: u16 = 9;
+const CONFIG_BUTTONS_ROW: u16 = 10;
+const MESSAGE_ROW: u16 = 11;
+const ACTIONS_ROW: u16 = 13;
+const HELP_ROW: u16 = 15;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsControl {
@@ -160,11 +172,11 @@ impl SettingsDialog {
 
     fn control_row(control: SettingsControl) -> u16 {
         match control {
-            SettingsControl::Mode => 2,
-            SettingsControl::Wrap => 4,
-            SettingsControl::ChangeFolder => 9,
-            SettingsControl::OpenConfig | SettingsControl::ReloadConfig => 17,
-            SettingsControl::Cancel | SettingsControl::Apply => 22,
+            SettingsControl::Mode => MODE_ROW,
+            SettingsControl::Wrap => WRAP_ROW,
+            SettingsControl::ChangeFolder => WORKSPACE_ROW,
+            SettingsControl::OpenConfig | SettingsControl::ReloadConfig => CONFIG_BUTTONS_ROW,
+            SettingsControl::Cancel | SettingsControl::Apply => ACTIONS_ROW,
         }
     }
 
@@ -421,6 +433,7 @@ impl SettingsDialog {
             self.draw_folder(frame);
             return;
         }
+
         let screen = frame.area();
         let area = Self::area(screen);
         frame.render_widget(Clear, area);
@@ -432,17 +445,26 @@ impl SettingsDialog {
                 .style(theme::dialog()),
             area,
         );
-        for (row, title) in [(0, "EDITOR"), (7, "WORKSPACE"), (12, "ADVANCED")] {
+
+        for (row, title) in [
+            (EDITOR_HEADING_ROW, "EDITOR"),
+            (WORKSPACE_HEADING_ROW, "WORKSPACE"),
+            (ADVANCED_HEADING_ROW, "ADVANCED"),
+        ] {
             frame.render_widget(
                 Paragraph::new(title).style(theme::muted()),
                 self.row(screen, row, 1),
             );
         }
-        for (row, text) in [(2, "Input mode"), (4, "Soft wrap"), (14, "Prefix key")] {
+        for (row, text) in [
+            (MODE_ROW, "Input mode"),
+            (WRAP_ROW, "Soft wrap"),
+            (PREFIX_ROW, "Prefix key"),
+        ] {
             frame.render_widget(Paragraph::new(text), self.row(screen, row, 1));
         }
 
-        let folder_row = self.row(screen, 9, 1);
+        let folder_row = self.row(screen, WORKSPACE_ROW, 1);
         let folder_text = crate::projects::sidebar_text(
             &crate::workspace::display_path(&self.root),
             folder_row.width.saturating_sub(12),
@@ -452,11 +474,11 @@ impl SettingsDialog {
             Paragraph::new(format!("{} · config file", self.prefix_label))
                 .alignment(Alignment::Right)
                 .style(theme::muted()),
-            self.row(screen, 14, 1),
+            self.row(screen, PREFIX_ROW, 1),
         );
         frame.render_widget(
             Paragraph::new(crate::workspace::display_path(&self.config_path)).style(theme::muted()),
-            self.row(screen, 16, 1),
+            self.row(screen, CONFIG_PATH_ROW, 1),
         );
 
         for control in CONTROLS {
@@ -510,11 +532,11 @@ impl SettingsDialog {
                 } else {
                     theme::ERROR
                 })),
-            self.row(screen, 19, 2),
+            self.row(screen, MESSAGE_ROW, 2),
         );
         frame.render_widget(
             Paragraph::new("h/j/k/l / Tab move · Space toggle · Esc cancel").style(theme::muted()),
-            self.row(screen, 24, 1),
+            self.row(screen, HELP_ROW, 1),
         );
     }
 
