@@ -533,11 +533,11 @@ impl App {
 
         match key.code {
             KeyCode::Char('j') => {
-                self.focus = if self.focus == Focus::Assistant {
-                    Focus::Editor
+                if self.focus == Focus::Assistant {
+                    self.session.assistant.input.insert_newline();
                 } else {
-                    Focus::Assistant
-                };
+                    self.focus = Focus::Assistant;
+                }
             }
             KeyCode::Char('b') => self.start_render(),
             KeyCode::Char('e') => self.open_export(),

@@ -2,6 +2,7 @@ use super::test_support::*;
 use super::*;
 use crate::assistant::Assistant;
 use ratatui::{Terminal, backend::TestBackend};
+use ratatui_textarea::CursorMove;
 
 #[test]
 fn chat_maximizes_and_restores_without_changing_documents_or_prompt() -> anyhow::Result<()> {
@@ -149,7 +150,7 @@ fn chat_header_click_toggles_and_editor_focus_restores_split() -> anyhow::Result
         assert!(app.focus == Focus::Assistant);
     }
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    app.handle_prefix_action(KeyCode::Char('k'), area);
     assert!(app.focus == Focus::Editor);
     assert!(app.session.column_expansion != Some(Focus::Assistant));
     assert!(!app.workspace_layout(area).editor.is_empty());
@@ -232,7 +233,7 @@ fn application_actions_bypass_editor_shortcuts_and_use_the_configured_prefix() -
     let source = app.session.editor.source();
     app.handle_control_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
     assert!(app.focus == Focus::Assistant);
-    app.handle_control_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    app.handle_prefix_action(KeyCode::Char('k'), area);
     assert!(app.focus == Focus::Editor);
     app.session.rendered_source = Some(source.clone());
     app.session.rendered_pdf = Some(app.session.editor.path.with_extension("pdf"));
@@ -273,7 +274,36 @@ fn assistant_focus_keeps_chat_input_out_of_the_document() -> anyhow::Result<()> 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
     assert_eq!(app.session.assistant.input.lines().len(), 2);
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
-    assert!(app.focus == Focus::Editor);
+    assert_eq!(app.session.assistant.input.lines().len(), 3);
+    assert!(app.focus == Focus::Assistant);
+    Ok(())
+}
+
+#[test]
+fn control_j_splits_chat_input_without_sending_or_changing_focus() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 50);
+    let original = app.session.editor.source();
+    app.handle_prefix_action(KeyCode::Char('j'), area);
+    app.handle_event(Event::Paste("First second".into()), area);
+    app.session
+        .assistant
+        .input
+        .move_cursor(CursorMove::Jump(0, 6));
+
+    app.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
+        area,
+    );
+    app.handle_event(Event::Paste("Next ".into()), area);
+
+    assert_eq!(
+        app.session.assistant.input.lines(),
+        &["First ", "Next second"]
+    );
+    assert!(app.focus == Focus::Assistant);
+    assert!(!app.session.assistant.is_running());
+    assert_eq!(app.session.editor.source(), original);
     Ok(())
 }
 
