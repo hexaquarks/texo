@@ -11,3 +11,10 @@
 
 # Local resume output
 /resume.pdf
+
+# Native terminal test output
+/result-native
+/.texo-test-cache/
+/native-artifacts/
+/baseline/
+__pycache__/
