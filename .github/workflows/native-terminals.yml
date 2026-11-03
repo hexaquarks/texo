@@ -1,0 +1,170 @@
+name: Native terminals
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: native-terminals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Prepare shared LaTeX resources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Restore offline LaTeX resources
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .texo-test-cache
+          key: native-latex-${{ hashFiles('flake.lock', 'tests/fixtures/resume.tex') }}
+
+      - name: Prepare offline LaTeX resources
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          # The upstream bundle server can rate-limit GitHub runners during a cold-cache download.
+          MAX_ATTEMPTS=3
+          RETRY_DELAY_SECONDS=30
+          for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+            if nix run .#prepare-tex-cache -- "$PWD/.texo-test-cache"; then
+              exit 0
+            fi
+
+            if ((attempt < MAX_ATTEMPTS)); then
+              sleep "$RETRY_DELAY_SECONDS"
+            fi
+          done
+          exit 1
+
+      - name: Share offline LaTeX resources
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-latex-cache
+          path: .texo-test-cache
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  smoke:
+    name: Actual terminal (${{ matrix.terminal }})
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        terminal: [kitty, ghostty, wezterm, alacritty, gnome-terminal]
+    env:
+      TEXO_TEST_TERMINAL: ${{ matrix.terminal }}
+      TEXO_TEST_CACHE: ${{ github.workspace }}/.texo-test-cache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Check VM acceleration
+        run: test -r /dev/kvm && test -w /dev/kvm
+
+      - name: Download offline LaTeX resources
+        uses: actions/download-artifact@v6
+        with:
+          name: native-latex-cache
+          path: .texo-test-cache
+
+      - name: Build terminal VM and test driver
+        run: |
+          mkdir -p native-artifacts/screenshots native-artifacts/vm-result
+          nix build --impure --print-build-logs --out-link result-native --expr '
+            let flake = builtins.getFlake (toString ./.);
+            in (flake.lib.mkTerminalTest {
+              system = builtins.currentSystem;
+              terminal = builtins.getEnv "TEXO_TEST_TERMINAL";
+              cache = builtins.path {
+                path = builtins.getEnv "TEXO_TEST_CACHE";
+                name = "texo-latex-cache";
+              };
+            }).driver
+          ' 2>&1 | tee native-artifacts/build.log
+          nix flake metadata --json > native-artifacts/flake-metadata.json
+
+      - name: Run actual terminal smoke tests
+        id: smoke
+        env:
+          # Avoid OCR thread overhead while the runner also hosts the desktop VM.
+          OMP_THREAD_LIMIT: "1"
+        run: |
+          result-native/bin/nixos-test-driver -o "$PWD/native-artifacts/vm-result" --junit-xml junit.xml \
+            2>&1 | tee native-artifacts/test.log
+
+      - name: Collect terminal screenshots
+        if: ${{ !cancelled() && steps.smoke.outcome != 'skipped' }}
+        run: find native-artifacts/vm-result -name '*.png' -exec cp {} native-artifacts/screenshots/ \;
+
+      - name: Download last successful main screenshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p baseline/screenshots
+          baseline_run=$(gh api "repos/$GH_REPO/actions/runs?branch=main&event=push&status=success&per_page=100" \
+            --jq '[.workflow_runs[] | select(.path == ".github/workflows/native-terminals.yml")][0].id // empty')
+          if [ -z "$baseline_run" ]; then
+            echo 'No successful main baseline yet.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          artifact_name="native-terminal-$TEXO_TEST_TERMINAL"
+          available=$(gh api "repos/$GH_REPO/actions/runs/$baseline_run/artifacts" \
+            --jq ".artifacts[] | select(.name == \"$artifact_name\" and .expired == false) | .id")
+          if [ -z "$available" ]; then
+            echo 'The main baseline is missing or expired; screenshots need manual review.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          gh run download "$baseline_run" --name "$artifact_name" --dir baseline
+          echo "Baseline: run $baseline_run" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate visual review
+        run: |
+          python -m pip install Pillow==13.0.0
+          python -m unittest discover -s tests/native -p 'test_*.py'
+          python tests/native/compare_images.py native-artifacts/screenshots baseline/screenshots native-artifacts/review
+
+      - name: Upload screenshots, differences, and logs
+        id: artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-terminal-${{ matrix.terminal }}
+          path: native-artifacts
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Link review artifacts
+        if: always()
+        env:
+          ARTIFACT_URL: ${{ steps.artifacts.outputs.artifact-url }}
+        run: |
+          {
+            echo "### $TEXO_TEST_TERMINAL"
+            echo "[Download screenshots and logs]($ARTIFACT_URL). Open review/index.html to compare screenshots."
+            echo 'Behavior assertions determine pass/fail. Screenshot differences require human review.'
+          } >> "$GITHUB_STEP_SUMMARY"
