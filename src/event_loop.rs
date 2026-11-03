@@ -36,14 +36,17 @@ impl App {
                 || previous_preview_area != self.preview_area(area))
                 && self.active_preview().uses_inline_graphics();
 
+            // Clearing queries the cursor position. Terminals may defer replies during
+            // synchronized output, so finish the query before beginning the update.
+            if repaint {
+                terminal.clear()?;
+            }
+
             // Flush graphics cleanup and the replacement frame as one synchronized update.
             std::io::stdout().sync_update(|_| -> io::Result<()> {
                 self.session
                     .preview
                     .flush_retired_images(terminal.backend_mut())?;
-                if repaint {
-                    terminal.clear()?;
-                }
                 let next_cursor_style = self.terminal_cursor_style();
                 if next_cursor_style != cursor_style {
                     execute!(terminal.backend_mut(), next_cursor_style)?;
