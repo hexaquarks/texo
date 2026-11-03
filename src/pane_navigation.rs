@@ -1,7 +1,10 @@
-use ratatui::layout::Rect;
+use ratatui::{
+    crossterm::event::{MouseButton, MouseEvent, MouseEventKind},
+    layout::{Position, Rect},
+};
 
 use super::{
-    App, Focus,
+    App, Focus, PaneSizes,
     workspace_view::{
         MIN_CHAT_HEIGHT, MIN_EDITOR_HEIGHT, MIN_PANE_WIDTH, WorkspaceLayout, scale_pane_width,
         sidebar_width,
@@ -10,7 +13,133 @@ use super::{
 
 pub(super) const PANE_RESIZE_CELLS: u16 = 10;
 
+#[derive(Clone, Copy)]
+enum PaneDivider {
+    Preview,
+    Chat,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PaneDrag {
+    divider: PaneDivider,
+    pointer_start: u16,
+    size_start: u16,
+    total: u16,
+    original_sizes: PaneSizes,
+}
+
 impl App {
+    pub(super) fn handle_pane_drag(&mut self, mouse: MouseEvent, area: Rect) -> bool {
+        if let Some(drag) = self.pane_drag {
+            if !matches!(
+                mouse.kind,
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            ) {
+                return false;
+            }
+
+            self.resize_dragged_pane(drag, Position::new(mouse.column, mouse.row));
+            if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+                self.finish_pane_drag();
+            }
+            return true;
+        }
+
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return false;
+        }
+
+        let layout = self.workspace_layout(area);
+        let position = Position::new(mouse.column, mouse.row);
+        let center = if layout.editor.is_empty() {
+            layout.assistant
+        } else if layout.assistant.is_empty() {
+            layout.editor
+        } else {
+            layout.editor.union(layout.assistant)
+        };
+        let preview = layout.preview;
+        let upper = if layout.editor.is_empty() {
+            preview
+        } else {
+            layout.editor
+        };
+        let chat = layout.assistant;
+
+        // Both cells bordering a split are handles; pane contents keep their normal mouse behavior.
+        let horizontal = !center.is_empty()
+            && !preview.is_empty()
+            && center.right() == preview.x
+            && position.x >= preview.x - 1
+            && position.x <= preview.x
+            && position.y >= center.y.max(preview.y)
+            && position.y < center.bottom().min(preview.bottom());
+        let vertical = !upper.is_empty()
+            && !chat.is_empty()
+            && upper.bottom() == chat.y
+            && position.y >= chat.y - 1
+            && position.y <= chat.y
+            && position.x >= upper.x.max(chat.x)
+            && position.x < upper.right().min(chat.right());
+
+        let (divider, pointer_start, size_start, total) = if horizontal {
+            (
+                PaneDivider::Preview,
+                mouse.column,
+                center.width,
+                center.width + preview.width,
+            )
+        } else if vertical {
+            (
+                PaneDivider::Chat,
+                mouse.row,
+                upper.height,
+                upper.height + chat.height,
+            )
+        } else {
+            return false;
+        };
+
+        self.pane_drag = Some(PaneDrag {
+            divider,
+            pointer_start,
+            size_start,
+            total,
+            original_sizes: self.pane_sizes,
+        });
+        true
+    }
+
+    fn resize_dragged_pane(&mut self, drag: PaneDrag, position: Position) {
+        let (pointer, minimum_before, minimum_after) = match drag.divider {
+            PaneDivider::Preview => (position.x, MIN_PANE_WIDTH, MIN_PANE_WIDTH),
+            PaneDivider::Chat => (position.y, MIN_EDITOR_HEIGHT, MIN_CHAT_HEIGHT),
+        };
+        let movement = i32::from(pointer) - i32::from(drag.pointer_start);
+        let size = (i32::from(drag.size_start) + movement).clamp(
+            i32::from(minimum_before),
+            i32::from(drag.total - minimum_after),
+        ) as u16;
+
+        if size == drag.size_start {
+            self.pane_sizes = drag.original_sizes;
+            return;
+        }
+
+        match drag.divider {
+            PaneDivider::Preview => self.set_preview_width(drag.total - size, drag.total),
+            PaneDivider::Chat => self.pane_sizes.editor = Some(size),
+        }
+    }
+
+    pub(super) fn finish_pane_drag(&mut self) {
+        if let Some(drag) = self.pane_drag.take()
+            && self.pane_sizes != drag.original_sizes
+        {
+            self.save_layout();
+        }
+    }
+
     pub(super) fn toggle_treeview(&mut self) {
         self.projects_visible = !self.projects_visible;
 
@@ -147,16 +276,7 @@ impl App {
                 right,
             );
             let content_width = center.width + layout.preview.width;
-            let mut preview_width = content_width - center_width;
-
-            if !self.projects_visible {
-                let visible_content_width =
-                    content_width - sidebar_width(content_width, &self.pane_sizes);
-                preview_width =
-                    scale_pane_width(preview_width, content_width, visible_content_width);
-            }
-
-            self.pane_sizes.preview = Some(preview_width);
+            self.set_preview_width(content_width - center_width, content_width);
         } else if !layout.projects.is_empty() && layout.projects.right() == center.x {
             self.pane_sizes.sidebar = Some(moved_divider_size(
                 layout.projects.width,
@@ -166,6 +286,16 @@ impl App {
                 right,
             ));
         }
+    }
+
+    fn set_preview_width(&mut self, mut preview_width: u16, content_width: u16) {
+        if !self.projects_visible {
+            let visible_content_width =
+                content_width - sidebar_width(content_width, &self.pane_sizes);
+            preview_width = scale_pane_width(preview_width, content_width, visible_content_width);
+        }
+
+        self.pane_sizes.preview = Some(preview_width);
     }
 
     fn move_vertical_divider(&mut self, layout: &WorkspaceLayout, down: bool) {

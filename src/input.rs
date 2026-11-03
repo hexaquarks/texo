@@ -41,6 +41,7 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
         ));
         if !continues_pointer_gesture {
+            self.finish_pane_drag();
             self.session.preview.end_drag();
             self.session.proposed_preview.end_drag();
             self.session.editor.end_drag();
@@ -178,9 +179,14 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) {
+        if self.handle_pane_drag(mouse, area) {
+            return;
+        }
+
         if self.history_mouse(mouse, area) {
             return;
         }
+
         let layout = self.workspace_layout(area);
         let position = Position::new(mouse.column, mouse.row);
         if self.focus == Focus::Preview && mouse.kind == MouseEventKind::Drag(MouseButton::Left) {

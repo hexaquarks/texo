@@ -79,12 +79,16 @@ fn pane_selection_highlights_only_the_selected_border() -> anyhow::Result<()> {
     assert_eq!(layout.assistant.y, layout.editor.bottom());
 
     for (selected, pane) in panes.iter().enumerate() {
-        // Border clicks select the pane without activating its content controls.
+        // Outer border clicks select panes; shared borders are reserved for resizing.
         app.handle_event(
             Event::Mouse(event::MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
-                column: pane.x,
-                row: pane.y,
+                column: if *pane == layout.preview {
+                    pane.right() - 1
+                } else {
+                    pane.x
+                },
+                row: pane.y + 2,
                 modifiers: KeyModifiers::NONE,
             }),
             area,
