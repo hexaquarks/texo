@@ -499,7 +499,7 @@ mod tests {
         target_os = "linux",
         ignore = "requires Bubblewrap and user namespaces"
     )]
-    fn sandbox_blocks_network_and_inherited_secrets() {
+    fn sandbox_blocks_network() {
         let resume = tempfile::tempdir().unwrap();
         let build = tempfile::tempdir().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -533,13 +533,41 @@ mod tests {
 
             assert!(!result.status.success());
         }
+    }
 
-        let environment = command("bash", resume.path(), build.path());
-        assert!(
-            !environment
-                .get_envs()
-                .any(|(key, _)| key == "OPENAI_API_KEY" || key == "ANTHROPIC_API_KEY")
-        );
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires Bubblewrap and user namespaces"
+    )]
+    fn sandbox_does_not_inherit_environment() {
+        const PROBE_VARIABLE: &str = "TEXO_SANDBOX_ENV_PROBE";
+
+        // Use a separate process so setting the synthetic secret cannot race other tests.
+        if std::env::var_os(PROBE_VARIABLE).is_none() {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sandbox::tests::sandbox_does_not_inherit_environment",
+                    "--include-ignored",
+                ])
+                .env(PROBE_VARIABLE, "synthetic-private-marker")
+                .output()
+                .unwrap();
+
+            assert!(result.status.success(), "{result:?}");
+            return;
+        }
+
+        let resume = tempfile::tempdir().unwrap();
+        let build = tempfile::tempdir().unwrap();
+        let result = command("bash", resume.path(), build.path())
+            .args(["-c", "printf '%s' \"${TEXO_SANDBOX_ENV_PROBE-unset}\""])
+            .output()
+            .unwrap();
+
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(result.stdout, b"unset");
     }
 
     #[test]
