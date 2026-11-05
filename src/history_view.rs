@@ -46,6 +46,14 @@ pub(super) enum HistoryDialog {
 }
 
 impl HistoricalView {
+    pub(super) fn pdf_path(&self) -> Option<&std::path::Path> {
+        if self.job.is_some() || self.error.is_some() {
+            return None;
+        }
+
+        self.build.as_ref().map(|build| build.pdf_path.as_path())
+    }
+
     fn source_lines(&self) -> Vec<Line<'static>> {
         self.revision
             .source
@@ -597,16 +605,18 @@ impl App {
         };
         let [title, body] =
             Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(area);
+        let label = if view.preview.uses_basic_rendering() {
+            format!("History PDF · {}", view.revision.label())
+        } else {
+            format!(
+                "History PDF · {} · {}%",
+                view.revision.label(),
+                view.preview.zoom_percent()
+            )
+        };
         frame.render_widget(
             Paragraph::new(vec![
-                Line::styled(
-                    format!(
-                        "History PDF · {} · {}%",
-                        view.revision.label(),
-                        view.preview.zoom_percent()
-                    ),
-                    theme::pane_title(true),
-                ),
+                Line::styled(label, theme::pane_title(true)),
                 Line::styled("Current dependencies · source history only", theme::muted()),
             ]),
             title,
@@ -620,6 +630,8 @@ impl App {
             );
         } else if view.job.is_some() {
             view.preview.draw_loading(frame, body);
+        } else if view.preview.uses_basic_rendering() {
+            self.draw_external_preview(frame, body);
         } else if overlay {
             view.preview.draw_cached(frame, body);
         } else {

@@ -167,6 +167,8 @@ impl App {
 mod diagnostic_details;
 #[path = "event_loop.rs"]
 mod event_loop;
+#[path = "external_preview.rs"]
+mod external_preview;
 #[path = "history_view.rs"]
 mod history_view;
 #[path = "input.rs"]

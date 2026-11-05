@@ -6,7 +6,11 @@ pub(super) fn application() -> anyhow::Result<(tempfile::TempDir, App)> {
     let path = directory.path().join("resume.tex");
     std::fs::write(&path, "Original document")?;
     let editor = Editor::open(path)?;
-    Ok((directory, App::new(editor, Preview::default())?))
+
+    // Most workspace tests exercise interactive previews; fallback tests opt out explicitly.
+    let mut picker = ratatui_image::picker::Picker::halfblocks();
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    Ok((directory, App::new(editor, Preview::with_picker(picker))?))
 }
 
 pub(super) fn wait_for_visible_pdf(
@@ -25,12 +29,18 @@ pub(super) fn wait_for_visible_pdf(
             app.session.diagnostics
         );
         terminal.draw(|frame| app.draw(frame))?;
-        let visible = terminal
+        let text: String = terminal
             .backend()
             .buffer()
             .content
             .iter()
-            .any(|cell| cell.symbol() == "▀");
+            .map(|cell| cell.symbol())
+            .collect();
+        let visible = if app.session.preview.uses_basic_rendering() {
+            text.contains("Open PDF")
+        } else {
+            app.session.preview.has_presented_image()
+        };
         if app.session.job.is_none() && visible {
             return Ok(());
         }
