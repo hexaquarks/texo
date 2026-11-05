@@ -15,17 +15,22 @@ Work in progress
 
 ## Compatibility
 
-The following terminals are automatically tested on Linux (x86-64, X11).
+| Terminal | Platform | Texo compatibility | Testing | Limitations |
+| --- | --- | --- | --- | --- |
+| Kitty | Linux | ✅ Works | CI | — |
+| Ghostty | Linux | ✅ Works | CI | — |
+| WezTerm | Linux | ✅ Works | CI | — |
+| Alacritty | Linux | ⚠️ Limited | CI | PDF preview text is unreadable |
+| GNOME Terminal | Linux | ⚠️ Limited | CI | PDF preview text is unreadable |
+| Ghostty | macOS | ❓ Needs testing | Pending | — |
+| iTerm2 | macOS | ❓ Needs testing | Pending | — |
+| Apple Terminal | macOS | ⚠️ Limited | Manual: preview only | PDF preview text is unreadable |
+| Alacritty | macOS | ⚠️ Limited | Manual: preview only | PDF preview text is unreadable |
+| Windows Terminal | Windows with WSL | ❓ Needs testing | Pending | — |
 
-| Terminal | Texo compatibility | Limitations |
-| --- | --- | --- |
-| Kitty | ✅ Works | — |
-| Ghostty | ✅ Works | — |
-| WezTerm | ✅ Works | — |
-| Alacritty | ⚠️ Limited | PDF preview text is unreadable |
-| GNOME Terminal | ⚠️ Limited | PDF preview text is unreadable |
+CI runs launch, editing, compilation, clipboard, and resize checks on Linux x86-64 (X11).
+Manual preview checks do not cover the full workflow. Linux Wayland still needs testing.
 
 See [test results and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
 
 App logic and PDF compilation are also tested on Intel and Apple Silicon Macs.
-Tests in actual terminal apps on macOS, WSL, and Linux Wayland are still pending.
