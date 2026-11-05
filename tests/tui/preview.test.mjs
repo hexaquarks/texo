@@ -8,7 +8,7 @@ import {
 
 const TWO_PAGES = '\\documentclass{article}\n\\begin{document}\n\\Huge First page\\newpage Second page\n\\end{document}\n';
 
-test('PDF navigation, zoom, pan, drag, and reset remain usable across resizing and overlays', async () => {
+test('unsupported PDF previews explain the limitation and keep external opening visible across resizing', async () => {
     await withTexo('preview-navigation', async ({ terminal, workspace }) => {
         await createResume(terminal, 'Preview');
         await terminal.press('Ctrl+a');
@@ -24,26 +24,21 @@ test('PDF navigation, zoom, pan, drag, and reset remain usable across resizing a
         await terminal.press('Alt+Right');
         await terminal.press('Alt+Left');
         await terminal.getByText('1\\s*/\\s*2', { regex: true }).expect();
-        await terminal.press('+');
-        await terminal.getByText('120%').expect();
-        await terminal.press('+', '+', '+', '+');
-        await terminal.getByText('200%').expect();
-        await terminal.press('Right', 'Alt+Down');
-        await terminal.getByText('PDF (current|[12]/2)', { regex: true }).expect();
-        // The preview occupies the right pane at this fixed 120-by-35 viewport.
-        await terminal.mouse.drag(90, 16, 85, 12);
-        await terminal.screenshot(join(ARTIFACTS, 'preview-drag.png'));
+        await terminal.getByText('Open PDF').expect();
+        await terminal.getByText('This terminal does not support PDF', { whitespace: 'normalize' }).expect();
+        await terminal.getByText('rendering.').expect();
+        await terminal.screenshot(join(ARTIFACTS, 'preview-external.png'));
+
         await prefix(terminal, 's');
         await terminal.getByText('WORKSPACE').expect();
         await terminal.resize(60, 16);
         await terminal.press('Escape');
+        await terminal.getByText('Open PDF').expect();
         await terminal.resize(120, 35);
-        await terminal.getByText('200%').expect();
-        await terminal.getByText('PDF (current|[12]/2)', { regex: true }).click();
-        await terminal.press('0');
-        await terminal.getByText('1\\s*/\\s*2.*(100|[1-9][0-9]?)%', { regex: true }).expect();
+        await terminal.getByText('Open PDF').expect();
+        await terminal.getByText('rendering.').expect();
         assert.equal(await readFile(await documentPath(workspace), 'utf8'), TWO_PAGES);
-    });
+    }, { env: { NO_COLOR: '' } });
 });
 
 test('failed build preserves the published PDF, refuses export, and recovers through the editor', async () => {

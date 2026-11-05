@@ -148,6 +148,14 @@ def run_smoke_tests():
         if terminal_name in {"kitty", "ghostty", "wezterm"}:
             # The editor is hidden, so OCR must find this text in the rendered PDF itself.
             wait_for_text("Alex Example")
+            key("plus")
+            wait_for_text("120%")
+            key("0")
+            wait_for_text("100%")
+            wait_for_text("Alex Example")
+        else:
+            wait_for_text("Open PDF")
+            wait_for_text("does not support PDF")
 
         screenshot("pdf-preview")
         prefix("z")

@@ -40,10 +40,10 @@ test('history previews, restores with recovery and survives restart', async () =
         await prefix(terminal, 'c');
         await prefix(terminal, 'l');
         await prefix(terminal, 'z');
-        await terminal.press('+');
-        await terminal.getByText('120%').expect();
-        await terminal.press('0');
-        await terminal.getByText('120%').expect({ not: true });
+        await terminal.getByText('This terminal does not support PDF rendering.').expect();
+        await terminal.getByText('Open PDF').expect();
+        await terminal.press('+', '0');
+        await terminal.getByText('Open PDF').expect();
         await prefix(terminal, 'z');
         await prefix(terminal, 'y');
         assert.equal(await readFile(document, 'utf8'), second);
@@ -89,7 +89,7 @@ test('permanent history and resume switching preserve unsaved working copies', a
         await terminal.getByText('Restore').expect();
         await terminal.getByText('Rename', { whitespace: 'exact' }).expect({ not: true });
         await terminal.screenshot(join(ARTIFACTS, 'history-menu.png'));
-        await terminal.getByText('Open', { whitespace: 'exact' }).click();
+        await terminal.getByText('›  Open', { whitespace: 'exact' }).click();
         await terminal.getByText('read-only').expect();
         await terminal.press('Escape');
         await prefix(terminal, 'r');
