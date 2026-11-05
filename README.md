@@ -15,18 +15,18 @@ Work in progress
 
 ## Compatibility
 
-| Terminal | Texo compatibility | Testing | Limitations |
+| Terminal | Compatibility | Testing | Limitations |
 | --- | --- | --- | --- |
 | Kitty | ✅ Works | CI | — |
 | Ghostty | ✅ Works | CI | — |
 | WezTerm | ✅ Works | CI | — |
-| Alacritty | ⚠️ Limited | CI + manual preview | External PDF viewer required |
+| Alacritty | ⚠️ Limited | CI | External PDF viewer required |
 | GNOME Terminal | ⚠️ Limited | CI | External PDF viewer required |
 | iTerm2 | ❓ Needs testing | Pending | — |
 | Apple Terminal | ⚠️ Limited | Manual preview | External PDF viewer required |
 | Windows Terminal (WSL) | ❓ Needs testing | Pending | — |
 
-CI runs launch, editing, compilation, clipboard, and resize checks on Linux x86-64 (X11).
+CI runs a suite of terminal smoke tests and captures screenshots for visual review on Linux x86-64 (X11).
 Manual preview checks cover macOS. Full checks on macOS, WSL, and Linux Wayland are pending.
 
 See [test results and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
