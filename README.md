@@ -17,15 +17,14 @@ Work in progress
 
 The following terminals are automatically tested on Linux (x86-64, X11).
 
-| Terminal | PDF preview | Automated tests |
+| Terminal | Texo compatibility | Limitations |
 | --- | --- | --- |
-| Kitty | ✅ Readable text and images | ✅ Pass |
-| Ghostty | ✅ Readable text and images | ✅ Pass |
-| WezTerm | ✅ Readable text and images | ✅ Pass |
-| Alacritty | Rough page preview; text is unreadable | ✅ Pass |
-| GNOME Terminal | Rough page preview; text is unreadable | ✅ Pass |
+| Kitty | ✅ Works | — |
+| Ghostty | ✅ Works | — |
+| WezTerm | ✅ Works | — |
+| Alacritty | ⚠️ Limited | PDF preview text is unreadable |
+| GNOME Terminal | ⚠️ Limited | PDF preview text is unreadable |
 
-Use Kitty, Ghostty, or WezTerm to read your PDF inside Texo.
 See [test results and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
 
 App logic and PDF compilation are also tested on Intel and Apple Silicon Macs.
