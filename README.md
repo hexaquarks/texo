@@ -17,18 +17,17 @@ Work in progress
 
 | Terminal | Texo compatibility | Testing | Limitations |
 | --- | --- | --- | --- |
-| Kitty | ✅ Works | Linux CI | — |
-| Ghostty | ✅ Works | Linux CI | — |
-| WezTerm | ✅ Works | Linux CI | — |
-| Alacritty | ⚠️ Limited | Linux CI; macOS preview checked manually | PDF preview text is unreadable |
-| GNOME Terminal | ⚠️ Limited | Linux CI | PDF preview text is unreadable |
+| Kitty | ✅ Works | CI | — |
+| Ghostty | ✅ Works | CI | — |
+| WezTerm | ✅ Works | CI | — |
+| Alacritty | ⚠️ Limited | CI + manual preview | PDF preview text is unreadable |
+| GNOME Terminal | ⚠️ Limited | CI | PDF preview text is unreadable |
 | iTerm2 | ❓ Needs testing | Pending | — |
-| Apple Terminal | ⚠️ Limited | macOS preview checked manually | PDF preview text is unreadable |
+| Apple Terminal | ⚠️ Limited | Manual preview | PDF preview text is unreadable |
 | Windows Terminal (WSL) | ❓ Needs testing | Pending | — |
 
 CI runs launch, editing, compilation, clipboard, and resize checks on Linux x86-64 (X11).
-Results apply to the platforms listed under Testing. Full manual checks on macOS,
-WSL, and Linux Wayland are still pending.
+Manual preview checks cover macOS. Full checks on macOS, WSL, and Linux Wayland are pending.
 
 See [test results and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
 
