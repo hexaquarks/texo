@@ -15,18 +15,18 @@ Work in progress
 
 ## Compatibility
 
-Terminal smoke tests run on Linux x86-64 (X11) in NixOS VMs.
+The following terminals are automatically tested on Linux (x86-64, X11).
 
-| Terminal | PDF preview | Smoke tests |
+| Terminal | PDF preview | Automated tests |
 | --- | --- | --- |
-| Kitty | ✅ Full graphics | ✅ |
-| Ghostty | ✅ Full graphics | ✅ |
-| WezTerm | ✅ Full graphics | ✅ |
-| Alacritty | Limited: block-based fallback | ✅ |
-| GNOME Terminal | Limited: block-based fallback | ✅ |
+| Kitty | ✅ Readable text and images | ✅ Pass |
+| Ghostty | ✅ Readable text and images | ✅ Pass |
+| WezTerm | ✅ Readable text and images | ✅ Pass |
+| Alacritty | Rough page preview; text is unreadable | ✅ Pass |
+| GNOME Terminal | Rough page preview; text is unreadable | ✅ Pass |
 
-The block-based fallback shows page layout but is unsuitable for reading PDF text.
-See [terminal CI](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml) for screenshots and results.
+Use Kitty, Ghostty, or WezTerm to read your PDF inside Texo.
+See [test results and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
 
-Core and compiler tests also run on Intel and Apple Silicon macOS. Actual macOS terminal apps,
-WSL, and Wayland are not yet covered by the terminal smoke tests.
+App logic and PDF compilation are also tested on Intel and Apple Silicon Macs.
+Tests in actual terminal apps on macOS, WSL, and Linux Wayland are still pending.
