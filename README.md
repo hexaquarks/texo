@@ -15,21 +15,20 @@ Work in progress
 
 ## Compatibility
 
-| Terminal | Platform | Texo compatibility | Testing | Limitations |
-| --- | --- | --- | --- | --- |
-| Kitty | Linux | ✅ Works | CI | — |
-| Ghostty | Linux | ✅ Works | CI | — |
-| WezTerm | Linux | ✅ Works | CI | — |
-| Alacritty | Linux | ⚠️ Limited | CI | PDF preview text is unreadable |
-| GNOME Terminal | Linux | ⚠️ Limited | CI | PDF preview text is unreadable |
-| Ghostty | macOS | ❓ Needs testing | Pending | — |
-| iTerm2 | macOS | ❓ Needs testing | Pending | — |
-| Apple Terminal | macOS | ⚠️ Limited | Manual: preview only | PDF preview text is unreadable |
-| Alacritty | macOS | ⚠️ Limited | Manual: preview only | PDF preview text is unreadable |
-| Windows Terminal | Windows with WSL | ❓ Needs testing | Pending | — |
+| Terminal | Texo compatibility | Testing | Limitations |
+| --- | --- | --- | --- |
+| Kitty | ✅ Works | Linux CI | — |
+| Ghostty | ✅ Works | Linux CI | — |
+| WezTerm | ✅ Works | Linux CI | — |
+| Alacritty | ⚠️ Limited | Linux CI; macOS preview checked manually | PDF preview text is unreadable |
+| GNOME Terminal | ⚠️ Limited | Linux CI | PDF preview text is unreadable |
+| iTerm2 | ❓ Needs testing | Pending | — |
+| Apple Terminal | ⚠️ Limited | macOS preview checked manually | PDF preview text is unreadable |
+| Windows Terminal (WSL) | ❓ Needs testing | Pending | — |
 
 CI runs launch, editing, compilation, clipboard, and resize checks on Linux x86-64 (X11).
-Manual preview checks do not cover the full workflow. Linux Wayland still needs testing.
+Results apply to the platforms listed under Testing. Full manual checks on macOS,
+WSL, and Linux Wayland are still pending.
 
 See [test results and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
 
