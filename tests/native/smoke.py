@@ -133,6 +133,8 @@ def run_smoke_tests():
         machine.wait_until_succeeds(
             f"head -n 1 {SOURCE} | grep -Fx '% Native clipboard smoke'", timeout=UI_TIMEOUT
         )
+        machine.succeed(f"sed -n '2p' {SOURCE} | grep -F '% Clipboard second line'")
+        machine.succeed(f"rm {PDF}")
         prefix("b")
         wait_for_pdf()
 

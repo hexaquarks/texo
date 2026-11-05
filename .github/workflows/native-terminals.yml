@@ -115,17 +115,20 @@ jobs:
             2>&1 | tee native-artifacts/test.log
 
       - name: Collect terminal screenshots
+        id: screenshots
         if: ${{ !cancelled() && steps.smoke.outcome != 'skipped' }}
         run: find native-artifacts/vm-result -name '*.png' -exec cp {} native-artifacts/screenshots/ \;
 
       - name: Download last successful main screenshots
+        if: ${{ !cancelled() && steps.screenshots.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           mkdir -p baseline/screenshots
-          baseline_run=$(gh api "repos/$GH_REPO/actions/runs?branch=main&event=push&status=success&per_page=100" \
-            --jq '[.workflow_runs[] | select(.path == ".github/workflows/native-terminals.yml")][0].id // empty')
+          workflow_runs="repos/$GH_REPO/actions/workflows/native-terminals.yml/runs"
+          baseline_run=$(gh api "$workflow_runs?branch=main&event=push&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id // empty')
           if [ -z "$baseline_run" ]; then
             echo 'No successful main baseline yet.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -143,6 +146,7 @@ jobs:
           echo "Baseline: run $baseline_run" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate visual review
+        if: ${{ !cancelled() && steps.screenshots.outcome == 'success' }}
         run: |
           python -m pip install Pillow==13.0.0
           python -m unittest discover -s tests/native -p 'test_*.py'
