@@ -97,6 +97,7 @@ impl RetainedImage {
             picker
                 .capabilities()
                 .contains(&Capability::KittyCompression),
+            false, // Keep uploads in the terminal stream, including through tmux and SSH.
         )?;
 
         Ok(Self {

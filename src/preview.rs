@@ -110,7 +110,7 @@ impl Default for Preview {
 }
 
 impl Preview {
-    /// Query graphics support after entering the alternate screen, before reading input events.
+    /// Query graphics support before entering the alternate screen or reading input events.
     pub fn detect() -> Self {
         // Resume pages compress well. Raw RGBA uploads can be several megabytes,
         // overwhelming a multiplexer's passthrough before the first page is visible.
