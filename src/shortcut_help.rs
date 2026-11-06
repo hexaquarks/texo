@@ -23,7 +23,11 @@ impl App {
         let mut bindings = vec![
             ("General", "?", "Keybindings"),
             ("General", "s", "Settings"),
-            ("General", "q", "Quit (also q in tree/PDF, Ctrl+Q anywhere)"),
+            (
+                "General",
+                "q",
+                "Quit (q/Ctrl+C in tree/PDF; Ctrl+Q anywhere)",
+            ),
             ("Panes", "h/j/k/l", "Select pane"),
             ("Panes", "H/J/K/L", "Resize pane"),
             ("Panes", "c", "Cycle pane"),

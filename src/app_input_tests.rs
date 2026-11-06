@@ -253,6 +253,28 @@ fn plain_q_quits_navigation_panes_but_remains_text_in_inputs() -> anyhow::Result
 }
 
 #[test]
+fn ctrl_c_quits_only_navigation_panes_without_a_dialog() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 50);
+    let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+    for focus in [Focus::Projects, Focus::Preview] {
+        app.focus = focus;
+        assert!(app.handle_event(Event::Key(key), area));
+    }
+    for focus in [Focus::Editor, Focus::Assistant] {
+        app.focus = focus;
+        assert!(!app.handle_event(Event::Key(key), area));
+    }
+
+    app.focus = Focus::Projects;
+    app.open_project_dialog(Action::NewResume);
+    assert!(!app.handle_event(Event::Key(key), area));
+    assert!(app.project_dialog.is_some());
+    Ok(())
+}
+
+#[test]
 fn configured_prefix_quits_from_each_pane() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     let area = Rect::new(0, 0, 160, 50);
