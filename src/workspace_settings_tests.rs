@@ -285,7 +285,11 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
         footer.find(&format!("{} s", app.prefix.label())).unwrap() + app.prefix.label().len() + 1;
     let settings_key = settings_key as u16;
     let footer = footer.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(footer.contains(&format!("{} s Settings", app.prefix.label())));
+    let prefix = app.prefix.label();
+    assert_eq!(
+        footer,
+        format!("{prefix} t Hide tree {prefix} Prefix {prefix} s Settings {prefix} ? Shortcuts")
+    );
     assert_eq!(
         terminal.backend().buffer()[(settings_key, area.height - 1)].bg,
         theme::KEYCAP
@@ -296,7 +300,7 @@ fn settings_shortcut_command_and_footer_are_available() -> anyhow::Result<()> {
     );
     assert_eq!(
         terminal.backend().buffer()[(0, area.height - 1)].bg,
-        theme::ELEVATED
+        theme::KEYCAP
     );
 
     let layout = WorkspaceLayout::new(area, true, app.focus);

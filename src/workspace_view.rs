@@ -174,24 +174,26 @@ impl App {
             "Show tree"
         };
 
+        let mut tree_hint = theme::shortcuts(&[(&tree, tree_action)]);
+        tree_hint.push_span("  ");
         let mut hint = theme::shortcuts(&[
             (&prefix, "Prefix"),
-            (&help, "Shortcuts"),
             (&settings, "Settings"),
-            (&tree, tree_action),
+            (&help, "Shortcuts"),
         ]);
-        if hint.width() > usize::from(area.width) {
-            hint = theme::shortcuts(&[(&help, "Help"), (&tree, tree_action)]);
-        }
-        if hint.width() > usize::from(area.width) {
+        if tree_hint.width() + hint.width() > usize::from(area.width) {
             hint = theme::shortcuts(&[(&help, "Help")]);
+        }
+        if tree_hint.width() + hint.width() > usize::from(area.width) {
+            tree_hint = Line::default();
         }
 
         frame.render_widget(
             Block::default().style(theme::muted().bg(theme::ELEVATED)),
             area,
         );
-        let [status, controls] = Layout::horizontal([
+        let [tree_control, status, controls] = Layout::horizontal([
+            Constraint::Length(tree_hint.width() as u16),
             Constraint::Min(0),
             Constraint::Length(hint.width().min(usize::from(area.width)) as u16),
         ])
@@ -204,6 +206,10 @@ impl App {
                 status,
             );
         }
+        frame.render_widget(
+            Paragraph::new(tree_hint).style(theme::muted()),
+            tree_control,
+        );
         frame.render_widget(Paragraph::new(hint).style(theme::muted()), controls);
     }
 
