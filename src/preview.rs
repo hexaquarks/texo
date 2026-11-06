@@ -35,6 +35,7 @@ mod links;
 use links::DisplayedPage;
 
 const EMPTY_STATE_HEIGHT: u16 = 7;
+const LETTER_PAGE_POINTS: (u32, u32) = (612, 792);
 const LOADING_FRAME_MS: u128 = 100;
 const LOADING_LABEL_HEIGHT: u16 = 2;
 const SCROLL_LINES: u32 = 3;
@@ -171,6 +172,28 @@ impl Preview {
             self.picker.protocol_type(),
             ProtocolType::Sixel | ProtocolType::Iterm2
         )
+    }
+
+    /// Fit the complete page into terminal cells, accounting for their non-square shape.
+    pub fn fitted_page_area(&self, area: Rect) -> Rect {
+        if area.is_empty() {
+            return area;
+        }
+
+        // Use a standard letter page until a compiled page supplies its dimensions.
+        let (width, height) = self
+            .source_page
+            .as_ref()
+            .map(|page| (page.width(), page.height()))
+            .unwrap_or(LETTER_PAGE_POINTS);
+        let font = self.picker.font_size();
+        let cell_ratio = f64::from(width.max(1)) * f64::from(font.height.max(1))
+            / (f64::from(height.max(1)) * f64::from(font.width.max(1)));
+        let columns = f64::from(area.width).min(f64::from(area.height) * cell_ratio);
+        let rows = (columns / cell_ratio).min(f64::from(area.height));
+        let width = (columns as u16).max(1);
+        let height = (rows as u16).max(1);
+        Rect::new(area.x + (area.width - width) / 2, area.y, width, height)
     }
 
     pub fn has_presented_image(&self) -> bool {
@@ -359,7 +382,10 @@ impl Preview {
     }
 
     pub fn is_preparing(&self) -> bool {
-        self.source_page.is_some() && (self.pending.is_some() || self.viewport_pixels.is_none())
+        // The app shows a static placeholder for basic terminals instead of starting image work.
+        self.source_page.is_some()
+            && (self.pending.is_some()
+                || (!self.uses_basic_rendering() && self.viewport_pixels.is_none()))
     }
 
     /// The page point under the cursor stays in place unless an edge clamps the viewport.

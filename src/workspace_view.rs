@@ -385,6 +385,8 @@ impl App {
 
         if building {
             self.active_preview().draw_loading(frame, body);
+        } else if self.active_preview().uses_basic_rendering() {
+            self.draw_external_preview(frame, body);
         } else if self.overlay_open() {
             // A finished proposal may switch versions while a dialog covers the upload cell.
             // Keep this resume's current image visible until the new version can be presented.
@@ -430,12 +432,19 @@ impl App {
             Rect { height: 1, ..area }
         };
         let zoom = self.active_preview().zoom_percent();
-        let title = format!(" {state}  {page} · {zoom}%");
+        let basic = self.active_preview().uses_basic_rendering();
+        let title = if basic {
+            format!(" {state}  {page}")
+        } else {
+            format!(" {state}  {page} · {zoom}%")
+        };
 
         let compact_title = if state == "PDF failed" {
             " PDF failed".into()
         } else if state.starts_with("PDF failed") {
             " PDF failed · stale".into()
+        } else if basic {
+            format!(" PDF {}", page.replace(' ', ""))
         } else {
             format!(" PDF {} {zoom}%", page.replace(' ', ""))
         };
@@ -444,7 +453,7 @@ impl App {
             title_area,
             title,
             compact_title,
-            self.focus == Focus::Preview,
+            self.focus == Focus::Preview && !basic,
         );
 
         if self.session.proposal_review.is_some() {

@@ -37,6 +37,7 @@ impl App {
             ("Document", "b", "Build PDF"),
             ("Document", "w", "Save"),
             ("Document", "e", "Export PDF"),
+            ("Document", "o", "Open PDF externally"),
         ];
 
         if self.session.proposal_review.is_some() {

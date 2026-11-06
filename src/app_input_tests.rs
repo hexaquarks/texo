@@ -1517,6 +1517,8 @@ fn pdf_link_click_opens_only_on_release_and_never_after_dragging() -> anyhow::Re
         })
     };
 
+    // Compare stable placements after the initial native image upload frame.
+    terminal.draw(|frame| app.draw(frame))?;
     let original_frame = terminal.backend().buffer().clone();
     let original_focus = app.focus;
     let original_cursor_style = app.terminal_cursor_style();

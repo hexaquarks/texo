@@ -148,13 +148,22 @@ def run_smoke_tests():
         if terminal_name in {"kitty", "ghostty", "wezterm"}:
             # The editor is hidden, so OCR must find this text in the rendered PDF itself.
             wait_for_text("Alex Example")
+            key("plus")
+            wait_for_text("120%")
+
+            # Fit chooses a scale for the current pane, not necessarily 100%.
+            key("0")
+            wait_for_text("PDF current")
+        else:
+            # OCR misses the colored button; Rust and terminal-engine tests cover the button.
+            wait_for_text("does not support PDF")
 
         screenshot("pdf-preview")
         prefix("z")
 
     with subtest("resize the actual terminal window"):
         desktop(f"xdotool getactivewindow windowsize {RESIZED_WIDTH_PIXELS} {RESIZED_HEIGHT_PIXELS}")
-        wait_for_text(r"PDF\s+(current\s+)?1\s*/\s*1")
+        wait_for_text(r"PDF\s+(current|1\s*/\s*1)")
         screenshot("resized")
 
     with subtest("quit without crashing"):

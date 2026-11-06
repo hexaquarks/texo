@@ -1111,3 +1111,26 @@ fn links_sharing_one_cell_require_a_single_distinct_target() {
         Some(links[0].uri.as_str())
     );
 }
+
+#[test]
+fn unsupported_preview_fits_the_whole_page_without_waiting_for_graphics() {
+    let mut preview = Preview::default();
+    preview.set_source(Some(DynamicImage::new_rgb8(612, 792)));
+    assert!(!preview.is_preparing());
+
+    for area in [
+        Rect::new(3, 2, 60, 20),
+        Rect::new(2, 1, 10, 30),
+        Rect::new(0, 0, 1, 1),
+    ] {
+        let page = preview.fitted_page_area(area);
+        assert_eq!(page.intersection(area), page);
+        assert!(page.width > 0 && page.height > 0);
+    }
+    let area = Rect::new(0, 0, 60, 20);
+    let portrait = preview.fitted_page_area(area);
+    preview.set_source(Some(DynamicImage::new_rgb8(792, 612)));
+    let landscape = preview.fitted_page_area(area);
+    assert!(landscape.width > portrait.width);
+    assert_eq!(preview.fitted_page_area(Rect::default()), Rect::default());
+}

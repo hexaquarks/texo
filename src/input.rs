@@ -223,6 +223,12 @@ impl App {
         }
 
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if self.external_pdf_button(layout.preview).contains(position) {
+                self.focus = Focus::Preview;
+                self.open_pdf_externally();
+                return;
+            }
+
             if layout.diagnostics.contains(position) && self.session.build_diagnostics.is_some() {
                 if let Some((_, key, _)) = self
                     .problem_action_areas(layout.diagnostics)
@@ -380,6 +386,7 @@ impl App {
             KeyCode::Char('y') => self.open_history(),
             KeyCode::Char('b') => self.start_render(),
             KeyCode::Char('e') => self.open_export(),
+            KeyCode::Char('o') => self.open_pdf_externally(),
             KeyCode::Char('v') => self.refresh_projects(),
             KeyCode::Char('w') => {
                 self.handle_control_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
