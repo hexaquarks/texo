@@ -58,6 +58,18 @@ impl RenderJob {
         })
     }
 
+    #[cfg(test)]
+    pub fn pending() -> (Self, mpsc::Sender<Result<RenderedDocument>>) {
+        let (sender, result) = mpsc::channel();
+        let job = Self {
+            result,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            worker: None,
+        };
+
+        (job, sender)
+    }
+
     pub fn poll(&self) -> Option<Result<RenderedDocument>> {
         match self.result.try_recv() {
             Ok(result) => Some(result),

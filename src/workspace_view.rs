@@ -113,6 +113,16 @@ impl App {
                 layout.projects,
                 layout.files,
                 self.focus == Focus::Projects,
+                |path| {
+                    if path == self.session.editor.path {
+                        self.session.build_state()
+                    } else {
+                        self.sessions
+                            .get(path)
+                            .map(|session| session.build_state())
+                            .unwrap_or_default()
+                    }
+                },
             );
             self.draw_history_sidebar(frame, layout.files);
         }

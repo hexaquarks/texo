@@ -29,6 +29,7 @@ impl App {
             let was_proposed_loading = self.session.proposed_job.is_some();
             self.receive_history_preview();
             self.receive_render();
+            self.receive_background_builds();
             self.receive_assistant();
             self.receive_proposed_render();
             repaint |= (was_history_loading != self.history_preview_loading()
@@ -130,7 +131,8 @@ impl App {
             || self.session.job.is_some()
             || self.session.proposed_job.is_some()
             || self.session.assistant.is_running()
-            || self.session.assistant.login_open();
+            || self.session.assistant.login_open()
+            || self.sessions.values().any(|session| session.job.is_some());
 
         poll_interval(preparing_image, running_job)
     }

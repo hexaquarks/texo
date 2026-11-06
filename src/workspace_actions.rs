@@ -648,6 +648,7 @@ impl App {
         self.refresh_history();
 
         if self.session.job.is_none()
+            && !self.session.render_failed
             && self.session.rendered_source.is_none()
             && !self.session.editor.is_modified()
         {

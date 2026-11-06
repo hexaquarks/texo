@@ -145,3 +145,20 @@ fn shutdown_releases_current_proposed_and_cached_resume_images() -> anyhow::Resu
     assert!(wire.is_empty());
     Ok(())
 }
+
+#[test]
+fn background_builds_keep_the_tree_animation_responsive() -> anyhow::Result<()> {
+    use super::super::test_support::application;
+    use crate::render_job::RenderJob;
+
+    let (directory, mut app) = application()?;
+    let (job, _completion) = RenderJob::pending();
+    app.session.job = Some(job);
+    app.open_document(directory.path().join("second.tex"));
+    app.session.job = None;
+
+    assert_eq!(app.input_poll_interval(), EVENT_POLL_INTERVAL);
+    app.sessions.clear();
+    assert_eq!(app.input_poll_interval(), IDLE_POLL_INTERVAL);
+    Ok(())
+}

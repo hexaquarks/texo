@@ -3,11 +3,7 @@ use crate::render_job::RenderJob;
 
 impl App {
     pub(super) fn clear_diagnostics(&mut self) {
-        self.session.diagnostics = None;
-        self.session.build_diagnostics = None;
-        self.session.details_open = false;
-        self.session.summary_hidden = false;
-        self.session.diagnostic_scroll = 0;
+        self.session.clear_diagnostics();
     }
 
     pub(super) fn diagnostic_details_open(&self) -> bool {

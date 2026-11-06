@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use anyhow::Result;
 use ratatui::{
@@ -19,8 +22,37 @@ const ITEM_HEIGHT: u16 = 1;
 const PROJECT_MARKER_WIDTH: u16 = 3;
 const MANAGE_BUTTON_WIDTH: u16 = 10;
 
+const BUILD_SPINNER_FRAME_MS: u128 = 100;
+const BUILD_SPINNER_FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BuildState {
+    #[default]
+    Empty,
+    Building,
+    Ready,
+    Failed,
+}
+
+impl BuildState {
+    fn marker(self, animation_frame: usize) -> Span<'static> {
+        let (symbol, color) = match self {
+            Self::Empty => ("○", theme::MUTED),
+            Self::Building => (
+                BUILD_SPINNER_FRAMES[animation_frame % BUILD_SPINNER_FRAMES.len()],
+                theme::LAVENDER,
+            ),
+            Self::Ready => ("●", theme::GREEN),
+            Self::Failed => ("●", theme::ERROR),
+        };
+
+        Span::styled(format!(" {symbol} "), Style::default().fg(color))
+    }
+}
+
 pub struct Projects {
     root: PathBuf,
+    animation_started: Instant,
     pub catalog: Catalog,
     state: ListState,
     pub history_focused: bool,
@@ -30,6 +62,7 @@ impl Projects {
     pub fn new(root: PathBuf, active_file: &Path) -> Result<Self> {
         let mut projects = Self {
             root,
+            animation_started: Instant::now(),
             catalog: Catalog::default(),
             state: ListState::default(),
             history_focused: false,
@@ -145,7 +178,17 @@ impl Projects {
         )
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, resumes: Rect, files: Rect, focused: bool) {
+    pub fn draw(
+        &mut self,
+        frame: &mut Frame,
+        resumes: Rect,
+        files: Rect,
+        focused: bool,
+        build_state: impl Fn(&Path) -> BuildState,
+    ) {
+        let animation_frame =
+            (self.animation_started.elapsed().as_millis() / BUILD_SPINNER_FRAME_MS) as usize;
+
         let sidebar = if files.is_empty() {
             resumes
         } else {
@@ -194,10 +237,7 @@ impl Projects {
                     Style::default()
                 };
                 let mut lines = vec![Line::from(vec![
-                    Span::styled(
-                        if selected { " ○ " } else { " ● " },
-                        Style::default().fg(theme::TEAL),
-                    ),
+                    build_state(&project.document()).marker(animation_frame),
                     Span::styled(sidebar_text(&project.manifest.name, text_width), name_style),
                 ])];
                 if let Some(label) = &project.manifest.label {
@@ -294,6 +334,34 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
+    fn build_markers_show_status_independently_of_selection() -> Result<()> {
+        let workspace = tempfile::tempdir()?;
+        let project = resume_project::create(workspace.path(), "First")?;
+        let mut projects = Projects::new(workspace.path().to_path_buf(), &project.document())?;
+        let area = Rect::new(0, 0, 24, 18);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+
+        for (state, symbol, color) in [
+            (BuildState::Empty, "○", theme::MUTED),
+            (BuildState::Ready, "●", theme::GREEN),
+            (BuildState::Failed, "●", theme::ERROR),
+        ] {
+            terminal.draw(|frame| {
+                projects.draw(frame, area, Rect::default(), true, |_| state);
+            })?;
+            let marker = &terminal.backend().buffer()[(CONTENT_INSET + 1, list_area(area).y)];
+            assert_eq!(marker.symbol(), symbol);
+            assert_eq!(marker.fg, color);
+        }
+
+        let first_frame = BuildState::Building.marker(0);
+        let next_frame = BuildState::Building.marker(1);
+        assert_ne!(first_frame.content, next_frame.content);
+        assert_eq!(first_frame.style.fg, Some(theme::LAVENDER));
+        Ok(())
+    }
+
+    #[test]
     fn colored_labels_use_a_second_row_and_mouse_selection_tracks_variable_heights() -> Result<()> {
         use crate::resume_label::{LabelColor, ResumeLabel};
 
@@ -305,7 +373,9 @@ mod tests {
         let mut projects = Projects::new(workspace.path().to_path_buf(), &second.document())?;
         let area = Rect::new(0, 0, 24, 18);
         let mut terminal = Terminal::new(TestBackend::new(24, 18))?;
-        terminal.draw(|frame| projects.draw(frame, area, Rect::default(), true))?;
+        terminal.draw(|frame| {
+            projects.draw(frame, area, Rect::default(), true, |_| BuildState::Empty)
+        })?;
         let buffer = terminal.backend().buffer();
         let name_row = list_area(area).y + ITEM_HEIGHT;
         let label_row = name_row + ITEM_HEIGHT;
@@ -337,7 +407,9 @@ mod tests {
         for size in [(24, 12), (12, 9), (2, 2)] {
             let mut terminal = Terminal::new(TestBackend::new(size.0, size.1))?;
             let area = Rect::new(0, 0, size.0, size.1);
-            terminal.draw(|frame| projects.draw(frame, area, Rect::default(), true))?;
+            terminal.draw(|frame| {
+                projects.draw(frame, area, Rect::default(), true, |_| BuildState::Empty)
+            })?;
             if list_area(area).height > 0 {
                 let expected = projects.catalog.projects[projects.state.offset()].document();
                 assert!(projects.select_at(area, list_area(area).y));
@@ -360,7 +432,9 @@ mod tests {
         let mut projects = Projects::new(workspace.path().to_path_buf(), &project.document())?;
         let area = Rect::new(0, 0, 16, 14);
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
-        terminal.draw(|frame| projects.draw(frame, area, Rect::default(), true))?;
+        terminal.draw(|frame| {
+            projects.draw(frame, area, Rect::default(), true, |_| BuildState::Empty)
+        })?;
         let buffer = terminal.backend().buffer();
         let row_text = |row| {
             (0..area.width)
@@ -395,7 +469,8 @@ mod tests {
         let files = Rect::new(0, 18, 24, 14);
         let mut terminal = Terminal::new(TestBackend::new(24, 32))?;
 
-        terminal.draw(|frame| projects.draw(frame, resumes, files, false))?;
+        terminal
+            .draw(|frame| projects.draw(frame, resumes, files, false, |_| BuildState::Empty))?;
         let buffer = terminal.backend().buffer();
         let rows: Vec<String> = (0..32)
             .map(|y| (0..24).map(|x| buffer[(x, y)].symbol()).collect())
@@ -416,7 +491,7 @@ mod tests {
         );
         assert_eq!(
             buffer[(CONTENT_INSET + 1, list_area(resumes).y)].fg,
-            theme::TEAL
+            theme::MUTED
         );
         assert!(!text.contains("notes.tex") && !text.contains("main.pdf"));
         assert_eq!(
@@ -437,7 +512,7 @@ mod tests {
             theme::SELECTION
         );
 
-        terminal.draw(|frame| projects.draw(frame, resumes, files, true))?;
+        terminal.draw(|frame| projects.draw(frame, resumes, files, true, |_| BuildState::Empty))?;
         let buffer = terminal.backend().buffer();
         assert_eq!(
             buffer[(CONTENT_INSET, list_area(resumes).y)].bg,
