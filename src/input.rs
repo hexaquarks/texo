@@ -105,6 +105,10 @@ impl App {
                 }
                 PrefixInput::Action(code) => {
                     self.session.editor.cancel_pending_commands();
+                    if code == KeyCode::Char('q') {
+                        return true;
+                    }
+
                     self.handle_prefix_action(code, area);
                     return false;
                 }
@@ -461,6 +465,16 @@ impl App {
     }
 
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if key.kind == KeyEventKind::Release {
+            return false;
+        }
+        if key.modifiers.is_empty()
+            && key.code == KeyCode::Char('q')
+            && matches!(self.focus, Focus::Projects | Focus::Preview)
+        {
+            return true;
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
             return true;
         }
