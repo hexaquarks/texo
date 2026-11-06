@@ -1,0 +1,41 @@
+name: Validate release
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Validate release workflows
+        run: |
+          brew install actionlint
+          # cargo-dist owns the generated shell scripts; check its workflow structure.
+          actionlint -shellcheck= .github/workflows/release.yml
+          actionlint .github/workflows/publish-crate.yml .github/workflows/validate-release.yml
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Verify the crate can be published
+        run: cargo publish --locked --dry-run

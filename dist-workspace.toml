@@ -1,0 +1,35 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+# 0.34.0 generates invalid reusable workflow paths.
+cargo-dist-version = "0.33.0"
+ci = "github"
+pr-run-mode = "upload"
+installers = ["shell", "homebrew"]
+tap = "hexaquarks/homebrew-tap"
+publish-jobs = ["homebrew", "./publish-crate"]
+global-artifacts-jobs = ["./validate-release"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+]
+unix-archive = ".tar.gz"
+install-path = "~/.local/bin"
+install-updater = false
+
+[dist.github-custom-runners]
+aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
+
+[dist.github-custom-job-permissions.publish-crate]
+contents = "read"
+
+[dist.dependencies.apt]
+libdbus-1-dev = "*"
+pkg-config = "*"
+
+[dist.dependencies.homebrew]
+tectonic = { stage = ["run"] }
+poppler = { stage = ["run"] }
