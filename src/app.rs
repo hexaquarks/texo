@@ -60,15 +60,18 @@ struct App {
 pub fn run(
     terminal: &mut DefaultTerminal,
     editor: Editor,
+    preview: Preview,
     root: PathBuf,
     empty_workspace: bool,
 ) -> anyhow::Result<()> {
-    let mut app = App::with_workspace(editor, Preview::detect(), root)?;
+    let mut app = App::with_workspace(editor, preview, root)?;
     app.restore_layout(PaneSizes::path()?);
     app.session.empty_workspace = empty_workspace;
+
     if !empty_workspace && !app.session.editor.is_modified() {
         app.start_render();
     }
+
     let settings = Settings::load(&app.settings_path)?;
     app.prefix = Prefix::new(&settings.keybindings.prefix)?;
     app.apply_editor_preferences(settings.editor);

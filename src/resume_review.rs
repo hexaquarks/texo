@@ -326,67 +326,25 @@ impl App {
     }
 
     pub(super) fn receive_render(&mut self) {
-        let Some(result) = self.session.job.as_ref().and_then(RenderJob::poll) else {
-            return;
-        };
-        self.session.job = None;
-
-        match result {
-            Ok(document) if document.source != self.session.editor.source() => {
-                self.session.status = "Build is outdated; rebuild the current text.".into();
+        if let Some(result) = self.session.receive_render() {
+            match result {
+                Ok(()) => self.refresh_projects(),
+                Err(error) => self.report_build_error(error, false),
             }
-            Ok(mut document) => {
-                match texo::compiler::publish_pdf(&document.pdf_path, &self.session.editor.path) {
-                    Ok(path) => document.pdf_path = path,
-                    Err(error) => {
-                        self.report_build_error(error, false);
-                        return;
-                    }
-                }
-                match self.session.preview.set_pages(document.pages) {
-                    Ok(()) => {
-                        self.session.rendered_source = Some(document.source);
-                        self.session.rendered_pdf = Some(document.pdf_path);
-                        if self.session.proposal_review.is_none() {
-                            self.session.status.clear();
-                            self.clear_diagnostics();
-                        }
+        }
+    }
 
-                        self.refresh_projects();
-                    }
-                    Err(error) => self.report_build_error(error, false),
-                }
+    pub(super) fn receive_background_builds(&mut self) {
+        for session in self.sessions.values_mut() {
+            if let Some(Err(error)) = session.receive_render() {
+                session.report_build_error(error, false);
             }
-            Err(error) => self.report_build_error(error, false),
         }
     }
 
     pub(super) fn report_build_error(&mut self, error: anyhow::Error, proposed: bool) {
         self.workspace_expansion = None;
-        if self.session.column_expansion == Some(Focus::Assistant) {
-            self.session.column_expansion = None;
-        }
-
-        if proposed {
-            self.session.proposed_render_failed = true;
-        } else {
-            self.session.render_failed = true;
-        }
-
-        let source = if proposed {
-            self.assistant_source()
-        } else {
-            self.session.building_source.clone()
-        };
-        let log = format!("{error:#}");
-        self.report_error(error);
-        self.session.build_diagnostics = Some(crate::build_diagnostics::BuildDiagnostics::parse(
-            &log,
-            source,
-            &self.session.editor.path,
-            proposed,
-        ));
-        self.session.status = "Build failed · see the error below the source.".into();
+        self.session.report_build_error(error, proposed);
     }
 
     pub(super) fn report_error(&mut self, error: anyhow::Error) {

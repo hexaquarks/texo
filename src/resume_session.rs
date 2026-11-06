@@ -38,6 +38,87 @@ pub(super) struct ResumeSession {
 }
 
 impl ResumeSession {
+    pub(super) fn build_state(&self) -> crate::projects::BuildState {
+        use crate::projects::BuildState;
+
+        if self.job.is_some() {
+            BuildState::Building
+        } else if self.render_failed {
+            BuildState::Failed
+        } else if self.rendered_pdf.is_some()
+            && self.rendered_source.as_deref() == Some(self.editor.source().as_str())
+        {
+            BuildState::Ready
+        } else {
+            BuildState::Empty
+        }
+    }
+
+    // Process the owning session directly so background completion cannot change
+    // the visible resume, focus, or proposal review.
+    pub(super) fn receive_render(&mut self) -> Option<anyhow::Result<()>> {
+        let result = self.job.as_ref()?.poll()?;
+        self.job = None;
+
+        Some(result.and_then(|mut document| {
+            if document.source != self.editor.source() {
+                self.status = "Build is outdated; rebuild the current text.".into();
+                return Ok(());
+            }
+
+            document.pdf_path = texo::compiler::publish_pdf(&document.pdf_path, &self.editor.path)?;
+            self.preview.set_pages(document.pages)?;
+            self.rendered_source = Some(document.source);
+            self.rendered_pdf = Some(document.pdf_path);
+
+            if self.proposal_review.is_none() {
+                self.status.clear();
+                self.clear_diagnostics();
+            }
+
+            Ok(())
+        }))
+    }
+
+    pub(super) fn clear_diagnostics(&mut self) {
+        self.diagnostics = None;
+        self.build_diagnostics = None;
+        self.details_open = false;
+        self.summary_hidden = false;
+        self.diagnostic_scroll = 0;
+    }
+
+    pub(super) fn report_build_error(&mut self, error: anyhow::Error, proposed: bool) {
+        if self.column_expansion == Some(super::Focus::Assistant) {
+            self.column_expansion = None;
+        }
+
+        if proposed {
+            self.proposed_render_failed = true;
+        } else {
+            self.render_failed = true;
+        }
+
+        let source = if proposed {
+            self.proposal_review
+                .as_ref()
+                .map(|review| review.edit.source_after.clone())
+                .unwrap_or_else(|| self.editor.source())
+        } else {
+            self.building_source.clone()
+        };
+        let log = format!("{error:#}");
+        self.clear_diagnostics();
+        self.build_diagnostics = Some(crate::build_diagnostics::BuildDiagnostics::parse(
+            &log,
+            source,
+            &self.editor.path,
+            proposed,
+        ));
+        self.diagnostics = Some(log);
+        self.status = "Build failed · see the error below the source.".into();
+    }
+
     pub(super) fn new(editor: Editor, preview: Preview) -> Self {
         let proposed_preview = preview.empty_like();
         let mut history = super::history_view::HistoryState::default();

@@ -31,8 +31,8 @@ jobs:
       - name: Install coverage tool
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Install LaTeX and PDF tools
-        run: brew install tectonic poppler
+      - name: Install LaTeX, PDF, and tmux test tools
+        run: brew install tectonic poppler tmux
 
       - name: Install headless terminal renderer
         run: brew install --cask kitty

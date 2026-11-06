@@ -12,7 +12,6 @@ ignore = "0.4.33"
 lopdf = { version = "0.46", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 ratatui = "0.30.2"
-ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
 kitty-graphics-protocol = "0.1.3"
 rand = "0.10"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -35,6 +34,14 @@ uuid = { version = "1.29.0", features = ["v4", "serde"] }
 ratatui-spinner = { git = "https://github.com/ratatui/ratatui-spinner", rev = "4489de894e1a29460b5976508b1a25499c3ba3b0", version = "0.4.18" }
 arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 regex = "1.13.1"
+
+# Pin the upstream fix that stops reading stdin when graphics detection times out.
+[dependencies.ratatui-image]
+git = "https://github.com/ratatui/ratatui-image"
+rev = "0b9fd052ad04e067d015b5e8b70af54342a5bed5"
+version = "11.1.0"
+default-features = false
+features = ["crossterm"]
 
 # Pin the upstream wrapped-search overflow fix, which is not in the 0.9.3 release.
 [dependencies.ratatui-textarea]

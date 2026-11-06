@@ -39,8 +39,13 @@ fn main() -> anyhow::Result<()> {
         editor::Editor::open(workspace.document.clone())?
     };
 
+    // Query before the alternate-screen transition can make tmux defer a redraw.
+    // Save the shell's input mode first so ratatui also restores it after a query timeout.
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    let preview = texo::preview::Preview::detect();
+
     ratatui::run(|terminal| {
         let _input_mode = terminal::InputMode::enable()?;
-        app::run(terminal, editor, workspace.root, workspace.empty)
+        app::run(terminal, editor, preview, workspace.root, workspace.empty)
     })
 }

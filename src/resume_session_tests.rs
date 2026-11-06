@@ -349,3 +349,193 @@ fn bracketed_paste_inserts_shortcut_characters_as_one_literal_multiline_edit() -
     assert_eq!(app.session.editor.source(), "Original document");
     Ok(())
 }
+
+#[test]
+fn concurrent_assistant_requests_remain_owned_by_their_resumes() -> anyhow::Result<()> {
+    use crate::assistant_job::{AssistantReply, CompletedTask};
+
+    let (directory, mut app) = application()?;
+    let first = app.session.editor.path.clone();
+    let second = directory.path().join("second.tex");
+    let first_source = app.session.editor.source();
+    let first_reply = app.session.assistant.pending_request(first_source.clone());
+
+    app.open_document(second.clone());
+    app.session.job = None;
+    let second_source = app.session.editor.source();
+    let second_reply = app.session.assistant.pending_request(second_source.clone());
+    app.session.assistant.input.insert_str("Another request");
+    app.send_message();
+    assert!(app.session.status.contains("cancel the current request"));
+    assert_eq!(app.session.assistant.input.lines(), &["Another request"]);
+
+    // Complete the second request first, while the first resume is visible.
+    app.open_document(first.clone());
+    second_reply.send(Ok(CompletedTask {
+        reply: AssistantReply {
+            reply: "Second answer".into(),
+            proposed_tex: None,
+        },
+        build: None,
+    }))?;
+    app.receive_assistant();
+    assert!(app.session.assistant.is_running());
+    assert_eq!(app.session.editor.source(), first_source);
+
+    app.open_document(second.clone());
+    app.receive_assistant();
+    assert!(!app.session.assistant.is_running());
+    assert_eq!(app.session.editor.source(), second_source);
+    assert!(app.sessions[&first].assistant.is_running());
+
+    // Cancelling A must neither cancel B nor let A's old response enter a new request.
+    let second_followup = app.session.assistant.pending_request(second_source.clone());
+    app.open_document(first.clone());
+    app.session.assistant.cancel();
+    let first_followup = app.session.assistant.pending_request(first_source.clone());
+    assert!(
+        first_reply
+            .send(Err(anyhow::anyhow!("Cancelled response")))
+            .is_err()
+    );
+    assert!(app.sessions[&second].assistant.is_running());
+
+    first_followup.send(Ok(CompletedTask {
+        reply: AssistantReply {
+            reply: "New first answer".into(),
+            proposed_tex: Some("Old first edit".into()),
+        },
+        build: None,
+    }))?;
+    app.session.editor.replace_source("Newer first edit");
+    app.open_document(second);
+    second_followup.send(Ok(CompletedTask {
+        reply: AssistantReply {
+            reply: "New second answer".into(),
+            proposed_tex: None,
+        },
+        build: None,
+    }))?;
+    app.receive_assistant();
+    assert_eq!(app.session.editor.source(), second_source);
+
+    app.open_document(first);
+    app.receive_assistant();
+    assert_eq!(app.session.editor.source(), "Newer first edit");
+    assert!(app.session.status.contains("stale"));
+    assert!(app.session.proposal_review.is_none());
+    Ok(())
+}
+
+#[test]
+fn background_build_failure_updates_only_its_own_resume() -> anyhow::Result<()> {
+    use crate::{projects::BuildState, render_job::RenderJob};
+
+    let (directory, mut app) = application()?;
+    let first = app.session.editor.path.clone();
+    let (job, completed) = RenderJob::pending();
+    app.session.building_source = app.session.editor.source();
+    app.session.job = Some(job);
+    app.open_document(directory.path().join("second.tex"));
+    app.session.job = None;
+    app.session.status = "Second resume status".into();
+    let source = app.session.editor.source();
+    assert_eq!(app.sessions[&first].build_state(), BuildState::Building);
+
+    completed.send(Err(anyhow::anyhow!("First resume build failed")))?;
+    app.receive_background_builds();
+    assert_eq!(app.sessions[&first].build_state(), BuildState::Failed);
+    assert_eq!(app.session.status, "Second resume status");
+    assert_eq!(app.session.editor.source(), source);
+    assert!(app.session.diagnostics.is_none());
+
+    app.open_document(first);
+    assert!(
+        app.session
+            .diagnostics
+            .as_deref()
+            .unwrap()
+            .contains("First resume build failed")
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Tectonic and Poppler"]
+fn background_builds_finish_without_reopening_and_reject_newer_edits() -> anyhow::Result<()> {
+    use crate::projects::BuildState;
+
+    const BUILD_TIMEOUT: Duration = Duration::from_secs(30);
+    const BUILD_POLL_INTERVAL: Duration = Duration::from_millis(20);
+    const SWITCH_ROUND_TRIPS: usize = 5;
+
+    let directory = tempfile::tempdir()?;
+    let first = resume_project::create(directory.path(), "First")?.document();
+    let second = resume_project::create(directory.path(), "Second")?.document();
+    let first_source = r"\documentclass{article}\begin{document}First\end{document}";
+    let second_source = include_str!("../tests/fixtures/two-pages.tex");
+    std::fs::write(&first, first_source)?;
+    std::fs::write(&second, second_source)?;
+    let mut app = App::with_workspace(
+        Editor::open(first.clone())?,
+        Preview::default(),
+        directory.path().to_path_buf(),
+    )?;
+    app.start_render();
+    app.open_document(second.clone());
+
+    for _ in 0..SWITCH_ROUND_TRIPS {
+        app.open_document(first.clone());
+        assert!(app.session.job.is_some());
+        app.open_document(second.clone());
+        assert!(app.session.job.is_some());
+        assert_eq!(app.sessions.len(), 1);
+    }
+
+    let deadline = std::time::Instant::now() + BUILD_TIMEOUT;
+    while app.session.job.is_some() || app.sessions[&first].job.is_some() {
+        anyhow::ensure!(std::time::Instant::now() < deadline, "Builds timed out");
+        app.receive_render();
+        app.receive_background_builds();
+        std::thread::sleep(BUILD_POLL_INTERVAL);
+    }
+
+    assert_eq!(app.sessions[&first].build_state(), BuildState::Ready);
+    assert_eq!(
+        app.sessions[&first].preview.page_status().as_deref(),
+        Some("1 / 1")
+    );
+    assert_eq!(app.session.build_state(), BuildState::Ready);
+    assert_eq!(app.session.preview.page_status().as_deref(), Some("1 / 2"));
+    assert!(first.with_extension("pdf").is_file());
+    let original_pdf = std::fs::read(first.with_extension("pdf"))?;
+
+    for _ in 0..SWITCH_ROUND_TRIPS {
+        app.open_document(first.clone());
+        assert!(app.session.job.is_none());
+        assert_eq!(app.session.rendered_source.as_deref(), Some(first_source));
+        app.open_document(second.clone());
+        assert!(app.session.job.is_none());
+        assert_eq!(app.session.rendered_source.as_deref(), Some(second_source));
+    }
+
+    app.open_document(first.clone());
+    app.start_render();
+    app.session
+        .editor
+        .replace_source("Newer unsaved first resume");
+    app.open_document(second);
+    let deadline = std::time::Instant::now() + BUILD_TIMEOUT;
+    while app.sessions[&first].job.is_some() {
+        anyhow::ensure!(std::time::Instant::now() < deadline, "Rebuild timed out");
+        app.receive_background_builds();
+        std::thread::sleep(BUILD_POLL_INTERVAL);
+    }
+
+    assert_eq!(app.sessions[&first].build_state(), BuildState::Empty);
+    assert!(app.sessions[&first].status.contains("outdated"));
+    assert_eq!(std::fs::read(first.with_extension("pdf"))?, original_pdf);
+    assert_eq!(app.session.editor.source(), second_source);
+    assert_eq!(app.session.build_state(), BuildState::Ready);
+    Ok(())
+}
