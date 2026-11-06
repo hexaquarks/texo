@@ -8,7 +8,12 @@ use std::{
 use ratatui::{
     Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
-    crossterm::terminal::{disable_raw_mode, enable_raw_mode},
+    crossterm::{
+        queue,
+        terminal::{
+            BeginSynchronizedUpdate, EndSynchronizedUpdate, disable_raw_mode, enable_raw_mode,
+        },
+    },
     layout::Rect,
 };
 
@@ -104,8 +109,13 @@ fn draw_replaced_pages(directory: &Path) -> anyhow::Result<()> {
         // Resetting and setting the default foreground defers a tmux redraw every time.
         // Keep it with the small upload in one write so both reach the same input batch.
         let mut output = b"\x1b]110\x07\x1b]10;#ffffff\x07".to_vec();
+
+        // Match the app's synchronized frames so tmux does not discard partial redraws.
+        queue!(output, BeginSynchronizedUpdate)?;
         wire.seek(SeekFrom::Start(start))?;
         wire.read_to_end(&mut output)?;
+        queue!(output, EndSynchronizedUpdate)?;
+
         std::io::stdout().write_all(&output)?;
         std::io::stdout().flush()?;
         std::fs::write(directory.join(format!("ready-{frame_index}")), [])?;
