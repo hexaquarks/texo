@@ -367,9 +367,18 @@ fn permanent_history_uses_real_filename_and_pins_working_copy_when_scrolling() -
     assert!(text.contains("Unsaved changes"));
     assert!(text.contains("revision-1"));
     assert!(!text.contains("Files") && !text.contains("Compare"));
-    assert_eq!(text.matches("cv.tex").count(), 1);
     assert!(!text.contains("Enter View") && !text.contains("Tab Resumes"));
     assert!(app.session.history.selection.offset() > 0);
+
+    // The editor title can also show the filename when the temporary path is short.
+    let history_area = app.workspace_layout(SCREEN).files;
+    let buffer = terminal.backend().buffer();
+    let history_text: String = (history_area.y..history_area.bottom())
+        .flat_map(|row| {
+            (history_area.x..history_area.right()).map(move |column| buffer[(column, row)].symbol())
+        })
+        .collect();
+    assert_eq!(history_text.matches("cv.tex").count(), 1);
 
     let content = Projects::history_content_area(app.workspace_layout(SCREEN).files);
     let click = |row| {
