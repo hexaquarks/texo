@@ -251,3 +251,32 @@ test('a proposal restores adjacent panes after a workspace-expanded chat request
         await terminal.getByText('PDF current').expect();
     }, { prepare });
 });
+
+test('quit confirmation preserves a pending AI proposal and accepted unsaved edits', async () => {
+    await withTexo('quit-ai-proposal', async ({ terminal, workspace }) => {
+        await terminal.resize(160, 50);
+        await createResume(terminal, 'Protected AI work');
+        const document = await documentPath(workspace);
+        const saved = await readFile(document, 'utf8');
+        await ask(terminal, 'first');
+        await terminal.getByText('Unapproved changes').expect();
+        await terminal.getByText('PDF current').expect();
+
+        await terminal.press('Ctrl+q');
+        await terminal.getByText('Quit Texo?').expect();
+        await terminal.getByText('pending AI work or proposals').expect();
+        await terminal.press('Esc');
+        await terminal.getByText('Quit Texo?').expect({ not: true });
+        await terminal.getByText('Unapproved changes').expect();
+        assert.equal(await readFile(document, 'utf8'), saved);
+
+        await prefix(terminal, 'a');
+        await terminal.getByText('Accepted · PDF updated').expect();
+        await terminal.press('Ctrl+q');
+        await terminal.getByText('unsaved text').expect();
+        await terminal.press('Esc');
+        await prefix(terminal, 'w');
+        await terminal.getByText('Saved TeX document.').expect();
+        assert.match(await readFile(document, 'utf8'), /First draft/);
+    }, { prepare });
+});

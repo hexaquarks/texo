@@ -211,14 +211,15 @@ fn login_captures_typing_paste_and_cancel_without_editing_tex() -> anyhow::Resul
 }
 
 #[test]
-fn typing_q_edits_and_ctrl_q_quits_immediately() -> anyhow::Result<()> {
+fn typing_q_edits_and_ctrl_q_checks_unsaved_work() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     assert!(!app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
     assert!(app.session.editor.source().starts_with('q'));
     let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
     assert!(app.handle_key(quit));
     app.actions = Some(ActionMenu::for_resume("Example"));
-    assert!(app.handle_event(Event::Key(quit), Rect::new(0, 0, 160, 50)));
+    assert!(!app.handle_event(Event::Key(quit), Rect::new(0, 0, 160, 50)));
+    assert!(app.quit_dialog.is_some());
     Ok(())
 }
 

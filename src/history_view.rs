@@ -285,6 +285,10 @@ impl App {
 
     pub(super) fn restore_history_revision(&mut self, revision: &Revision) -> anyhow::Result<()> {
         anyhow::ensure!(
+            !self.session.assistant.is_running(),
+            "Wait for or cancel the AI request before restoring"
+        );
+        anyhow::ensure!(
             self.session.proposal_review.is_none(),
             "Resolve the AI proposal before restoring"
         );
