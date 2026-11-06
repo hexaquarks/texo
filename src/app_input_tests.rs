@@ -223,6 +223,86 @@ fn typing_q_edits_and_ctrl_q_quits_immediately() -> anyhow::Result<()> {
 }
 
 #[test]
+fn plain_q_quits_navigation_panes_but_remains_text_in_inputs() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 50);
+    let key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+
+    for focus in [Focus::Projects, Focus::Preview] {
+        app.focus = focus;
+        assert!(app.handle_event(Event::Key(key), area));
+
+        let mut release = key;
+        release.kind = ratatui::crossterm::event::KeyEventKind::Release;
+        assert!(!app.handle_event(Event::Key(release), area));
+    }
+
+    app.focus = Focus::Editor;
+    assert!(!app.handle_event(Event::Key(key), area));
+    assert!(app.session.editor.source().starts_with('q'));
+
+    app.focus = Focus::Assistant;
+    assert!(!app.handle_event(Event::Key(key), area));
+    assert_eq!(app.session.assistant.input.lines(), &["q"]);
+
+    app.focus = Focus::Projects;
+    app.open_project_dialog(Action::NewResume);
+    assert!(!app.handle_event(Event::Key(key), area));
+    assert_eq!(app.project_dialog.as_ref().unwrap().name.lines(), &["q"]);
+    Ok(())
+}
+
+#[test]
+fn ctrl_c_quits_only_navigation_panes_without_a_dialog() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 50);
+    let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+    for focus in [Focus::Projects, Focus::Preview] {
+        app.focus = focus;
+        assert!(app.handle_event(Event::Key(key), area));
+    }
+    for focus in [Focus::Editor, Focus::Assistant] {
+        app.focus = focus;
+        assert!(!app.handle_event(Event::Key(key), area));
+    }
+
+    app.focus = Focus::Projects;
+    app.open_project_dialog(Action::NewResume);
+    assert!(!app.handle_event(Event::Key(key), area));
+    assert!(app.project_dialog.is_some());
+    Ok(())
+}
+
+#[test]
+fn configured_prefix_quits_from_each_pane() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 50);
+    app.prefix = Prefix::new("ctrl+a")?;
+
+    for focus in [
+        Focus::Projects,
+        Focus::Editor,
+        Focus::Preview,
+        Focus::Assistant,
+    ] {
+        app.focus = focus;
+        assert!(!app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            area,
+        ));
+        assert!(app.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            area,
+        ));
+    }
+
+    assert_eq!(app.session.editor.source(), "Original document");
+    assert_eq!(app.session.assistant.input.lines(), &[""]);
+    Ok(())
+}
+
+#[test]
 fn export_rejects_stale_buffers_and_modal_typing_does_not_edit_source() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     app.session.rendered_source = Some(app.session.editor.source());

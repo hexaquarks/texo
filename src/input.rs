@@ -51,7 +51,7 @@ impl App {
             if key.kind == KeyEventKind::Release {
                 return false;
             }
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+            if self.is_quit_shortcut(*key) {
                 return true;
             }
         }
@@ -105,6 +105,10 @@ impl App {
                 }
                 PrefixInput::Action(code) => {
                     self.session.editor.cancel_pending_commands();
+                    if code == KeyCode::Char('q') {
+                        return true;
+                    }
+
                     self.handle_prefix_action(code, area);
                     return false;
                 }
@@ -460,8 +464,30 @@ impl App {
         false
     }
 
+    fn is_quit_shortcut(&self, key: KeyEvent) -> bool {
+        if !key.modifiers.contains(KeyModifiers::CONTROL) {
+            return false;
+        }
+
+        key.code == KeyCode::Char('q')
+            || (key.code == KeyCode::Char('c')
+                && matches!(self.focus, Focus::Projects | Focus::Preview)
+                && !self.overlay_open()
+                && !self.session.assistant.login_open())
+    }
+
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> bool {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        if key.kind == KeyEventKind::Release {
+            return false;
+        }
+        if key.modifiers.is_empty()
+            && key.code == KeyCode::Char('q')
+            && matches!(self.focus, Focus::Projects | Focus::Preview)
+        {
+            return true;
+        }
+
+        if self.is_quit_shortcut(key) {
             return true;
         }
 
