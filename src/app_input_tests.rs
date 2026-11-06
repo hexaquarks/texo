@@ -5,6 +5,27 @@ use ratatui::{Terminal, backend::TestBackend, crossterm::event::MouseEvent};
 use ratatui_textarea::CursorMove;
 
 #[test]
+fn terminal_paste_preserves_line_breaks_in_editor_and_chat() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    let pasted = "first\rsecond\r\nthird\nfourth\r";
+    let normalized = "first\nsecond\nthird\nfourth\n";
+    let original = app.session.editor.source();
+
+    app.focus = Focus::Editor;
+    app.handle_event(Event::Paste(pasted.into()), area);
+    assert_eq!(
+        app.session.editor.source(),
+        format!("{normalized}{original}")
+    );
+
+    app.focus = Focus::Assistant;
+    app.handle_event(Event::Paste(pasted.into()), area);
+    assert_eq!(app.session.assistant.input.lines().join("\n"), normalized);
+    Ok(())
+}
+
+#[test]
 fn chat_maximizes_and_restores_without_changing_documents_or_prompt() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     let source = app.session.editor.source();

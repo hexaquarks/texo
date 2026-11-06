@@ -141,6 +141,16 @@ impl Profile {
 }
 
 fn profile_path() -> Result<PathBuf> {
+    profile_path_with_config_home(env::var_os("XDG_CONFIG_HOME").as_deref())
+}
+
+fn profile_path_with_config_home(config_home: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
+    // Honor the same explicit config override as settings, including on macOS.
+    // Without this, isolated test sessions can load the user's real provider preferences.
+    if let Some(directory) = config_home.map(Path::new).filter(|path| path.is_absolute()) {
+        return Ok(directory.join("texo/provider.json"));
+    }
+
     let project = directories::ProjectDirs::from("", "", "texo")
         .ok_or_else(|| anyhow!("Could not locate Texo's user configuration directory"))?;
     Ok(project.config_dir().join("provider.json"))
@@ -353,6 +363,19 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), original);
+    }
+
+    #[test]
+    fn provider_preferences_honor_an_absolute_config_override() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = profile_path_with_config_home(Some(directory.path().as_os_str())).unwrap();
+        assert_eq!(path, directory.path().join("texo/provider.json"));
+
+        let default = profile_path_with_config_home(None).unwrap();
+        for invalid in ["", "relative"] {
+            let path = profile_path_with_config_home(Some(std::ffi::OsStr::new(invalid))).unwrap();
+            assert_eq!(path, default);
+        }
     }
 
     #[test]

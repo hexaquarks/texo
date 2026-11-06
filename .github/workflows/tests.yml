@@ -78,7 +78,13 @@ jobs:
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config bubblewrap apparmor-profiles
+
+          # Ubuntu ships this profile disabled. Enable it for Bubblewrap's namespace setup;
+          # the sandboxed compiler still has no capabilities or host network access.
+          sudo apparmor_parser -r /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -90,6 +96,10 @@ jobs:
 
       - name: Run portable Rust tests
         run: cargo test --locked --all-targets
+
+      - name: Verify Linux sandbox restrictions
+        if: runner.os == 'Linux'
+        run: cargo test --locked --lib sandbox::tests::sandbox_ -- --include-ignored --test-threads=1
 
       - name: Build application
         run: cargo build --locked

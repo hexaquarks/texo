@@ -149,16 +149,19 @@ impl App {
                 }
             }
             Event::Key(key) if key.kind != KeyEventKind::Release => return self.handle_key(key),
-            Event::Paste(text) if self.focus == Focus::Assistant => {
-                self.session.assistant.input.insert_str(text);
-            }
-            Event::Paste(text)
-                if self.focus == Focus::Editor
+            Event::Paste(text) => {
+                // Some terminals send carriage returns for pasted line breaks.
+                let text = text.replace("\r\n", "\n").replace('\r', "\n");
+
+                if self.focus == Focus::Assistant {
+                    self.session.assistant.input.insert_str(text);
+                } else if self.focus == Focus::Editor
                     && self.session.proposal_review.is_none()
                     && self.session.history.view.is_none()
-                    && !self.session.empty_workspace =>
-            {
-                self.session.editor.paste_text(&text);
+                    && !self.session.empty_workspace
+                {
+                    self.session.editor.paste_text(&text);
+                }
             }
             Event::Mouse(mouse) => self.handle_mouse(mouse, area),
             _ => {}
