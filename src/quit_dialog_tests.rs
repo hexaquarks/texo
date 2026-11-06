@@ -69,9 +69,13 @@ fn quit_includes_cached_resumes_ai_work_and_chat_drafts() -> anyhow::Result<()> 
 
     assert!(!app.request_quit());
     let losses = &app.quit_dialog.as_ref().unwrap().losses;
-    assert!(losses.contains(&"unsaved text"));
-    assert!(losses.contains(&"pending AI work or proposals"));
-    assert!(losses.contains(&"chat"));
+    assert!(losses.iter().any(|loss| loss.contains("unsaved text")));
+    assert!(
+        losses
+            .iter()
+            .any(|loss| loss.contains("pending AI work or proposals"))
+    );
+    assert!(losses.iter().any(|loss| loss.contains("chat")));
     assert!(!app.handle_event(key(KeyCode::Esc), SCREEN));
     assert!(app.quit_dialog.is_none());
     assert!(app.sessions[&first].assistant.is_running());
@@ -129,7 +133,7 @@ fn proposals_and_unapplied_settings_require_confirmation() -> anyhow::Result<()>
             .as_ref()
             .unwrap()
             .losses
-            .contains(&"unapplied settings")
+            .contains(&"unapplied settings".into())
     );
     assert!(!app.handle_event(key(KeyCode::Esc), SCREEN));
     assert!(app.settings.as_ref().unwrap().has_staged_preferences());
@@ -173,5 +177,79 @@ fn quit_dialog_draws_and_mouse_confirmation_does_not_save_changes() -> anyhow::R
         std::fs::read_to_string(&app.session.editor.path)?,
         "Original document"
     );
+    Ok(())
+}
+
+#[test]
+fn quit_names_the_unsaved_resume_after_switching_to_a_clean_one() -> anyhow::Result<()> {
+    use crate::{editor::Editor, resume_project};
+    use texo::preview::Preview;
+
+    let directory = tempfile::tempdir()?;
+    let first = resume_project::create(directory.path(), "Backend resume")?;
+    let second = resume_project::create(directory.path(), "Research resume")?;
+    let mut app = App::with_workspace(
+        Editor::open(first.document())?,
+        Preview::default(),
+        directory.path().to_path_buf(),
+    )?;
+    app.session.editor.text.insert_str("Unsaved ");
+    app.open_document(second.document());
+    app.session.job = None;
+
+    assert!(!app.request_quit());
+    let message = app.quit_dialog.as_ref().unwrap().message();
+    assert!(message.contains("Backend resume"));
+    assert!(message.contains("unsaved text"));
+    assert!(!message.contains("Research resume"));
+    assert!(!app.handle_event(key(KeyCode::Esc), SCREEN));
+
+    app.session
+        .assistant
+        .input
+        .insert_str("Unsent research prompt");
+    assert!(!app.request_quit());
+    let losses = &app.quit_dialog.as_ref().unwrap().losses;
+    assert_eq!(losses.len(), 2);
+    assert!(
+        losses
+            .iter()
+            .any(|loss| loss.contains("Backend resume") && loss.contains("unsaved text"))
+    );
+    assert!(
+        losses
+            .iter()
+            .any(|loss| loss.contains("Research resume") && loss.contains("chat"))
+    );
+    Ok(())
+}
+
+#[test]
+fn long_quit_lists_scroll_without_hiding_the_confirmation_buttons() -> anyhow::Result<()> {
+    const RESUME_COUNT: usize = 20;
+    let losses = (0..RESUME_COUNT)
+        .map(|index| format!("Resume {index}: unsaved text"))
+        .collect();
+    let mut dialog = QuitDialog::new(losses);
+    let screen = Rect::new(0, 0, 60, 18);
+    let mut terminal = Terminal::new(TestBackend::new(screen.width, screen.height))?;
+    terminal.draw(|frame| dialog.draw(frame))?;
+    assert!(dialog.max_scroll(screen) > 0);
+
+    for _ in 0..RESUME_COUNT {
+        dialog.handle(key(KeyCode::PageDown), screen);
+    }
+    terminal.draw(|frame| dialog.draw(frame))?;
+    let visible: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(visible.contains("Resume 19: unsaved text"));
+    assert!(visible.contains("Quit & discard"));
+    assert!(visible.contains("Cancel"));
+    assert_eq!(dialog.scroll, dialog.max_scroll(screen));
     Ok(())
 }
