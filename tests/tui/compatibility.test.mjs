@@ -13,6 +13,7 @@ test('startup, shortcuts, resizing, and tree navigation work across terminal eng
         await prefix(terminal, '?');
         await terminal.getByText('Prefix: Ctrl-x').expect();
         await terminal.press('/', 'z', 'o', 'o', 'm');
+        await terminal.getByText('/ zoom').expect();
         await terminal.getByText('Zoom pane').expect();
         await terminal.press('Escape');
         await terminal.getByText('Search commands or shortcuts').expect();

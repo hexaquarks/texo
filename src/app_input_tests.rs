@@ -1,7 +1,7 @@
 use super::test_support::*;
 use super::*;
 use crate::assistant::Assistant;
-use ratatui::{Terminal, backend::TestBackend};
+use ratatui::{Terminal, backend::TestBackend, crossterm::event::MouseEvent};
 use ratatui_textarea::CursorMove;
 
 #[test]
@@ -1733,5 +1733,237 @@ fn custom_prefix_toggles_treeview_in_narrow_terminals_without_editing_chat() -> 
         assert!(app.focus == Focus::Editor);
         assert_eq!(app.session.assistant.input.lines(), &["Keep this prompt"]);
     }
+    Ok(())
+}
+
+fn pane_mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16, area: Rect) {
+    app.handle_event(
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }),
+        area,
+    );
+}
+
+#[test]
+fn mouse_resizes_content_columns_with_bounds_and_saves_on_release() -> anyhow::Result<()> {
+    let (directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    let path = directory.path().join("layout.json");
+    app.restore_layout(path.clone());
+    let original = app.workspace_layout(area);
+    let source = app.session.editor.source();
+    let x = original.preview.x;
+    let y = original.preview.y + 5;
+
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        x,
+        y,
+        area,
+    );
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        x + 10,
+        y,
+        area,
+    );
+    let resized = app.workspace_layout(area);
+    assert_eq!(resized.preview.x, x + 10);
+    assert_eq!(resized.editor.width, original.editor.width + 10);
+    assert_eq!(resized.assistant.width, resized.editor.width);
+    assert_eq!(resized.projects, original.projects);
+    assert!(!path.exists());
+    assert!(app.focus == Focus::Editor);
+
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        u16::MAX,
+        y,
+        area,
+    );
+    assert_eq!(
+        app.workspace_layout(area).preview.width,
+        workspace_view::MIN_PANE_WIDTH
+    );
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        0,
+        y,
+        area,
+    );
+    assert_eq!(
+        app.workspace_layout(area).editor.width,
+        workspace_view::MIN_PANE_WIDTH
+    );
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        x + 10,
+        y,
+        area,
+    );
+    assert!(PaneSizes::load(&path) == app.pane_sizes);
+    assert!(app.pane_drag.is_none());
+    assert_eq!(app.session.editor.source(), source);
+
+    let sizes = app.pane_sizes;
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        0,
+        y,
+        area,
+    );
+    assert!(app.pane_sizes == sizes);
+    Ok(())
+}
+
+#[test]
+fn mouse_resizes_stacked_content_panes_and_preserves_chat_minimum() -> anyhow::Result<()> {
+    for (width, focus) in [
+        (160, Focus::Editor),
+        (70, Focus::Editor),
+        (70, Focus::Preview),
+    ] {
+        let (_directory, mut app) = application()?;
+        app.focus = focus;
+        let area = Rect::new(0, 0, width, 45);
+        let original = app.workspace_layout(area);
+        let x = original.assistant.x + 2;
+        let y = original.assistant.y;
+        app.session.assistant.input.insert_str("Keep this prompt");
+
+        pane_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y - 1,
+            area,
+        );
+        pane_mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            x,
+            y + 4,
+            area,
+        );
+        assert_eq!(app.workspace_layout(area).assistant.y, y + 5);
+        pane_mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            x,
+            u16::MAX,
+            area,
+        );
+        assert_eq!(
+            app.workspace_layout(area).assistant.height,
+            workspace_view::MIN_CHAT_HEIGHT
+        );
+        pane_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, 0, area);
+        assert_eq!(
+            app.workspace_layout(area).assistant.y,
+            workspace_view::MIN_EDITOR_HEIGHT
+        );
+        assert_eq!(app.workspace_layout(area).projects, original.projects);
+        assert_eq!(app.session.assistant.input.lines(), &["Keep this prompt"]);
+        assert!(app.focus == focus);
+    }
+    Ok(())
+}
+
+#[test]
+fn pane_drag_handles_hidden_tree_and_expanded_columns_without_moving_tree() -> anyhow::Result<()> {
+    for show_tree in [false, true] {
+        for expansion in [None, Some(Focus::Editor), Some(Focus::Assistant)] {
+            let (_directory, mut app) = application()?;
+            app.projects_visible = show_tree;
+            app.session.column_expansion = expansion;
+            app.focus = expansion.unwrap_or(Focus::Editor);
+            let area = Rect::new(0, 0, 160, 45);
+            let original = app.workspace_layout(area);
+            let x = original.preview.x;
+            let y = original.preview.y + 5;
+
+            pane_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                x - 1,
+                y,
+                area,
+            );
+            pane_mouse(
+                &mut app,
+                MouseEventKind::Up(MouseButton::Left),
+                x + 9,
+                y,
+                area,
+            );
+            assert!(app.workspace_layout(area).preview.x.abs_diff(x + 10) <= 1);
+            assert_eq!(app.workspace_layout(area).projects, original.projects);
+            assert!(app.pane_sizes.sidebar.is_none());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn pane_drag_ignores_tree_and_overlays_and_ends_when_terminal_resizes() -> anyhow::Result<()> {
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 160, 45);
+    let layout = app.workspace_layout(area);
+    let y = layout.editor.y + 5;
+
+    for x in [layout.editor.x - 1, layout.editor.x] {
+        pane_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            area,
+        );
+        assert!(app.pane_drag.is_none());
+    }
+
+    app.open_settings();
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        layout.preview.x,
+        y,
+        area,
+    );
+    assert!(app.pane_drag.is_none());
+    app.settings = None;
+
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        layout.preview.x,
+        y,
+        area,
+    );
+    assert!(app.pane_drag.is_some());
+    app.handle_event(Event::Resize(80, 30), Rect::new(0, 0, 80, 30));
+    assert!(app.pane_drag.is_none());
+    assert!(app.pane_sizes == PaneSizes::default());
+
+    app.focus = Focus::Editor;
+    app.workspace_expansion = Some(Focus::Editor);
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        layout.preview.x,
+        y,
+        area,
+    );
+    assert!(app.pane_drag.is_none());
     Ok(())
 }
