@@ -74,6 +74,12 @@ fn restore_recovers_unsaved_work_and_refuses_pending_proposals_or_history_failur
     assert_eq!(app.session.editor.source(), unsaved);
     app.session.proposal_review = None;
 
+    let _reply = app.session.assistant.pending_request(unsaved.clone());
+    assert!(app.restore_history_revision(&revision).is_err());
+    assert!(app.session.assistant.is_running());
+    assert_eq!(app.session.editor.source(), unsaved);
+    app.session.assistant.cancel();
+
     let journal = directory
         .path()
         .join(history::DIRECTORY)

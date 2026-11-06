@@ -93,7 +93,7 @@ impl App {
         Ok(())
     }
 
-    fn workspace_losses(&self) -> Vec<&'static str> {
+    pub(super) fn workspace_losses(&self) -> Vec<&'static str> {
         let sessions: Vec<_> = std::iter::once(&self.session)
             .chain(self.sessions.values())
             .collect();

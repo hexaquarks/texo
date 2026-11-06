@@ -22,7 +22,14 @@ impl App {
             self.session.editor.cancel_pending_commands();
         }
 
-        let quit = self.route_event(event, area);
+        let quit = if self.quit_dialog.is_some() {
+            self.handle_quit_dialog(event, area)
+        } else if self.route_event(event, area) {
+            self.request_quit()
+        } else {
+            false
+        };
+
         if self.focus != previous_focus {
             self.workspace_expansion = None;
         }

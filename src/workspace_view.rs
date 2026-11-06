@@ -161,6 +161,9 @@ impl App {
         if self.shortcuts_open {
             self.draw_shortcut_help(frame);
         }
+        if let Some(dialog) = &self.quit_dialog {
+            dialog.draw(frame);
+        }
     }
 
     fn draw_status_bar(&self, frame: &mut Frame, area: Rect) {

@@ -42,6 +42,7 @@ struct App {
     label_dialog: Option<LabelDialog>,
     sessions: HashMap<PathBuf, ResumeSession>,
     settings: Option<SettingsDialog>,
+    quit_dialog: Option<quit_dialog::QuitDialog>,
     settings_path: PathBuf,
     prefix: Prefix,
     editor_preferences: crate::config::EditorPreferences,
@@ -104,6 +105,7 @@ impl App {
             label_dialog: None,
             sessions: HashMap::new(),
             settings: None,
+            quit_dialog: None,
             settings_path: Settings::path()?,
             prefix: Prefix::default(),
             editor_preferences: crate::config::EditorPreferences::default(),
@@ -149,7 +151,8 @@ impl App {
     }
 
     fn overlay_open(&self) -> bool {
-        self.session.history.dialog.is_some()
+        self.quit_dialog.is_some()
+            || self.session.history.dialog.is_some()
             || self.shortcuts_open
             || self.diagnostic_details_open()
             || self.project_dialog.is_some()
@@ -184,6 +187,8 @@ mod layout_state;
 mod pane_navigation;
 #[path = "problem_actions.rs"]
 mod problem_actions;
+#[path = "quit_dialog.rs"]
+mod quit_dialog;
 #[path = "resume_review.rs"]
 mod resume_review;
 #[path = "shortcut_help.rs"]

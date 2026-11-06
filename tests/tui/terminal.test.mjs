@@ -137,3 +137,51 @@ test('quit works with a modal open', async () => {
         assert.equal(state.modes.bracketed_paste, false);
     });
 });
+
+test('quit confirmation protects unsaved text and restores terminal modes after discard', async () => {
+    await withTexo('quit-unsaved', async ({ terminal, workspace }) => {
+        await createResume(terminal, 'Quit protection');
+        const document = await documentPath(workspace);
+        const saved = await readFile(document, 'utf8');
+        await paste(terminal, 'Unsaved edit ');
+        await terminal.press('Ctrl+q');
+        await terminal.getByText('Quit Texo?').expect();
+        await terminal.getByText('unsaved text').expect();
+        await terminal.screenshot(join(ARTIFACTS, 'quit-confirmation.png'));
+
+        await terminal.press('Ctrl+q');
+        await terminal.getByText('Quit Texo?').expect();
+        await terminal.press('Enter');
+        await terminal.getByText('Quit Texo?').expect({ not: true });
+        await terminal.getByText('Unsaved edit').expect();
+        assert.equal(await readFile(document, 'utf8'), saved);
+
+        await terminal.press('Ctrl+q');
+        await terminal.getByText('Quit Texo?').expect();
+        await terminal.press('Right');
+        await terminal.press('Enter');
+        await terminal.waitExit({ timeout: UI_TIMEOUT_MS });
+        const state = await terminal.state();
+        assert.equal(state.exited, 0);
+        assert.equal(state.modes.bracketed_paste, false);
+        assert.equal(await readFile(document, 'utf8'), saved);
+    }, { env: { NO_COLOR: '' } });
+});
+
+test('quit confirmation identifies unsaved work in a different resume', async () => {
+    await withTexo('quit-cached-resume', async ({ terminal }) => {
+        await createResume(terminal, 'A backend resume');
+        await paste(terminal, 'Unsaved backend edit ');
+        await createResume(terminal, 'B research resume');
+        await terminal.press('Ctrl+q');
+        await terminal.getByText('Quit Texo?').expect();
+        await terminal.getByText('A backend resume (').expect();
+        await terminal.getByText('unsaved text').expect();
+        await terminal.screenshot(join(ARTIFACTS, 'quit-cached-resume.png'));
+
+        await terminal.press('Esc');
+        await prefix(terminal, 'r');
+        await terminal.press('Up');
+        await terminal.getByText('Unsaved backend edit').expect();
+    }, { env: { NO_COLOR: '' } });
+});
