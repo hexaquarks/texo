@@ -1,6 +1,8 @@
 use std::{
+    process::Command,
     sync::{
         Arc,
+        atomic::AtomicBool,
         mpsc::{self, Receiver, TryRecvError},
     },
     thread,
@@ -43,6 +45,7 @@ const FIT_WIDTH_PERCENT: u16 = 100;
 const MAX_ZOOM_PERCENT: u16 = 300;
 const ZOOM_STEP_PERCENT: u16 = 20;
 const WHEEL_ZOOM_INTERVAL: Duration = Duration::from_millis(150);
+const TMUX_CONFIGURATION_TIMEOUT: Duration = Duration::from_secs(2);
 const EMPTY_NOTICE: &str =
     "Your PDF will appear here.\n\nBuild your document to update the preview.";
 
@@ -102,8 +105,32 @@ struct ViewportJob {
 
 impl Default for Preview {
     fn default() -> Self {
+        Self::with_picker(Picker::halfblocks())
+    }
+}
+
+impl Preview {
+    /// Query graphics support after entering the alternate screen, before reading input events.
+    pub fn detect() -> Self {
+        // Resume pages compress well. Raw RGBA uploads can be several megabytes,
+        // overwhelming a multiplexer's passthrough before the first page is visible.
+        let options = QueryStdioOptions {
+            kitty_compression: true,
+            ..QueryStdioOptions::default()
+        };
+
+        let mut picker =
+            Picker::from_query_stdio_with_options(options).unwrap_or_else(|_| Picker::halfblocks());
+
+        configure_tmux_graphics(&mut picker);
+
+        Self::with_picker(picker)
+    }
+
+    pub fn with_picker(picker: Picker) -> Self {
+        // Avoid Default here: constructing its unused picker would reset tmux passthrough.
         Self {
-            picker: Picker::halfblocks(),
+            picker,
             notice: EMPTY_NOTICE.into(),
             loading_started: None,
             pages: None,
@@ -127,36 +154,11 @@ impl Default for Preview {
             displayed_horizontal: None,
         }
     }
-}
-
-impl Preview {
-    /// Query graphics support after entering the alternate screen, before reading input events.
-    pub fn detect() -> Self {
-        // Resume pages compress well. Raw RGBA uploads can be several megabytes,
-        // overwhelming a multiplexer's passthrough before the first page is visible.
-        let options = QueryStdioOptions {
-            kitty_compression: true,
-            ..QueryStdioOptions::default()
-        };
-
-        let picker =
-            Picker::from_query_stdio_with_options(options).unwrap_or_else(|_| Picker::halfblocks());
-        Self::with_picker(picker)
-    }
-
-    pub fn with_picker(picker: Picker) -> Self {
-        Self {
-            picker,
-            ..Self::default()
-        }
-    }
 
     pub fn empty_like(&self) -> Self {
-        Self {
-            picker: self.picker.clone(),
-            terminal_images: self.terminal_images.clone(),
-            ..Self::default()
-        }
+        let mut preview = Self::with_picker(self.picker.clone());
+        preview.terminal_images = self.terminal_images.clone();
+        preview
     }
 
     pub fn flush_retired_images(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
@@ -606,7 +608,7 @@ impl Preview {
                         self.image = None;
                         self.image_presented = false;
                         if !self.uses_basic_rendering() {
-                            self.picker = Picker::halfblocks();
+                            self.picker.set_protocol_type(ProtocolType::Halfblocks);
                             self.scaled_page_size = None;
                         } else {
                             // Keep the error visible instead of spawning another failed worker
@@ -833,7 +835,7 @@ impl Preview {
                             self.notice = format!("Could not place the PDF preview: {error}");
                             self.image = None;
                             self.image_source = None;
-                            self.picker = Picker::halfblocks();
+                            self.picker.set_protocol_type(ProtocolType::Halfblocks);
                             self.viewport_pixels = None;
                         }
                     }
@@ -883,6 +885,24 @@ impl Preview {
                 );
             }
         }
+    }
+}
+
+fn configure_tmux_graphics(picker: &mut Picker) {
+    if !picker.tmux_detected() || picker.protocol_type() != ProtocolType::Kitty {
+        return;
+    }
+
+    // `on` drops passthrough while tmux has a redraw pending. Text is replayed
+    // afterward, but a lost image upload or placement cannot be reconstructed.
+    let configured = crate::process::run(
+        Command::new("tmux").args(["set-option", "-p", "allow-passthrough", "all"]),
+        TMUX_CONFIGURATION_TIMEOUT,
+        &AtomicBool::new(false),
+    );
+
+    if configured.is_err() {
+        picker.set_protocol_type(ProtocolType::Halfblocks);
     }
 }
 
@@ -1060,3 +1080,7 @@ fn viewport_crop(page_height: u32, viewport_height: u32, scroll: u32) -> (u32, u
 #[cfg(test)]
 #[path = "preview_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "tmux_preview_tests.rs"]
+mod tmux_tests;
