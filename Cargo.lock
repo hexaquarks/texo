@@ -2922,8 +2922,9 @@ dependencies = [
 
 [[package]]
 name = "ratatui-image"
-version = "11.1.0"
-source = "git+https://github.com/ratatui/ratatui-image?rev=0b9fd052ad04e067d015b5e8b70af54342a5bed5#0b9fd052ad04e067d015b5e8b70af54342a5bed5"
+version = "12.0.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51b5579359d4a78b2abb69fc11070d02a5ee4d92a51d9cb5fcaff2bd19a147f1"
 dependencies = [
  "base64-simd",
  "flate2",
@@ -2945,14 +2946,6 @@ checksum = "ed7dc68daa7498a43e4d68e0eb078427e10c38fbcfbb1e42d955f1fa2140d814"
 dependencies = [
  "ratatui-core",
  "ratatui-widgets",
-]
-
-[[package]]
-name = "ratatui-spinner"
-version = "0.4.18"
-source = "git+https://github.com/ratatui/ratatui-spinner?rev=4489de894e1a29460b5976508b1a25499c3ba3b0#4489de894e1a29460b5976508b1a25499c3ba3b0"
-dependencies = [
- "ratatui",
 ]
 
 [[package]]
@@ -2978,8 +2971,9 @@ dependencies = [
 
 [[package]]
 name = "ratatui-textarea"
-version = "0.9.3"
-source = "git+https://github.com/ratatui/ratatui-textarea?rev=f37b2762564e3e10f2414d45270d990339517bd0#f37b2762564e3e10f2414d45270d990339517bd0"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cf7263fbb7f37caa4bcfd00fc604ff1409f70456a833fbdff99282e88fdfe92"
 dependencies = [
  "ratatui-core",
  "ratatui-crossterm",
@@ -3776,7 +3770,6 @@ dependencies = [
  "rand 0.10.3",
  "ratatui",
  "ratatui-image",
- "ratatui-spinner",
  "ratatui-textarea",
  "regex",
  "reqwest",
@@ -3791,6 +3784,7 @@ dependencies = [
  "time",
  "tokio",
  "toml_edit",
+ "tui-spinner",
  "uuid",
  "zeroize",
 ]
@@ -4051,6 +4045,15 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tui-spinner"
+version = "0.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e78c35bc88819ba972e11162c7efa1a341438a958d141e63fbf87a8f309a9dc"
+dependencies = [
+ "ratatui",
+]
 
 [[package]]
 name = "typenum"
