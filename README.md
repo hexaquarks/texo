@@ -1,17 +1,25 @@
 <p align="center">
   <a href="https://github.com/hexaquarks/texo/actions/workflows/tests.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/hexaquarks/texo/tests.yml?branch=main&amp;label=tests" /></a>
   <a href="https://app.codecov.io/gh/hexaquarks/texo"><img alt="Coverage" src="https://img.shields.io/codecov/c/github/hexaquarks/texo/main" /></a>
-  <a href="Cargo.toml"><img alt="Rust edition: 2024" src="https://img.shields.io/badge/Rust-2024-DEA584?logo=rust" /></a>
-  <a href="Cargo.toml"><img alt="Ratatui version: 0.30.2" src="https://img.shields.io/badge/Ratatui-0.30.2-blue" /></a>
+  <a href="https://github.com/hexaquarks/texo/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/hexaquarks/texo" /></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue" /></a>
 </p>
 
-A terminal-native, AI-powered resume harness for creating, editing, and managing LaTeX resumes.
+A terminal-native, AI-assisted editor and manager for LaTeX resumes.
 
-Work in progress
+Early development. Interfaces and configuration may change.
 
 <p align="center">
   <img src="assets/workspace-example.png" width="1000" alt="Texo running in Ghostty with labeled resume projects, revision history, a proposed LaTeX edit, AI review controls, and a PDF preview" />
 </p>
+
+## Features
+
+- AI-assisted LaTeX editing with review and approval of proposed changes.
+- Standard and Vim editing modes.
+- PDF preview alongside the source in supported terminals.
+- Labeled resume projects with revision history and restoration.
+- Import existing LaTeX projects and export PDFs.
 
 ## Install
 
@@ -63,5 +71,10 @@ Use `/model` to choose a model.
 | Windows Terminal (WSL) | ❓ Needs testing | Pending | — |
 
 [Terminal tests and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
+
+## Contributing
+
+Bug reports, feature requests, and pull requests are welcome.
+For substantial changes, [open an issue](https://github.com/hexaquarks/texo/issues) first to discuss the approach.
 
 [MIT License](LICENSE).
