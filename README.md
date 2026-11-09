@@ -17,9 +17,6 @@ Work in progress
 
 macOS and Linux, ARM64 and x86-64.
 
-> [!NOTE]
-> Homebrew and crates.io installs are pending the first release.
-
 ```sh
 brew install hexaquarks/tap/texo
 # or
@@ -42,6 +39,9 @@ texo path/to/main.tex       # Open a TeX file
 ```
 
 Press `Ctrl+x`, then `?` for shortcuts.
+
+> [!NOTE]
+> Change the `Ctrl+x` prefix in `config.toml`, accessible from Settings.
 
 ## AI setup
 
