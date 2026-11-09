@@ -176,3 +176,15 @@ test('config reload rejects malformed settings and updates the prefix without lo
         assert.equal(await readFile(await documentPath(workspace), 'utf8'), RESUME);
     });
 });
+
+test('a TeX file argument opens the document directly', async () => {
+    await withTexo('document-argument', async ({ terminal, root, restart }) => {
+        const document = join(root, 'resume.tex');
+        await writeFile(document, RESUME);
+
+        await restart({ path: document });
+        await terminal.getByText('resume.tex').first().expect();
+        await terminal.getByText('Terminal workflow resume.').expect();
+        await terminal.getByText('PDF current').expect();
+    });
+});

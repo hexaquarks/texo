@@ -15,47 +15,39 @@ Work in progress
 
 ## Install
 
-Releases target macOS and Linux on ARM64 and x86-64.
+macOS and Linux, ARM64 and x86-64.
 
 > [!NOTE]
-> Homebrew and crates.io installs become available after the first release is published.
-
-### Homebrew
+> Homebrew and crates.io installs are pending the first release.
 
 ```sh
 brew install hexaquarks/tap/texo
-```
-
-Homebrew also installs Tectonic and Poppler.
-
-### Prebuilt binaries
-
-Download your platform's archive and SHA-256 checksum from
-[GitHub Releases](https://github.com/hexaquarks/texo/releases), or use the installer:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/hexaquarks/texo/releases/latest/download/texo-installer.sh | sh
-```
-
-> [!TIP]
-> The installer places `texo` in `~/.local/bin`. Add that directory to your `PATH`.
-
-### Cargo
-
-With a current stable [Rust toolchain](https://rustup.rs):
-
-```sh
+# or
 cargo install texo --locked
 ```
 
-To build a checkout instead, run `cargo install --path . --locked`.
+Prebuilt binaries: [GitHub Releases](https://github.com/hexaquarks/texo/releases).
 
 > [!IMPORTANT]
-> Binary and Cargo installs require [Tectonic](https://tectonic-typesetting.github.io/)
-> and [Poppler](https://poppler.freedesktop.org/) on `PATH` for compilation and PDF previews.
-> All Linux installs also need Bubblewrap, D-Bus, and a Secret Service keyring for credentials.
-> Building from source on Linux needs the D-Bus development package and `pkg-config`.
-> Native Windows compilation is unsupported.
+> Tectonic and Poppler are required; Homebrew installs both.
+> Linux also needs Bubblewrap and D-Bus.
+> Linux source builds need the D-Bus development package and `pkg-config`.
+
+## Usage
+
+```sh
+texo                       # Default or configured workspace
+texo ~/resumes              # Open a workspace
+texo path/to/main.tex       # Open a TeX file
+```
+
+Press `Ctrl+x`, then `?` for shortcuts.
+
+## AI setup
+
+Use `/login` in chat to connect ChatGPT / Codex, OpenAI, or Anthropic.
+ChatGPT / Codex requires the Codex CLI; OpenAI and Anthropic use API keys.
+Use `/model` to choose a model.
 
 ## Compatibility
 
@@ -70,27 +62,6 @@ To build a checkout instead, run `cargo install --path . --locked`.
 | Apple Terminal | ⚠️ Limited | Manual preview | External PDF viewer required |
 | Windows Terminal (WSL) | ❓ Needs testing | Pending | — |
 
-CI runs a suite of terminal smoke tests and captures screenshots for visual review on Linux x86-64 (X11).
-Manual preview checks cover macOS. Full checks on macOS, WSL, and Linux Wayland are pending.
+[Terminal tests and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
 
-See [test results and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
-
-App logic and PDF compilation are also tested on Intel and Apple Silicon Macs.
-
-## Releases
-
-Versions follow [SemVer](https://semver.org/). Update `Cargo.toml` and `Cargo.lock` in a PR,
-merge it, then push the matching `vX.Y.Z` tag from that commit. Tags with a prerelease
-suffix publish GitHub prereleases only.
-
-[cargo-dist](https://opensource.axo.dev/cargo-dist/) builds all four targets, creates checksums
-and installers, and publishes tagged releases. PRs build the same artifacts without publishing.
-The release checks include tests and a crates.io packaging dry run.
-
-> [!IMPORTANT]
-> Before the first release, create `hexaquarks/homebrew-tap` and configure repository secrets:
-> `HOMEBREW_TAP_TOKEN` with write access to that tap, and `CARGO_REGISTRY_TOKEN` with permission
-> to publish `texo` on crates.io. No release credentials are needed for PR builds.
-
-Release configuration lives in `dist-workspace.toml`. After changing it, regenerate the workflow
-with cargo-dist 0.33.0: `dist generate`.
+[MIT License](LICENSE).

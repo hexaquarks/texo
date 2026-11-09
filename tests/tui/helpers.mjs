@@ -31,9 +31,9 @@ export async function withTexo(name, scenario, options = {}) {
 
     try {
         const preparedEnvironment = options.prepare ? await options.prepare(root, workspace) : {};
-        const restart = async ({ configuredWorkspace = false } = {}) => {
+        const restart = async ({ configuredWorkspace = false, path = workspace } = {}) => {
             await terminal.closeQuiet();
-            await terminal.run(join(REPOSITORY, 'target/debug/texo'), configuredWorkspace ? [] : [workspace], {
+            await terminal.run(join(REPOSITORY, 'target/debug/texo'), configuredWorkspace ? [] : [path], {
                 cols: 120,
                 rows: 35,
                 env: {
