@@ -24,7 +24,7 @@ use ratatui_image::{
     protocol::StatefulProtocol,
 };
 
-use ratatui_spinner::CircleSpinner;
+use tui_spinner::CircleSpinner;
 
 use crate::theme;
 use crate::{

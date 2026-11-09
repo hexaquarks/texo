@@ -2,8 +2,21 @@
 name = "texo"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal workspace for LaTeX resumes with PDF preview and AI assistance"
+repository = "https://github.com/hexaquarks/texo"
+homepage = "https://github.com/hexaquarks/texo"
 license = "MIT"
-publish = false
+publish = ["crates-io"]
+include = [
+    "/src/**",
+    "/tests/*.rs",
+    "/tests/*.py",
+    "/tests/fixtures/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/LICENSE",
+    "/README.md",
+]
 
 [dependencies]
 anyhow = "1"
@@ -31,23 +44,18 @@ toml_edit = { version = "0.25", features = ["serde"] }
 open = "5.4.5"
 crokey = "1.5.1"
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
-ratatui-spinner = { git = "https://github.com/ratatui/ratatui-spinner", rev = "4489de894e1a29460b5976508b1a25499c3ba3b0", version = "0.4.18" }
+tui-spinner = "=0.4.18"
 arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 regex = "1.13.1"
 
-# Pin the upstream fix that stops reading stdin when graphics detection times out.
+# This published release candidate includes the terminal query timeout fix.
 [dependencies.ratatui-image]
-git = "https://github.com/ratatui/ratatui-image"
-rev = "0b9fd052ad04e067d015b5e8b70af54342a5bed5"
-version = "11.1.0"
+version = "=12.0.0-rc.3"
 default-features = false
 features = ["crossterm"]
 
-# Pin the upstream wrapped-search overflow fix, which is not in the 0.9.3 release.
 [dependencies.ratatui-textarea]
-git = "https://github.com/ratatui/ratatui-textarea"
-rev = "f37b2762564e3e10f2414d45270d990339517bd0"
-version = "0.9.3"
+version = "0.9.4"
 features = ["search"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -56,3 +64,8 @@ security-framework = "3.7"
 # Keep image resampling responsive with `cargo run`, including on Retina displays.
 [profile.dev.package.image]
 opt-level = 3
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

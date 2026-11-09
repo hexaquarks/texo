@@ -280,3 +280,28 @@ test('quit confirmation preserves a pending AI proposal and accepted unsaved edi
         assert.match(await readFile(document, 'utf8'), /First draft/);
     }, { prepare });
 });
+
+test('model command opens the picker and persists the selected model', async () => {
+    await withTexo('assistant-model-command', async ({ terminal, root }) => {
+        await createResume(terminal, 'Model selection');
+        await ask(terminal, '/model');
+        await terminal.getByText('Choose a model').expect();
+
+        await terminal.press('Down', 'Enter');
+        await terminal.getByText('Choose a model').expect({ not: true });
+        await terminal.getByText('Model selected:').expect();
+
+        const profilePath = join(root, 'config/texo/provider.json');
+        const profile = JSON.parse(await readFile(profilePath, 'utf8'));
+        assert.equal(profile.provider, 'codex');
+        assert.ok(profile.model, 'The chosen model must be saved');
+        await terminal.getByText(profile.model).first().expect();
+
+        await terminal.getByText('Ask Texo...').click();
+        await paste(terminal, '/model');
+        await terminal.press('Enter');
+        await terminal.getByText('Choose a model').expect();
+        await terminal.getByText(`› ${profile.model}`).expect();
+        await terminal.press('Escape');
+    }, { prepare });
+});

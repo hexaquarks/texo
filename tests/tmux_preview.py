@@ -17,8 +17,11 @@ POLL_INTERVAL_SECONDS = 0.02
 READ_SIZE_BYTES = 1024 * 1024
 MAX_DIAGNOSTIC_BYTES = 2000
 PROCESS_EXIT_TIMEOUT_SECONDS = 5
-TERMINAL_ROWS = 20
-TERMINAL_COLUMNS = 40
+
+# Leave room for the app panes around the 40-by-20 preview. Filling a tiny
+# terminal with placeholders triggers tmux slow-client throttling during redraws.
+TERMINAL_ROWS = 35
+TERMINAL_COLUMNS = 120
 SECOND_PANE_ROWS = 2
 PANE_BORDER_ROWS = 1
 CELL_WIDTH_PIXELS = 10
