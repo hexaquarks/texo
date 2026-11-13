@@ -176,6 +176,13 @@ try:
     run_smoke_tests()
 except Exception:
     machine.screenshot("failure")
+    try:
+        prefix("shift+e")
+        screenshot("failure-details")
+        print(machine.get_screen_text())
+    except Exception as diagnostic_error:
+        print(f"Could not capture build details: {diagnostic_error}")
+
     print(machine.execute("pgrep -a texo || true"))
     print(machine.execute("cat /home/alice/texo-exit-status"))
     raise
