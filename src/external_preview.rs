@@ -235,8 +235,8 @@ mod tests {
         let button = app.external_pdf_button(preview);
         assert_eq!(
             button.y,
-            preview.y + 3,
-            "Border plus the two history header rows"
+            preview.y + 3 + super::super::pdf_toolbar::TOOLBAR_HEIGHT,
+            "Border, toolbar, and the two history header rows"
         );
         app.handle_event(
             Event::Mouse(MouseEvent {

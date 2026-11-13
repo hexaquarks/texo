@@ -273,7 +273,10 @@ fn focused_pdf_keeps_zoom_and_fit_hints_in_split_and_full_width_layouts() -> any
     for width in [80, 120, 160, 240] {
         let mut terminal = Terminal::new(TestBackend::new(width, 45))?;
         let area = Rect::new(0, 0, width, 45);
-        let header = pane_content(app.preview_area(area));
+        let header = workspace_view::below_header(
+            pane_content(app.preview_area(area)),
+            pdf_toolbar::TOOLBAR_HEIGHT,
+        );
         terminal.draw(|frame| app.draw(frame))?;
         let text: String = (header.x..header.right())
             .map(|x| terminal.backend().buffer()[(x, header.y)].symbol())

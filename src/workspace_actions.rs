@@ -291,6 +291,7 @@ impl App {
 
         let mut dialog = ExportDialog::new(&self.session.editor.path);
         if let Some(project) = self.projects.project_for(&self.session.editor.path) {
+            dialog.set_folder(&project.root);
             dialog.context = format!(
                 "{} · {}",
                 project.manifest.name,
@@ -300,7 +301,11 @@ impl App {
         self.export = Some(dialog);
     }
 
-    fn ensure_export_ready(&self) -> anyhow::Result<()> {
+    pub(super) fn ensure_export_ready(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.session.history.view.is_none(),
+            "Return to Working copy before exporting."
+        );
         anyhow::ensure!(
             self.session.proposal_review.is_none(),
             "Accept or discard the proposal before exporting."

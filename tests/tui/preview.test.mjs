@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
     exportDestination, ARTIFACTS, RESUME, createResume, documentPath, paste, prefix, withTexo,
@@ -99,4 +99,30 @@ test('export rejects its build output and missing folders, then requires overwri
         assert.deepEqual(await readFile(exported), original);
         assert.deepEqual(await readFile(pdf), original);
     });
+});
+
+test('PDF toolbar recompiles and exports a renamed PDF into the current project', async () => {
+    await withTexo('pdf-toolbar', async ({ terminal, workspace }) => {
+        await createResume(terminal, 'Backend');
+        const document = await documentPath(workspace);
+        const built = document.replace(/\.tex$/, '.pdf');
+
+        await terminal.getByText('Recompile', { whitespace: 'exact' }).click();
+        await terminal.waitIdle();
+        await terminal.getByText('PDF current').expect();
+        await terminal.getByText('Export', { whitespace: 'exact' }).click();
+        await terminal.getByText('Export PDF').first().expect();
+        await terminal.screenshot(join(ARTIFACTS, 'export-dialog.png'));
+
+        // Focus starts at the end of the filename; select it explicitly to replace it.
+        await terminal.press('Home', 'Shift+End');
+        await paste(terminal, 'Alex_Morgan_Backend.pdf');
+        await terminal.press('Enter');
+        await terminal.getByText('Exported').expect();
+        assert.deepEqual(
+            await readFile(join(dirname(document), 'Alex_Morgan_Backend.pdf')),
+            await readFile(built),
+        );
+        await terminal.screenshot(join(ARTIFACTS, 'pdf-toolbar.png'));
+    }, { env: { NO_COLOR: '' } });
 });

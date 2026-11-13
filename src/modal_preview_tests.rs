@@ -1,5 +1,4 @@
 use super::test_support::application;
-use super::workspace_view::below_header;
 use super::*;
 
 use std::{
@@ -52,7 +51,7 @@ fn ready_preview(app: &mut App, terminal: &mut WireTerminal) -> anyhow::Result<B
 }
 
 fn image_area(app: &App, area: Rect) -> Rect {
-    below_header(pane_content(app.preview_area(area)), 1)
+    app.preview_body_area(app.preview_area(area))
         .inner(Margin::new(theme::PANEL_PADDING, 1))
 }
 

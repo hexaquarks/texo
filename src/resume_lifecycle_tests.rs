@@ -183,6 +183,7 @@ fn empty_workspace_to_revised_resume_export_and_reopen() -> Result<()> {
 
     let exported = root.join("application.pdf");
     app.open_export();
+    press(&mut app, KeyCode::BackTab);
     app.export.as_mut().unwrap().folder.select_all();
     app.handle_event(
         Event::Paste(exported.parent().unwrap().display().to_string()),
@@ -242,6 +243,7 @@ fn export_rechecks_pending_review_before_overwriting_an_existing_pdf() -> Result
     fs::write(&exported, "Existing application")?;
     let sender = app.session.assistant.pending_request(FULL_RESUME.into());
     app.open_export();
+    press(&mut app, KeyCode::BackTab);
     app.export.as_mut().unwrap().folder.select_all();
     app.handle_event(
         Event::Paste(exported.parent().unwrap().display().to_string()),
