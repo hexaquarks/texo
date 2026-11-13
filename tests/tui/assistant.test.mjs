@@ -48,12 +48,12 @@ async function waitStarted(root) {
 }
 
 async function acceptAndSave(terminal) {
-    await terminal.getByText('Unapproved changes').expect();
-    await terminal.getByText('PDF current').expect();
+    await terminal.getByText('Reviewing AI changes').expect();
+    await terminal.getByText('PDF proposed').expect();
     await prefix(terminal, 'a');
     await terminal.getByText('Accepted · PDF updated').expect();
     await prefix(terminal, 'w');
-    await terminal.getByText('Saved TeX document.').expect();
+    await terminal.getByText(' · Saved').expect();
 }
 
 test('AI proposals refine the pending draft, protect the buffer, accept, save, and discard', async () => {
@@ -65,8 +65,8 @@ test('AI proposals refine the pending draft, protect the buffer, accept, save, a
         const original = await readFile(document, 'utf8');
 
         await ask(terminal, 'first');
-        await terminal.getByText('Unapproved changes').expect();
-        await terminal.getByText('PDF current').expect();
+        await terminal.getByText('Reviewing AI changes').expect();
+        await terminal.getByText('PDF proposed').expect();
         await terminal.getByText('First draft').first().click();
         await paste(terminal, 'BLOCKED EDIT');
         assert.equal(await readFile(document, 'utf8'), original);
@@ -84,12 +84,12 @@ test('AI proposals refine the pending draft, protect the buffer, accept, save, a
         assert.doesNotMatch(accepted, /BLOCKED EDIT/);
 
         await ask(terminal, 'first');
-        await terminal.getByText('Unapproved changes').expect();
-        await terminal.getByText('PDF current').expect();
+        await terminal.getByText('Reviewing AI changes').expect();
+        await terminal.getByText('PDF proposed').expect();
         await prefix(terminal, 'd');
         await terminal.getByText('Proposal discarded.').expect();
         await prefix(terminal, 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         assert.equal(await readFile(document, 'utf8'), accepted);
 
         await ask(terminal, 'advice');
@@ -113,7 +113,7 @@ test('late AI replies preserve newer local edits across a resize', async () => {
         await writeFile(join(root, 'bin/release'), '');
         await terminal.getByText('Proposal is stale').expect();
         await prefix(terminal, 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         const source = await readFile(await documentPath(workspace), 'utf8');
         assert.match(source, /Local edit wins/);
         assert.doesNotMatch(source, /First draft/);
@@ -160,7 +160,7 @@ test('late AI work stays with its original resume when the user switches project
         assert.match(await readFile(first, 'utf8'), /First draft/);
         await terminal.getByText('Other project').first().click();
         await terminal.getByText('PDF current').expect();
-        await terminal.getByText('Unapproved changes').expect({ not: true });
+        await terminal.getByText('Reviewing AI changes').expect({ not: true });
         await terminal.getByText('First draft').expect({ not: true });
     }, { prepare });
 });
@@ -171,7 +171,7 @@ test('failed and cancelled refinements retain the last reviewable draft', async 
         await createResume(terminal, 'Refinement recovery');
 
         await ask(terminal, 'first');
-        await terminal.getByText('Unapproved changes').expect();
+        await terminal.getByText('Reviewing AI changes').expect();
         await prefix(terminal, 'm');
 
         await ask(terminal, 'fail');
@@ -200,7 +200,7 @@ test('a proposal arriving during export prevents publishing and explains why', a
         await terminal.press('Home', 'Shift+End');
         await paste(terminal, destination);
         await writeFile(join(root, 'bin/release'), '');
-        await terminal.getByText('Unapproved changes').expect();
+        await terminal.getByText('Reviewing AI changes').expect();
         await terminal.press('Enter');
         await terminal.getByText('Export PDF').expect({ not: true });
         await assert.rejects(readFile(destination), { code: 'ENOENT' });
@@ -242,11 +242,11 @@ test('a proposal restores adjacent panes after a workspace-expanded chat request
         await prefix(terminal, 'u');
         await prefix(terminal, 'z');
         await ask(terminal, 'first');
-        await terminal.getByText('Unapproved changes').expect();
+        await terminal.getByText('Reviewing AI changes').expect();
         await terminal.getByText('texo / chat').expect();
         await terminal.getByText('[ Proposed ]').expect();
         await prefix(terminal, 'z');
-        await terminal.getByText('Unapproved changes').expect({ not: true });
+        await terminal.getByText('Reviewing AI changes').expect({ not: true });
         await prefix(terminal, 'd');
         await terminal.getByText('PDF current').expect();
     }, { prepare });
@@ -259,15 +259,15 @@ test('quit confirmation preserves a pending AI proposal and accepted unsaved edi
         const document = await documentPath(workspace);
         const saved = await readFile(document, 'utf8');
         await ask(terminal, 'first');
-        await terminal.getByText('Unapproved changes').expect();
-        await terminal.getByText('PDF current').expect();
+        await terminal.getByText('Reviewing AI changes').expect();
+        await terminal.getByText('PDF proposed').expect();
 
         await terminal.press('Ctrl+q');
         await terminal.getByText('Quit Texo?').expect();
         await terminal.getByText('pending AI work or proposals').expect();
         await terminal.press('Esc');
         await terminal.getByText('Quit Texo?').expect({ not: true });
-        await terminal.getByText('Unapproved changes').expect();
+        await terminal.getByText('Reviewing AI changes').expect();
         assert.equal(await readFile(document, 'utf8'), saved);
 
         await prefix(terminal, 'a');
@@ -276,7 +276,7 @@ test('quit confirmation preserves a pending AI proposal and accepted unsaved edi
         await terminal.getByText('unsaved text').expect();
         await terminal.press('Esc');
         await prefix(terminal, 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         assert.match(await readFile(document, 'utf8'), /First draft/);
     }, { prepare });
 });

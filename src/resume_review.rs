@@ -91,11 +91,8 @@ impl App {
         self.session.proposal_review = Some(ProposalReview::new(&edit));
         let build = self.session.assistant.take_compiled_draft();
         self.session.assistant.take_proposal();
+        self.session.status.clear();
         self.render_proposal(build);
-        self.session.status = format!(
-            "Review changes · {} a accept · m modify · d discard",
-            self.prefix.label()
-        );
     }
 
     pub(super) fn start_proposed_render(&mut self) {
@@ -205,10 +202,9 @@ impl App {
             "Accepted · PDF updated · {} w to save TeX",
             self.prefix.label()
         );
-        self.session.assistant.report_edit_result(&format!(
-            "Changes accepted. PDF updated; {} w to save TeX.",
-            self.prefix.label()
-        ));
+        self.session
+            .assistant
+            .report_edit_result("Changes accepted. PDF updated.");
     }
 
     pub(super) fn modify_proposal(&mut self) {

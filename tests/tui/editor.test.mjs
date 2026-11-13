@@ -5,7 +5,7 @@ import { createResume, documentPath, paste, prefix, withTexo } from './helpers.m
 
 async function savedSource(terminal, workspace) {
     await prefix(terminal, 'w');
-    await terminal.getByText('Saved TeX document.').expect();
+    await terminal.getByText(' · Saved').expect();
     await terminal.getByText('unsaved').expect({ not: true });
 
     return readFile(await documentPath(workspace), 'utf8');

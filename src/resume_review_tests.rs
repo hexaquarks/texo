@@ -72,9 +72,27 @@ fn pending_review_protects_the_editor_and_exposes_controls() -> anyhow::Result<(
     assert!(text.contains(&format!("Discard {} d", app.prefix.label())));
     assert!(text.contains("[ Current ]"));
     assert!(text.contains("[ Proposed ]"));
+    assert!(text.contains("PDF proposed"));
+    assert!(!text.contains("PDF current"));
     assert!(text.contains("Changed bullet"));
-    assert!(text.contains("Unapproved changes"));
+    assert!(text.contains("Reviewing AI changes"));
     assert!(!text.contains("Original document"));
+    assert!(!text.contains("Maximize"));
+    assert!(!text.contains("Review changes ·"));
+
+    app.session.show_proposed = false;
+    terminal.draw(|frame| app.draw(frame))?;
+    let current: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(current.contains("Original document"));
+    assert!(!current.contains("Changed bullet"));
+    assert_eq!(app.session.editor.source(), original);
+    app.session.show_proposed = true;
 
     app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
     app.handle_event(Event::Paste("hidden edit".into()), Rect::new(0, 0, 160, 45));
@@ -104,7 +122,7 @@ fn review_tabs_and_buttons_use_their_visible_hit_areas() -> anyhow::Result<()> {
         source_after: "Pending".into(),
     }));
     let area = Rect::new(0, 0, 160, 45);
-    let layout = WorkspaceLayout::new(area, true, Focus::Editor);
+    let layout = app.workspace_layout(area);
     let [_, current, proposed] = preview_header(pane_content(layout.preview));
 
     for (tab, expected) in [(proposed, true), (current, false)] {

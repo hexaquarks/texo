@@ -20,6 +20,7 @@ const SCROLL_COLUMNS: u16 = 8;
 pub struct ProposalReview {
     pub edit: ProposedEdit,
     lines: Vec<Line<'static>>,
+    current_lines: Vec<Line<'static>>,
     vertical_offset: u16,
     horizontal_offset: u16,
 }
@@ -82,16 +83,49 @@ impl ProposalReview {
             })
             .collect();
 
+        let current_colors = source_colors(&proposal.source_before);
+        let current_lines = proposal
+            .source_before
+            .lines()
+            .enumerate()
+            .map(|(index, text)| {
+                let mut spans = vec![Span::styled(
+                    format!("{:>number_width$}   ", index + 1),
+                    theme::muted(),
+                )];
+                let colors = current_colors.get(index);
+                for (column, character) in text.chars().enumerate() {
+                    let color = colors
+                        .and_then(|line| line.get(column))
+                        .copied()
+                        .unwrap_or(theme::TEXT);
+                    spans.push(Span::styled(
+                        character.to_string(),
+                        Style::default().fg(color),
+                    ));
+                }
+
+                Line::from(spans).style(theme::text())
+            })
+            .collect();
+
         Self {
             edit: proposal.clone(),
             lines,
+            current_lines,
             vertical_offset: 0,
             horizontal_offset: 0,
         }
     }
 
     pub fn scroll(&mut self, up: bool) {
-        let maximum = u16::try_from(self.lines.len().saturating_sub(1)).unwrap_or(u16::MAX);
+        let maximum = u16::try_from(
+            self.lines
+                .len()
+                .max(self.current_lines.len())
+                .saturating_sub(1),
+        )
+        .unwrap_or(u16::MAX);
         self.vertical_offset = if up {
             self.vertical_offset.saturating_sub(SCROLL_LINES)
         } else {
@@ -102,7 +136,13 @@ impl ProposalReview {
     }
 
     pub fn scroll_horizontal(&mut self, left: bool) {
-        let maximum = self.lines.iter().map(Line::width).max().unwrap_or(0);
+        let maximum = self
+            .lines
+            .iter()
+            .chain(&self.current_lines)
+            .map(Line::width)
+            .max()
+            .unwrap_or(0);
         let maximum = u16::try_from(maximum).unwrap_or(u16::MAX);
 
         self.horizontal_offset = if left {
@@ -115,10 +155,17 @@ impl ProposalReview {
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
+        self.draw_lines(frame, area, &self.lines);
+    }
+
+    pub fn draw_current(&self, frame: &mut Frame, area: Rect) {
+        self.draw_lines(frame, area, &self.current_lines);
+    }
+
+    fn draw_lines(&self, frame: &mut Frame, area: Rect, lines: &[Line<'static>]) {
         let content = area.inner(Margin::new(theme::PANEL_PADDING, 1));
 
-        for (row, line) in self
-            .lines
+        for (row, line) in lines
             .iter()
             .skip(usize::from(self.vertical_offset))
             .take(usize::from(content.height))

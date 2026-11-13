@@ -27,6 +27,25 @@ impl App {
         let mut layout =
             WorkspaceLayout::with_sizes(area, self.projects_visible, self.focus, &self.pane_sizes);
 
+        // Give unused chat rows back to the source while keeping the review exchange together.
+        if self.session.proposal_review.is_some()
+            && !self.session.assistant.login_open()
+            && self.pane_sizes.editor.is_none()
+            && !layout.editor.is_empty()
+            && !layout.assistant.is_empty()
+        {
+            let combined_height = layout.editor.height + layout.assistant.height;
+            let chat_height = self
+                .session
+                .assistant
+                .review_height(pane_content(layout.assistant))
+                .saturating_add(2)
+                .min(combined_height / 2);
+            layout.editor.height = combined_height - chat_height;
+            layout.assistant.y = layout.editor.bottom();
+            layout.assistant.height = chat_height;
+        }
+
         // Column expansion keeps the PDF and sidebar in place.
         if !layout.editor.is_empty() && !layout.assistant.is_empty() {
             let column = layout.editor.union(layout.assistant);
@@ -202,7 +221,7 @@ impl App {
         ])
         .areas(area);
 
-        // Review replaces the editor title, so retain operation results beside the controls.
+        // Keep actionable errors visible when a review replaces the editor title.
         if self.session.proposal_review.is_some() || self.session.history.view.is_some() {
             frame.render_widget(
                 Paragraph::new(self.session.status.as_str()).style(theme::muted()),
@@ -245,7 +264,11 @@ impl App {
         }
 
         if let Some(review) = &self.session.proposal_review {
-            review.draw(frame, area);
+            if self.session.show_proposed {
+                review.draw(frame, area);
+            } else {
+                review.draw_current(frame, area);
+            }
         } else {
             let focused = self.editor_has_focus();
             self.session.editor.draw(frame, area, focused);
@@ -275,10 +298,25 @@ impl App {
             } else if source_state.is_err() {
                 "Source unreadable · Your editor text is preserved".into()
             } else if self.session.proposal_review.is_some() {
-                format!(
-                    "Unapproved changes · {}",
-                    crate::workspace::display_path(&self.session.editor.path)
-                )
+                let name = self
+                    .projects
+                    .project_for(&self.session.editor.path)
+                    .map(|project| project.manifest.name.as_str())
+                    .unwrap_or("Resume");
+                let filename = self
+                    .session
+                    .editor
+                    .path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                let label = format!("{name} · {filename} · Reviewing AI changes");
+                let available = area.width.saturating_sub(theme::PANEL_PADDING * 2);
+                if Line::raw(&label).width() <= usize::from(available) {
+                    label
+                } else {
+                    format!("Reviewing AI changes · {filename}")
+                }
             } else if self.session.status.is_empty() {
                 format!(
                     "{}{}",
@@ -311,6 +349,10 @@ impl App {
     }
 
     fn editor_maximize_hint(&self, area: Rect) -> Line<'static> {
+        if self.session.proposal_review.is_some() {
+            return Line::default();
+        }
+
         let title = area.inner(ratatui::layout::Margin::new(theme::PANEL_PADDING, 0));
         let action = if self.pane_is_expanded(Focus::Editor) {
             "Restore"
@@ -442,6 +484,8 @@ impl App {
                 || !matches!(source_state, Ok(crate::editor::DiskState::Unchanged)))
         {
             "PDF outdated"
+        } else if proposed {
+            "PDF proposed"
         } else {
             "PDF current"
         };
