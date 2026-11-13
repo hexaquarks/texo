@@ -10,16 +10,22 @@ A terminal-native, AI-assisted editor and manager for LaTeX resumes.
 Early development. Interfaces and configuration may change.
 
 <p align="center">
-  <img src="assets/workspace-example.png" width="1000" alt="Texo running in Ghostty with labeled resume projects, revision history, a proposed LaTeX edit, AI review controls, and a PDF preview" />
+  <img src="assets/workspace-example.png" width="1000" alt="Texo in Ghostty with three resume projects, a saved LaTeX document in Vim mode, a short AI exchange, and the complete PDF preview" />
 </p>
+
+The screenshot shows the development version; the latest release may differ.
 
 ## Features
 
-- AI-assisted LaTeX editing with review and approval of proposed changes.
-- Standard and Vim editing modes.
-- PDF preview alongside the source in supported terminals.
-- Labeled resume projects with revision history and restoration.
-- Import existing LaTeX projects and export PDFs.
+- AI-assisted LaTeX editing
+- OpenAI/Codex, and Anthropic support
+- Multiple resume projects and labels
+- Standard and Vim editing modes
+- Change review and approval mechanism
+- Side-by-side PDF preview
+- Revision history and restoration
+- LaTeX project import
+- PDF export
 
 ## Install
 
@@ -28,7 +34,7 @@ macOS and Linux, ARM64 and x86-64.
 ```sh
 brew install hexaquarks/tap/texo
 # or
-cargo install texo --locked
+cargo install texo
 ```
 
 Prebuilt binaries: [GitHub Releases](https://github.com/hexaquarks/texo/releases).
@@ -37,25 +43,6 @@ Prebuilt binaries: [GitHub Releases](https://github.com/hexaquarks/texo/releases
 > Tectonic and Poppler are required; Homebrew installs both.
 > Linux also needs Bubblewrap and D-Bus.
 > Linux source builds need the D-Bus development package and `pkg-config`.
-
-## Usage
-
-```sh
-texo                       # Default or configured workspace
-texo ~/resumes              # Open a workspace
-texo path/to/main.tex       # Open a TeX file
-```
-
-Press `Ctrl+x`, then `?` for shortcuts.
-
-> [!NOTE]
-> Change the `Ctrl+x` prefix in `config.toml`, accessible from Settings.
-
-## AI setup
-
-Use `/login` in chat to connect ChatGPT / Codex, OpenAI, or Anthropic.
-ChatGPT / Codex requires the Codex CLI; OpenAI and Anthropic use API keys.
-Use `/model` to choose a model.
 
 ## Compatibility
 
@@ -72,9 +59,30 @@ Use `/model` to choose a model.
 
 [Terminal tests and screenshots](https://github.com/hexaquarks/texo/actions/workflows/native-terminals.yml).
 
+
+## Usage
+
+```sh
+texo                        # Default or configured workspace
+texo ~/resumes              # Open a workspace
+texo path/to/main.tex       # Open a TeX file
+```
+
+Start by creating or importing a resume from the sidebar. Edit the LaTeX or ask AI for changes, review the PDF, then use Export to choose a filename and save it.
+
+Press `Ctrl+x`, then `?` for shortcuts.
+
+> [!NOTE]
+> Change the `Ctrl+x` prefix in `config.toml`, accessible from Settings.
+
+## AI setup
+
+Use `/login` in chat to connect ChatGPT / Codex, OpenAI, or Anthropic.
+ChatGPT / Codex requires the Codex CLI; OpenAI and Anthropic use API keys.
+Use `/model` to choose a model.
+
 ## Contributing
 
-Bug reports, feature requests, and pull requests are welcome.
-For substantial changes, [open an issue](https://github.com/hexaquarks/texo/issues) first to discuss the approach.
+Bug reports, feature requests, and pull requests are all welcome!
 
 [MIT License](LICENSE).
