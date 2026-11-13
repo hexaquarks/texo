@@ -14,7 +14,7 @@ test('unsupported PDF previews explain the limitation and keep external opening 
         await terminal.press('Ctrl+a');
         await paste(terminal, TWO_PAGES);
         await prefix(terminal, 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         await prefix(terminal, 'b');
         // Focused narrow previews use a compact page counter without spaces.
         await terminal.getByText('1\\s*/\\s*2', { regex: true }).expect();

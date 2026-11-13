@@ -276,12 +276,13 @@ impl App {
             }
 
             let chat_body = pane_content(layout.assistant);
-            if Assistant::maximize_button(
-                chat_body,
-                self.pane_is_expanded(Focus::Assistant),
-                &self.prefix.label(),
-            )
-            .contains(position)
+            if self.session.proposal_review.is_none()
+                && Assistant::maximize_button(
+                    chat_body,
+                    self.pane_is_expanded(Focus::Assistant),
+                    &self.prefix.label(),
+                )
+                .contains(position)
             {
                 self.focus = Focus::Assistant;
                 self.toggle_column_expansion();
@@ -618,7 +619,18 @@ impl App {
             }
             KeyCode::Char('s') => match self.session.editor.save() {
                 Ok(warning) => {
-                    self.session.status = warning.unwrap_or_else(|| "Saved TeX document.".into());
+                    self.session.status = warning.unwrap_or_else(|| {
+                        let filename = self
+                            .session
+                            .editor
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+
+                        format!("{filename} · Saved")
+                    });
+
                     self.refresh_projects();
                     self.refresh_history();
                     self.projects.select_path(&self.session.editor.path);

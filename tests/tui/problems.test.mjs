@@ -41,7 +41,7 @@ test('Problems explains a real build failure, navigates, shows details, and prep
         assert.match(await terminal.text(), /Help fix this LaTeX build error/);
         await terminal.screenshot(join(ARTIFACTS, 'problem-ai-draft.png'));
         // Merely choosing Ask AI must not send a request or change the document.
-        await terminal.getByText('Unapproved changes').expect({ not: true });
+        await terminal.getByText('Reviewing AI changes').expect({ not: true });
     });
 });
 

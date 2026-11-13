@@ -437,12 +437,18 @@ impl App {
         let content = Projects::history_content_area(area);
         let [working, entries, error_area] = self.history_entry_areas(content);
         let selected = self.session.history.selection.selected().unwrap_or(0);
-        let working_style = if selected == 0 {
+        let working_style = if selected == 0 && !self.session.show_proposed {
             theme::text().bg(theme::SELECTION)
         } else {
             theme::text()
         };
-        let working_status = if self.session.editor.is_modified() {
+        let working_status = if self.session.proposal_review.is_some() {
+            if self.session.show_proposed {
+                "Reviewing proposal"
+            } else {
+                "Reviewing current"
+            }
+        } else if self.session.editor.is_modified() {
             "Unsaved changes"
         } else {
             "Saved"

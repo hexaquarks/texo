@@ -15,6 +15,7 @@ const MIN_INPUT_HEIGHT: u16 = 3;
 const INPUT_VERTICAL_PADDING: u16 = 1;
 pub(super) const MAX_INPUT_ROWS: u16 = 6;
 const MIN_HISTORY_ROWS: u16 = 2;
+const CHAT_VERTICAL_PADDING: u16 = 1;
 const HEADER_HEIGHT: u16 = 1;
 const HEADER_GAP: u16 = 1;
 const REVIEW_CONTROLS_HEIGHT: u16 = 2;
@@ -93,7 +94,7 @@ impl Assistant {
             return Rect::default();
         }
 
-        let inner = area.inner(Margin::new(theme::PANEL_PADDING, 1));
+        let inner = area.inner(Margin::new(theme::PANEL_PADDING, CHAT_VERTICAL_PADDING));
         let [_, button] =
             Layout::horizontal([Constraint::Length(CHAT_TITLE_WIDTH), Constraint::Min(0)]).areas(
                 Rect::new(inner.x, inner.y, inner.width, inner.height.min(1)),
@@ -126,7 +127,7 @@ impl Assistant {
         frame.render_widget(Block::default().style(theme::text()), area);
         let inner = area.inner(Margin {
             horizontal: theme::PANEL_PADDING,
-            vertical: 1,
+            vertical: CHAT_VERTICAL_PADDING,
         });
         if inner.is_empty() {
             return;
@@ -153,13 +154,15 @@ impl Assistant {
             Paragraph::new("texo / chat").style(theme::pane_title(focused)),
             label,
         );
-        frame.render_widget(
-            Paragraph::new(hint)
-                .alignment(Alignment::Right)
-                .style(theme::muted()),
-            Self::maximize_button(area, maximized, prefix),
-        );
-        self.draw_history(frame, history);
+        if !reviewing {
+            frame.render_widget(
+                Paragraph::new(hint)
+                    .alignment(Alignment::Right)
+                    .style(theme::muted()),
+                Self::maximize_button(area, maximized, prefix),
+            );
+        }
+        self.draw_transcript(frame, history, reviewing);
 
         if let Some(job) = &self.job {
             let phase =
@@ -238,7 +241,33 @@ impl Assistant {
         );
     }
 
+    #[cfg(test)]
     pub(super) fn draw_history(&mut self, frame: &mut Frame, area: Rect) {
+        self.draw_transcript(frame, area, false);
+    }
+
+    pub fn review_height(&self, area: Rect) -> u16 {
+        let inner = area.inner(Margin::new(theme::PANEL_PADDING, CHAT_VERTICAL_PADDING));
+        let transcript_width = inner.width;
+        let rows: usize = self
+            .messages
+            .iter()
+            .map(|message| message_lines(message, transcript_width, true).len())
+            .sum();
+        let transcript_rows = u16::try_from(rows.saturating_sub(1)).unwrap_or(u16::MAX);
+        let composer = self.composer_height(inner);
+
+        transcript_rows.saturating_add(
+            HEADER_HEIGHT
+                + HEADER_GAP
+                + self.activity_height()
+                + REVIEW_CONTROLS_HEIGHT
+                + composer
+                + CHAT_VERTICAL_PADDING * 2,
+        )
+    }
+
+    fn draw_transcript(&mut self, frame: &mut Frame, area: Rect, compact: bool) {
         if area.is_empty() {
             return;
         }
@@ -256,7 +285,7 @@ impl Assistant {
         let mut lines: Vec<Line<'static>> = self
             .messages
             .iter()
-            .flat_map(|message| message_lines(message, area.width))
+            .flat_map(|message| message_lines(message, area.width, compact))
             .collect();
         // Keep a blank line between turns without wasting the last visible transcript row.
         lines.pop();
@@ -282,7 +311,7 @@ impl Assistant {
     }
 
     fn composer_layout(&self, area: Rect) -> Rect {
-        let inner = area.inner(Margin::new(theme::PANEL_PADDING, 1));
+        let inner = area.inner(Margin::new(theme::PANEL_PADDING, CHAT_VERTICAL_PADDING));
         let [_, composer] = Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(self.composer_height(inner)),
@@ -354,7 +383,7 @@ fn input_block() -> Block<'static> {
         ))
 }
 
-fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
+fn message_lines(message: &Message, width: u16, compact: bool) -> Vec<Line<'static>> {
     let is_user = message.role == "user";
     let prefix = if is_user {
         "> "
@@ -373,7 +402,7 @@ fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
     let content_width = usize::from(width.saturating_sub(PROMPT_WIDTH + 2)).max(1);
     let padded_blank = || Line::from(" ".repeat(usize::from(width))).style(style);
     let mut lines = Vec::new();
-    if is_user {
+    if is_user && !compact {
         lines.push(padded_blank());
     }
     let mut first_line = true;
@@ -389,7 +418,7 @@ fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
             lines.push(line);
         }
     }
-    if is_user {
+    if is_user && !compact {
         lines.push(padded_blank());
     }
     lines.push(Line::default());

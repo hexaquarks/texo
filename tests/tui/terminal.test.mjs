@@ -17,7 +17,7 @@ test('create, paste Unicode, save, build, and export through the terminal', asyn
         await terminal.press('Ctrl+a');
         await paste(terminal, RESUME);
         await prefix(terminal, 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         assert.equal(await readFile(await documentPath(workspace), 'utf8'), RESUME);
 
         await prefix(terminal, 'b');

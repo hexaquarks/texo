@@ -316,7 +316,7 @@ fn review_keeps_operation_errors_visible_and_prefix_help_accessible() -> anyhow:
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(screen.contains("Unapproved changes"));
+    assert!(screen.contains("Reviewing AI changes"));
     assert!(screen.contains(&app.session.status));
 
     app.prefix.armed = true;

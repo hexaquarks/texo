@@ -42,7 +42,7 @@ test('rename and duplicate preserve unsaved text, supporting files, and project 
 
         await terminal.getByText('Renamed 東京').first().click();
         await prefix(terminal, 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         assert.equal(await readFile(original, 'utf8'), RESUME);
         await restart();
         await terminal.getByText('Renamed 東京').first().expect();
@@ -172,7 +172,7 @@ test('config reload rejects malformed settings and updates the prefix without lo
         await terminal.getByText('Configuration reloaded.').expect();
         await terminal.press('Escape');
         await terminal.press('Ctrl+g', 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         assert.equal(await readFile(await documentPath(workspace), 'utf8'), RESUME);
     });
 });

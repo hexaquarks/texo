@@ -1696,14 +1696,15 @@ fn editor_expansion_preserves_other_panes_and_restores_for_chat() -> anyhow::Res
 fn compact_editor_control_preserves_status_text_and_click_target() -> anyhow::Result<()> {
     let (_directory, mut app) = application()?;
     let area = Rect::new(0, 0, 40, 10);
-    app.session.status = "Saved TeX document.".into();
+    app.session.status = "main.tex · Saved".into();
+
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
     terminal
         .draw(|frame| app.draw_editor(frame, area, &Ok(crate::editor::DiskState::Unchanged)))?;
     let header: String = (0..area.width)
         .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
         .collect();
-    assert!(header.contains("Saved TeX document."));
+    assert!(header.contains("main.tex · Saved"));
     assert!(header.contains("Ctrl-x u"));
 
     let button = app.editor_maximize_button(area);

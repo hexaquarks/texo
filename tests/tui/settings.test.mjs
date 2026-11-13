@@ -31,7 +31,7 @@ test('grouped preferences stage toggles and protect work across apply and cancel
         await terminal.getByText('EDITOR').expect({ not: true });
         assert.match(await readFile(join(root, 'config/texo/config.toml'), 'utf8'), /soft_wrap = false/);
         await prefix(terminal, 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         assert.equal(await readFile(await documentPath(workspace), 'utf8'), RESUME);
     }, { env: { NO_COLOR: '' } });
 });

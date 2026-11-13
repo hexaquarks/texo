@@ -21,10 +21,10 @@ test('history previews, restores with recovery and survives restart', async () =
         const unsaved = RESUME.replace('Terminal workflow', 'Unsaved working');
         await replaceDocument(terminal, RESUME);
         await prefix(terminal, 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         await replaceDocument(terminal, second);
         await prefix(terminal, 'w');
-        await terminal.getByText('Saved TeX document.').expect();
+        await terminal.getByText(' · Saved').expect();
         await replaceDocument(terminal, unsaved);
 
         await prefix(terminal, 'y');
@@ -120,6 +120,7 @@ test('permanent history and resume switching preserve unsaved working copies', a
         await terminal.getByText('Terminal workflow resume.').expect();
         assert.equal(await readFile(document, 'utf8'), saved);
         await terminal.resize(90, 30);
+        await prefix(terminal, 'r');
         await terminal.getByText('History', { whitespace: 'exact' }).expect();
         await terminal.screenshot(join(ARTIFACTS, 'history-narrow.png'));
     });
