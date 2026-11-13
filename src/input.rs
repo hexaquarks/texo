@@ -234,6 +234,19 @@ impl App {
         }
 
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            let [compile, export] = self.pdf_toolbar_buttons(layout.preview);
+            if compile.contains(position) {
+                self.focus = Focus::Preview;
+                self.handle_prefix_action(KeyCode::Char('b'), area);
+                return;
+            }
+
+            if export.contains(position) {
+                self.focus = Focus::Preview;
+                self.open_export();
+                return;
+            }
+
             if self.external_pdf_button(layout.preview).contains(position) {
                 self.focus = Focus::Preview;
                 self.open_pdf_externally();

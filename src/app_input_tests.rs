@@ -593,7 +593,6 @@ fn clicking_the_composer_right_edge_keeps_typing_and_enter_still_submits_command
 #[test]
 #[ignore = "requires Poppler"]
 fn pdf_drag_captures_motion_until_release_and_excludes_header_and_dialogs() -> anyhow::Result<()> {
-    use super::workspace_view::below_header;
     use ratatui::layout::Position;
 
     for expanded in [false, true] {
@@ -607,7 +606,7 @@ fn pdf_drag_captures_motion_until_release_and_excludes_header_and_dialogs() -> a
         if expanded {
             pane_prefix(&mut app, 'z', KeyModifiers::NONE, area);
         }
-        let body = below_header(pane_content(app.preview_area(area)), 1);
+        let body = app.preview_body_area(app.preview_area(area));
         let pointer = Position::new(body.x + 8, body.y + 6);
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -1548,7 +1547,6 @@ fn vim_escape_finishes_repeatable_edits_and_cancels_pending_operators() -> anyho
 #[test]
 #[ignore = "requires Poppler; external URL opening is replaced in unit tests"]
 fn pdf_link_click_opens_only_on_release_and_never_after_dragging() -> anyhow::Result<()> {
-    use super::workspace_view::below_header;
     use ratatui::layout::Position;
 
     let (_directory, mut app) = application()?;
@@ -1557,7 +1555,7 @@ fn pdf_link_click_opens_only_on_release_and_never_after_dragging() -> anyhow::Re
         &std::sync::atomic::AtomicBool::new(false),
     )?)?;
     let area = Rect::new(0, 0, 160, 50);
-    let body = below_header(pane_content(app.preview_area(area)), 1);
+    let body = app.preview_body_area(app.preview_area(area));
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {

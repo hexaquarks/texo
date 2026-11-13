@@ -13,7 +13,7 @@ use ratatui::{
     text::Line,
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph},
 };
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{CursorMove, TextArea};
 use texo::theme;
 
 const DIALOG_WIDTH: u16 = 64;
@@ -215,12 +215,11 @@ impl ExportDialog {
         input.set_style(theme::dialog());
         input.set_cursor_line_style(Style::default());
         input.set_cursor_style(Style::default().bg(theme::ACCENT).fg(theme::BACKGROUND));
-        input.select_all();
+        input.move_cursor(CursorMove::End);
 
-        let mut folder = TextArea::new(vec![crate::workspace::display_path(
+        let folder = TextArea::new(vec![crate::workspace::display_path(
             document.parent().unwrap_or(Path::new(".")),
         )]);
-        folder.select_all();
 
         Self {
             input,
@@ -230,10 +229,14 @@ impl ExportDialog {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            focus: ExportControl::Folder,
+            focus: ExportControl::Filename,
             message: String::new(),
             overwrite_path: None,
         }
+    }
+
+    pub fn set_folder(&mut self, folder: &Path) {
+        self.folder = TextArea::new(vec![crate::workspace::display_path(folder)]);
     }
 
     pub fn edited(&mut self) {
@@ -523,6 +526,7 @@ mod tests {
         assert!(dialog.overwrite_path.is_some());
         dialog.handle_event(key(KeyCode::Tab), screen);
         assert!(dialog.overwrite_path.is_some());
+        dialog.handle_event(key(KeyCode::BackTab), screen);
         dialog.handle_event(Event::Paste("other.pdf".into()), screen);
         assert!(dialog.overwrite_path.is_none());
         assert!(dialog.message.is_empty());

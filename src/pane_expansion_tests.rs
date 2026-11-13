@@ -208,7 +208,6 @@ fn column_control_restores_prior_state_after_workspace_expansion() -> anyhow::Re
 #[test]
 #[ignore = "requires Poppler; external URL opening is replaced in unit tests"]
 fn expanded_pdf_links_open_on_release_at_normal_and_increased_zoom() -> anyhow::Result<()> {
-    use super::workspace_view::below_header;
     use ratatui::layout::Position;
 
     const PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
@@ -230,7 +229,7 @@ fn expanded_pdf_links_open_on_release_at_normal_and_increased_zoom() -> anyhow::
             );
         }
 
-        let body = below_header(pane_content(app.preview_area(area)), 1);
+        let body = app.preview_body_area(app.preview_area(area));
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
         let deadline = std::time::Instant::now() + PREVIEW_TIMEOUT;
         loop {

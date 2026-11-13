@@ -7,7 +7,7 @@ use ratatui::{
 };
 use texo::theme;
 
-use super::{App, Focus, PaneSizes};
+use super::{App, Focus, PaneSizes, pdf_toolbar::TOOLBAR_HEIGHT};
 
 const MULTIPANE_WIDTH: u16 = 100;
 pub(super) const MIN_PANE_WIDTH: u16 = 8;
@@ -97,7 +97,7 @@ impl App {
         } else {
             1
         };
-        below_header(pane_content(area), header_rows)
+        below_header(pane_content(area), header_rows + TOOLBAR_HEIGHT)
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame) {
@@ -390,11 +390,13 @@ impl App {
             return;
         }
 
+        self.draw_pdf_toolbar(frame, area);
+
         if self.session.history.view.is_some() {
-            self.draw_history_pdf(frame, area);
+            self.draw_history_pdf(frame, below_header(area, TOOLBAR_HEIGHT));
             return;
         }
-        let body = below_header(area, 1);
+        let body = below_header(area, TOOLBAR_HEIGHT + 1);
         let proposed = self.session.show_proposed && self.session.proposal_review.is_some();
         let building = if proposed {
             self.session.proposed_job.is_some()
@@ -448,7 +450,10 @@ impl App {
         let title_area = if self.session.proposal_review.is_some() {
             label
         } else {
-            Rect { height: 1, ..area }
+            Rect {
+                height: 1,
+                ..below_header(area, TOOLBAR_HEIGHT)
+            }
         };
         let zoom = self.active_preview().zoom_percent();
         let basic = self.active_preview().uses_basic_rendering();
@@ -653,6 +658,7 @@ pub(super) fn below_header(area: Rect, height: u16) -> Rect {
 }
 
 pub(super) fn preview_header(area: Rect) -> [Rect; 3] {
+    let area = below_header(area, TOOLBAR_HEIGHT);
     Layout::horizontal([
         Constraint::Min(0),
         Constraint::Length(PREVIEW_TAB_WIDTH),

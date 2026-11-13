@@ -185,6 +185,8 @@ mod label_actions;
 mod layout_state;
 #[path = "pane_navigation.rs"]
 mod pane_navigation;
+#[path = "pdf_toolbar.rs"]
+mod pdf_toolbar;
 #[path = "problem_actions.rs"]
 mod problem_actions;
 #[path = "quit_dialog.rs"]

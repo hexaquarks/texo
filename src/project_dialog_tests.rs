@@ -321,7 +321,6 @@ fn export_requires_reconfirmation_after_destination_changes_and_rejects_stale_bu
     std::fs::write(&first, "first original")?;
     std::fs::write(&second, "second original")?;
     app.open_export();
-    press(&mut app, KeyCode::Tab);
     app.export.as_mut().unwrap().input.select_all();
     app.handle_event(Event::Paste("first.pdf".into()), SCREEN);
     press(&mut app, KeyCode::Enter);
