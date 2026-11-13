@@ -341,11 +341,29 @@ fn isolated_command(
     command.arg("--bind").arg(&build).arg(&build);
     command.args(["--proc", "/proc", "--dev", "/dev"]);
     command.arg("--chdir").arg(resume.canonicalize()?);
-    command.arg("--").arg(compiler.canonicalize()?);
     command
         .env_clear()
         .env("TMPDIR", &build)
         .env("PATH", "/usr/bin:/bin");
+
+    // Tectonic initializes its TLS client even for offline builds. Give it the
+    // system trust bundle; the isolated network namespace still blocks network access.
+    for bundle in [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+    ] {
+        if Path::new(bundle).is_file() {
+            command
+                .arg("--ro-bind")
+                .arg(Path::new(bundle).canonicalize()?)
+                .arg(bundle);
+            command.env("SSL_CERT_FILE", bundle);
+            break;
+        }
+    }
+
+    command.arg("--").arg(compiler.canonicalize()?);
 
     Ok(command)
 }
