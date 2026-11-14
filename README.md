@@ -86,3 +86,9 @@ Use `/model` to choose a model.
 Bug reports, feature requests, and pull requests are all welcome!
 
 [MIT License](LICENSE).
+
+---
+
+<p align="center">
+  <sub>TUI inspired by <a href="https://github.com/herdrdev/herdr">herdr</a>.</sub>
+</p>
