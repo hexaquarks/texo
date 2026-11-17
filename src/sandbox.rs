@@ -337,6 +337,8 @@ fn isolated_command(
         command.arg("--ro-bind").arg(&path).arg(&path);
     }
 
+    bind_bibliography_tools(&mut command, std::env::var_os("PATH").as_deref())?;
+
     let build = build.canonicalize()?;
     command.arg("--bind").arg(&build).arg(&build);
     command.args(["--proc", "/proc", "--dev", "/dev"]);
@@ -368,9 +370,124 @@ fn isolated_command(
     Ok(command)
 }
 
+#[cfg(target_os = "linux")]
+fn bind_bibliography_tools(
+    command: &mut std::process::Command,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Result<()> {
+    let current_directory = std::env::current_dir()?;
+    let mut found_biber = false;
+
+    for name in ["tectonic-biber", "biber"] {
+        let Ok(executable) = which::which_in(name, search_path, &current_directory) else {
+            continue;
+        };
+
+        // Preserve the command name even when PATH contains a symlink or a custom directory.
+        // Only the executable is shared, never its parent directory.
+        command
+            .arg("--ro-bind")
+            .arg(executable.canonicalize()?)
+            .arg(Path::new("/usr/bin").join(name));
+        found_biber = true;
+    }
+
+    if !found_biber {
+        return Ok(());
+    }
+
+    // Distribution packages install Biber as a Perl script. Its interpreter and
+    // shared modules are needed in addition to the libraries already mounted above.
+    // Upstream's script uses /usr/bin/env to locate Perl.
+    for runtime in [
+        "/usr/bin/env",
+        "/usr/bin/perl",
+        "/usr/share/perl",
+        "/usr/share/perl5",
+    ] {
+        let path = Path::new(runtime);
+
+        if path.exists() {
+            command.arg("--ro-bind").arg(path.canonicalize()?).arg(path);
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn bibliography_tools_keep_their_names_without_exposing_path_directories() {
+        let tools = tempfile::tempdir().unwrap();
+        let executable = tools.path().join("installed-biber");
+        std::fs::copy("/bin/echo", &executable).unwrap();
+
+        for name in ["tectonic-biber", "biber"] {
+            std::os::unix::fs::symlink(&executable, tools.path().join(name)).unwrap();
+        }
+
+        let mut command = std::process::Command::new("bwrap");
+        bind_bibliography_tools(&mut command, Some(tools.path().as_os_str())).unwrap();
+        let arguments: Vec<_> = command.get_args().collect();
+        let executable = executable.canonicalize().unwrap();
+
+        for name in ["tectonic-biber", "biber"] {
+            let destination = Path::new("/usr/bin").join(name);
+            assert!(arguments.windows(3).any(|mount| {
+                mount
+                    == [
+                        "--ro-bind".as_ref(),
+                        executable.as_os_str(),
+                        destination.as_os_str(),
+                    ]
+            }));
+        }
+
+        assert!(!arguments.contains(&tools.path().as_os_str()));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn absent_or_nonexecutable_biber_does_not_add_mounts() {
+        let tools = tempfile::tempdir().unwrap();
+        std::fs::write(tools.path().join("biber"), "not executable").unwrap();
+        std::fs::create_dir(tools.path().join("tectonic-biber")).unwrap();
+
+        let mut command = std::process::Command::new("bwrap");
+        bind_bibliography_tools(&mut command, Some(tools.path().as_os_str())).unwrap();
+
+        assert_eq!(command.get_args().count(), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "requires Bubblewrap, Tectonic, compatible Biber, and cached biblatex packages"]
+    fn offline_compilation_builds_a_biber_bibliography() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("references.bib"),
+            include_str!("../tests/fixtures/references.bib"),
+        )
+        .unwrap();
+
+        let result = build(
+            include_str!("../tests/fixtures/bibliography.tex"),
+            folder.path(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert!(result.pdf_path.is_file());
+        assert!(result.diagnostics.contains("Running external tool"));
+
+        let pdf = lopdf::Document::load(&result.pdf_path).unwrap();
+        let text = pdf.extract_text(&[1]).unwrap();
+        assert!(text.contains("Sandbox Bibliography Regression"), "{text}");
+    }
 
     #[test]
     #[ignore = "requires Tectonic and cached LaTeX packages"]
