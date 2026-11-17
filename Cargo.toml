@@ -1,6 +1,6 @@
 [package]
 name = "texo"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "A terminal workspace for LaTeX resumes with PDF preview and AI assistance"
 repository = "https://github.com/hexaquarks/texo"
@@ -60,6 +60,9 @@ features = ["search"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+which = "8.0.6"
 
 # Keep image resampling responsive with `cargo run`, including on Retina displays.
 [profile.dev.package.image]
