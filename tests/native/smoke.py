@@ -1,4 +1,5 @@
 from datetime import timedelta
+import re
 import shlex
 import time
 
@@ -48,6 +49,11 @@ def screenshot(name):
 
 
 def wait_for_text(pattern, timeout=UI_TIMEOUT):
+    # Most terminal text is legible in the raw screenshot. The driver's
+    # preprocessed variants help with colored text and screens still redrawing.
+    if re.search(pattern, machine.get_screen_text()):
+        return
+
     machine.wait_for_text(pattern, timeout=timeout)
 
 
