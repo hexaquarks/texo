@@ -9,7 +9,8 @@ pr-run-mode = "upload"
 installers = ["shell", "homebrew"]
 tap = "hexaquarks/homebrew-tap"
 publish-jobs = ["homebrew", "./publish-crate"]
-global-artifacts-jobs = ["./validate-release"]
+# Source validation can run alongside the platform builds.
+local-artifacts-jobs = ["./validate-release"]
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -22,7 +23,8 @@ install-updater = false
 
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
-x86_64-apple-darwin = "macos-15-intel"
+# The macOS SDK can link the Intel binary on Apple Silicon.
+x86_64-apple-darwin = "macos-15"
 aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
 
 [dist.github-custom-job-permissions.publish-crate]
