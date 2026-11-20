@@ -62,9 +62,41 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  build-texo:
+    name: Build shared Texo package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Build Texo for the terminal VMs
+        run: nix build .#texo --out-link "$RUNNER_TEMP/texo" --print-build-logs
+
+      - name: Export the Texo build
+        run: |
+          runtime_paths=$(nix-store --query --requisites "$RUNNER_TEMP/texo")
+          mapfile -t texo_closure <<< "$runtime_paths"
+
+          # A fresh runner needs the package and every store path it references.
+          nix-store --export "${texo_closure[@]}" | gzip --fast > "$RUNNER_TEMP/texo-closure.gz"
+
+      - name: Share the Texo build
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-texo-build
+          path: ${{ runner.temp }}/texo-closure.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
   smoke:
     name: Actual terminal (${{ matrix.terminal }})
-    needs: prepare
+    needs:
+      - prepare
+      - build-texo
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -89,11 +121,25 @@ jobs:
           name: native-latex-cache
           path: .texo-test-cache
 
+      - name: Download the shared Texo build
+        uses: actions/download-artifact@v6
+        with:
+          name: native-texo-build
+          path: ${{ runner.temp }}
+
+      - name: Import the shared Texo build
+        run: |
+          gzip --decompress --stdout "$RUNNER_TEMP/texo-closure.gz" | nix-store --import
+
+          # Check that the import supplied the expected output without rebuilding it.
+          nix path-info .#texo
+
       - name: Build terminal VM and test driver
         run: |
           mkdir -p native-artifacts/screenshots native-artifacts/vm-result
+          # Use the same Git flake as the shared build so both resolve the same Texo package.
           nix build --impure --print-build-logs --out-link result-native --expr '
-            let flake = builtins.getFlake (toString ./.);
+            let flake = builtins.getFlake ("git+file://" + toString ./.);
             in (flake.lib.mkTerminalTest {
               system = builtins.currentSystem;
               terminal = builtins.getEnv "TEXO_TEST_TERMINAL";
