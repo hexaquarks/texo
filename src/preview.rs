@@ -112,6 +112,11 @@ impl Default for Preview {
 impl Preview {
     /// Query graphics support before entering the alternate screen or reading input events.
     pub fn detect() -> Self {
+        // Herdr can acknowledge Kitty graphics even when its outer client cannot show the image.
+        if std::env::var_os("HERDR_PANE_ID").is_some() {
+            return Self::default();
+        }
+
         // Resume pages compress well. Raw RGBA uploads can be several megabytes,
         // overwhelming a multiplexer's passthrough before the first page is visible.
         let options = QueryStdioOptions {
@@ -384,7 +389,6 @@ impl Preview {
     }
 
     pub fn is_preparing(&self) -> bool {
-        // The app shows a static placeholder for basic terminals instead of starting image work.
         self.source_page.is_some()
             && (self.pending.is_some()
                 || (!self.uses_basic_rendering() && self.viewport_pixels.is_none()))

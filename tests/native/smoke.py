@@ -160,9 +160,6 @@ def run_smoke_tests():
             # Fit chooses a scale for the current pane, not necessarily 100%.
             key("0")
             wait_for_text("PDF current")
-        else:
-            # OCR misses the colored button; Rust and terminal-engine tests cover the button.
-            wait_for_text("does not support PDF")
 
         screenshot("pdf-preview")
         prefix("z")

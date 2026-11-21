@@ -3,17 +3,15 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Margin, Rect},
-    style::{Color, Style},
-    widgets::{Block, Paragraph, Wrap},
+    layout::{Constraint, Layout, Rect},
+    style::Style,
+    widgets::Paragraph,
 };
 use texo::theme;
 
 use super::App;
 
 const BUTTON_HEIGHT: u16 = 1;
-const ICON_AND_SPACING_ROWS: u16 = 2;
-const NOTICE: &str = "This terminal does not support PDF rendering.";
 
 impl App {
     /// Open the displayed version, never a different PDF left beside the source file.
@@ -83,9 +81,17 @@ impl App {
         }
     }
 
-    pub(super) fn draw_external_preview(&mut self, frame: &mut Frame, area: Rect) {
-        let [button, body] =
-            Layout::vertical([Constraint::Length(BUTTON_HEIGHT), Constraint::Min(0)]).areas(area);
+    pub(super) fn inline_preview_area(&mut self, preview_area: Rect) -> Rect {
+        let body = self.preview_body_area(preview_area);
+        if self.active_preview().uses_basic_rendering() {
+            basic_preview_areas(body)[1]
+        } else {
+            body
+        }
+    }
+
+    pub(super) fn draw_basic_preview(&mut self, frame: &mut Frame, area: Rect, cached: bool) {
+        let [button, body] = basic_preview_areas(area);
         let available = self.external_pdf_path().is_ok();
         let label = format!("{} o  Open PDF", self.prefix.label());
         let label = if label.len() <= usize::from(button.width) {
@@ -102,28 +108,17 @@ impl App {
         };
         frame.render_widget(Paragraph::new(label).centered().style(style), button);
 
-        let page = self
-            .active_preview()
-            .fitted_page_area(body.inner(Margin::new(1, 1)));
-        let paper = Style::default().bg(Color::White).fg(Color::Black);
-        frame.render_widget(Block::default().style(paper), page);
-
-        let content = page.inner(Margin::new(1, 0));
-        let text_rows = textwrap::wrap(NOTICE, usize::from(content.width.max(1))).len() as u16;
-        let [_, message, _] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(text_rows + ICON_AND_SPACING_ROWS),
-            Constraint::Fill(1),
-        ])
-        .areas(content);
-        frame.render_widget(
-            Paragraph::new(format!("×\n\n{NOTICE}"))
-                .centered()
-                .wrap(Wrap { trim: true })
-                .style(paper),
-            message,
-        );
+        let preview = self.active_preview();
+        if cached {
+            preview.draw_cached(frame, body);
+        } else {
+            preview.draw(frame, body);
+        }
     }
+}
+
+fn basic_preview_areas(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Length(BUTTON_HEIGHT), Constraint::Min(0)]).areas(area)
 }
 
 #[cfg(test)]
@@ -252,24 +247,19 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_and_button_fit_wide_narrow_and_tiny_panes() -> Result<()> {
+    fn basic_preview_and_button_fit_wide_narrow_and_tiny_panes() -> Result<()> {
         let (_directory, mut app) = application()?;
         app.session.preview = texo::preview::Preview::default();
         for (width, height) in [(60, 30), (24, 20), (8, 6), (1, 1), (0, 0)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height))?;
-            terminal.draw(|frame| app.draw_external_preview(frame, frame.area()))?;
+            terminal.draw(|frame| app.draw_basic_preview(frame, frame.area(), false))?;
             let buffer = terminal.backend().buffer();
             let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
             if width >= 24 {
                 assert!(text.contains("Open PDF"));
-                assert!(text.contains('×'));
-                assert!(
-                    text.split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .contains(NOTICE)
-                );
-                assert!(buffer.content.iter().any(|cell| cell.bg == Color::White));
+            }
+            if width >= 60 {
+                assert!(text.contains("Your PDF will appear here."));
             }
         }
         Ok(())

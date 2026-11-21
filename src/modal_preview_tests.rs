@@ -35,9 +35,7 @@ fn ready_preview(app: &mut App, terminal: &mut WireTerminal) -> anyhow::Result<B
             .content
             .iter()
             .any(|cell| cell.symbol().contains(KITTY_IMAGE_PLACEHOLDER) || cell.symbol() == "▀");
-        let placeholder = app.session.preview.uses_basic_rendering()
-            && screen.content.iter().any(|cell| cell.symbol() == "×");
-        if !app.session.preview.is_preparing() && (has_image || placeholder) {
+        if !app.session.preview.is_preparing() && has_image {
             // The first frame uploads Kitty data; subsequent frames contain only placements.
             return draw(app, terminal);
         }

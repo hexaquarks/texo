@@ -20,6 +20,12 @@ fn unsupported_terminal_still_accepts_keyboard_input() -> anyhow::Result<()> {
     check_detection("unsupported")
 }
 
+#[test]
+#[ignore = "requires Python 3 and a Unix PTY"]
+fn herdr_uses_character_cells_without_probing_native_graphics() -> anyhow::Result<()> {
+    check_detection("herdr")
+}
+
 fn check_detection(scenario: &str) -> anyhow::Result<()> {
     let output = Command::new("python3")
         .arg("tests/terminal_detection.py")
