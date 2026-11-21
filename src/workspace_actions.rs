@@ -1,6 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, ensure};
 
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
@@ -18,6 +18,7 @@ use crate::{
     projects::Projects,
     resume_project::{self, ImportPlan},
     settings::{SettingsAction, SettingsDialog},
+    workspace::Workspace,
 };
 
 impl App {
@@ -445,6 +446,8 @@ impl App {
         );
         if matches!(action, Action::ReloadSource) {
             dialog.losses = self.reload_losses();
+        } else if let Some(project) = &dialog.deletion_target {
+            dialog.losses = self.delete_losses(&project.root);
         }
         self.project_dialog = Some(dialog);
     }
@@ -462,6 +465,32 @@ impl App {
             losses.push("The pending AI proposal will be discarded.");
         }
 
+        losses
+    }
+
+    fn delete_losses(&self, root: &Path) -> Vec<&'static str> {
+        let mut unsaved = false;
+        let mut ai_work = false;
+        let mut chat = false;
+
+        for session in std::iter::once(&self.session).chain(self.sessions.values()) {
+            if session.editor.path.starts_with(root) {
+                unsaved |= session.editor.is_modified();
+                ai_work |= session.assistant.is_running() || session.proposal_review.is_some();
+                chat |= session.assistant.has_chat();
+            }
+        }
+
+        let mut losses = Vec::new();
+        if unsaved {
+            losses.push("Unsaved text changes will be discarded.");
+        }
+        if ai_work {
+            losses.push("Pending AI work and proposals will be discarded.");
+        }
+        if chat {
+            losses.push("This resume's chat will be discarded.");
+        }
         losses
     }
 
@@ -549,6 +578,7 @@ impl App {
                     &working_copies,
                 )?)
             }
+            Action::DeleteResume => return self.finish_delete_resume(dialog),
             Action::ReloadSource => {
                 // An AI reply may arrive while the confirmation is open.
                 let losses = self.reload_losses();
@@ -587,6 +617,75 @@ impl App {
             self.open_document(project.document());
             self.projects.select_path(&self.session.editor.path);
         }
+        Ok(true)
+    }
+
+    fn finish_delete_resume(&mut self, dialog: &mut ProjectDialog) -> anyhow::Result<bool> {
+        let project = dialog.deletion_target.as_ref().context("Select a resume")?;
+        let losses = self.delete_losses(&project.root);
+        if losses != dialog.losses {
+            dialog.losses = losses;
+            dialog.reset_confirmation();
+            return Ok(false);
+        }
+
+        let workspace = self.projects.root();
+        let mut projects = Projects::new(workspace.to_path_buf(), &self.session.editor.path)?;
+        ensure!(
+            projects
+                .project_for(&self.session.editor.path)
+                .is_some_and(|active| {
+                    active.root == project.root && active.manifest.id == project.manifest.id
+                }),
+            "Resume changed on disk. Reopen Manage to review it before deleting"
+        );
+        projects.remove_project(&project.root);
+
+        // Prepare the next editor before moving any files so an error keeps this session intact.
+        let next_path = projects.selected_path();
+        let prepared = match &next_path {
+            Some(path) if self.sessions.contains_key(path) => None,
+            Some(path) => {
+                let editor = Editor::open(path.clone())?;
+                Some(ResumeSession::new(
+                    editor,
+                    self.session.preview.empty_like(),
+                ))
+            }
+            None => {
+                let editor = Editor::placeholder(Workspace::placeholder_path(workspace))?;
+                let mut session = ResumeSession::new(editor, self.session.preview.empty_like());
+                session.empty_workspace = true;
+                Some(session)
+            }
+        };
+
+        project.move_to_trash(workspace)?;
+        self.sessions
+            .retain(|path, _| !path.starts_with(&project.root));
+        self.session = next_path
+            .and_then(|path| self.sessions.remove(&path))
+            .or(prepared)
+            .expect("The next resume session was prepared before deleting");
+        self.projects = projects;
+        self.restore_workspace_panes();
+        self.session
+            .editor
+            .apply_preferences(self.editor_preferences);
+        self.return_to_working_copy();
+
+        if !self.session.empty_workspace {
+            self.refresh_history();
+            if self.session.job.is_none()
+                && !self.session.render_failed
+                && self.session.rendered_source.is_none()
+                && !self.session.editor.is_modified()
+            {
+                self.start_render();
+            }
+        }
+
+        self.session.status = format!("Moved to {}.", resume_project::TRASH_DIRECTORY);
         Ok(true)
     }
 

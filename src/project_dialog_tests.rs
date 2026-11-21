@@ -432,3 +432,97 @@ fn single_file_import_requires_review_and_can_return_to_fields() -> anyhow::Resu
     assert!(app.projects.catalog.projects.is_empty());
     Ok(())
 }
+
+#[test]
+fn deleting_a_resume_moves_its_saved_folder_and_retains_other_drafts() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let root = workspace.path().canonicalize()?;
+    let kept = resume_project::create(&root, "Keep")?;
+    let removed = resume_project::create(&root, "Remove")?;
+    let asset = "Supporting file";
+    std::fs::write(removed.root.join("asset.txt"), asset)?;
+
+    let mut app = App::with_workspace(
+        Editor::open(kept.document())?,
+        Preview::default(),
+        root.clone(),
+    )?;
+    app.session.editor.text.insert_str("Keep draft ");
+    let kept_draft = app.session.editor.source();
+
+    app.open_document(removed.document());
+    app.session.job = None;
+    app.session.editor.text.insert_str("Delete draft ");
+    let removed_draft = app.session.editor.source();
+
+    app.open_resume_menu();
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Down);
+    }
+    press(&mut app, KeyCode::Enter);
+    let dialog = rendered_dialog(&mut app)?;
+    assert!(dialog.contains("Delete resume?"));
+    assert!(dialog.contains("Unsaved text changes will be discarded."));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.project_dialog.is_none());
+    assert!(removed.root.is_dir());
+    assert_eq!(app.session.editor.source(), removed_draft);
+
+    app.open_project_dialog(Action::DeleteResume);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.project_dialog.is_none());
+    assert!(!removed.root.exists());
+    assert_eq!(app.session.editor.path, kept.document());
+    assert_eq!(app.session.editor.source(), kept_draft);
+    assert!(app.session.editor.is_modified());
+    assert_eq!(app.projects.catalog.projects.len(), 1);
+    assert!(!app.sessions.contains_key(&removed.document()));
+
+    let trash = root.join(resume_project::TRASH_DIRECTORY);
+    let entry = std::fs::read_dir(trash)?.next().unwrap()?;
+    let recovered = entry.path().join(removed.root.file_name().unwrap());
+    assert_eq!(std::fs::read_to_string(recovered.join("asset.txt"))?, asset);
+    assert_eq!(
+        std::fs::read_to_string(recovered.join("main.tex"))?,
+        crate::editor::STARTER_DOCUMENT
+    );
+    assert_eq!(Project::load(&recovered)?.manifest.id, removed.manifest.id);
+    std::fs::rename(recovered, &removed.root)?;
+    assert_eq!(resume_project::discover(&root)?.projects.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn deleting_the_last_resume_keeps_loose_files_and_rejects_a_changed_target() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let root = workspace.path().canonicalize()?;
+    let loose = root.join("main.tex");
+    std::fs::write(&loose, "Loose source")?;
+    let mut project = resume_project::create(&root, "Original")?;
+    let mut app = App::with_workspace(
+        Editor::open(project.document())?,
+        Preview::default(),
+        root.clone(),
+    )?;
+
+    app.open_project_dialog(Action::DeleteResume);
+    project.rename("Renamed on disk")?;
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Enter);
+    assert!(rendered_dialog(&mut app)?.contains("Resume changed on disk"));
+    assert!(project.root.is_dir());
+    assert!(!root.join(resume_project::TRASH_DIRECTORY).exists());
+    press(&mut app, KeyCode::Esc);
+
+    app.refresh_projects();
+    app.open_project_dialog(Action::DeleteResume);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.project_dialog.is_none());
+    assert!(app.session.empty_workspace);
+    assert!(app.session.rendered_pdf.is_none());
+    assert!(app.projects.catalog.projects.is_empty());
+    assert_eq!(std::fs::read_to_string(loose)?, "Loose source");
+    Ok(())
+}

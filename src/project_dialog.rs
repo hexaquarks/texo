@@ -12,7 +12,7 @@ use texo::theme;
 use crate::{
     actions::Action,
     dialog_ui::{ButtonFocus, DialogAction, FormLayout, buttons, field},
-    resume_project::{ImportPlan, Project},
+    resume_project::{ImportPlan, Project, TRASH_DIRECTORY},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,7 @@ enum Control {
 
 pub struct ProjectDialog {
     pub action: Action,
+    pub deletion_target: Option<Project>,
     pub name: TextArea<'static>,
     pub source: TextArea<'static>,
     focus: Control,
@@ -64,10 +65,15 @@ impl ProjectDialog {
 
         Self {
             action,
+            deletion_target: active
+                .filter(|_| matches!(action, Action::DeleteResume))
+                .cloned(),
             name,
             source,
             focus: match action {
-                Action::ReloadSource | Action::RecoverSource => Control::Cancel,
+                Action::DeleteResume | Action::ReloadSource | Action::RecoverSource => {
+                    Control::Cancel
+                }
                 Action::ImportResume => Control::Source,
                 _ => Control::Name,
             },
@@ -88,7 +94,10 @@ impl ProjectDialog {
     }
 
     fn confirmation(&self) -> bool {
-        matches!(self.action, Action::ReloadSource | Action::RecoverSource)
+        matches!(
+            self.action,
+            Action::DeleteResume | Action::ReloadSource | Action::RecoverSource
+        )
     }
 
     fn controls(&self) -> &[Control] {
@@ -122,6 +131,7 @@ impl ProjectDialog {
             Action::ImportResume => "Import resume",
             Action::RenameResume => "Rename",
             Action::DuplicateResume => "Duplicate",
+            Action::DeleteResume => "Delete",
             Action::ReloadSource if !self.losses.is_empty() => "Reload & discard",
             Action::ReloadSource => "Reload",
             Action::RecoverSource => "Restore source",
@@ -259,7 +269,12 @@ impl ProjectDialog {
 
     pub fn reset_confirmation(&mut self) {
         self.focus = Control::Cancel;
-        self.error = "Session changed. Review the consequences before reloading.".into();
+        self.error = if matches!(self.action, Action::DeleteResume) {
+            "Session changed. Review the consequences before deleting."
+        } else {
+            "Session changed. Review the consequences before reloading."
+        }
+        .into();
     }
 
     pub fn review_import(&mut self) {
@@ -278,6 +293,7 @@ impl ProjectDialog {
             Action::ImportResume => "Import resume",
             Action::RenameResume => "Rename resume",
             Action::DuplicateResume => "Duplicate resume",
+            Action::DeleteResume => "Delete resume?",
             Action::ReloadSource => "Reload from disk?",
             Action::RecoverSource => "Restore missing source?",
             _ => "New resume",
@@ -315,10 +331,10 @@ impl ProjectDialog {
                 layout.row(11, 2),
             );
         } else if self.confirmation() {
-            let prompt = if matches!(self.action, Action::ReloadSource) {
-                "Replace the working copy with the file on disk?"
-            } else {
-                "Restore the missing source file from the working copy?"
+            let prompt = match self.action {
+                Action::DeleteResume => "Move the resume folder to the workspace trash?",
+                Action::ReloadSource => "Replace the working copy with the file on disk?",
+                _ => "Restore the missing source file from the working copy?",
             };
             frame.render_widget(
                 Paragraph::new(prompt).wrap(Wrap { trim: false }),
@@ -328,9 +344,16 @@ impl ProjectDialog {
                 Paragraph::new(self.losses.join("\n\n")).wrap(Wrap { trim: false }),
                 layout.row(4, self.loss_rows()),
             );
-            if matches!(self.action, Action::ReloadSource) {
+            let note = match self.action {
+                Action::DeleteResume => Some(format!(
+                    "Saved files can be recovered from {TRASH_DIRECTORY}."
+                )),
+                Action::ReloadSource => Some("The on-disk file will not be changed.".into()),
+                _ => None,
+            };
+            if let Some(note) = note {
                 frame.render_widget(
-                    Paragraph::new("The on-disk file will not be changed.").style(theme::muted()),
+                    Paragraph::new(note).style(theme::muted()),
                     layout.row(4 + self.loss_rows(), 1),
                 );
             }
@@ -396,7 +419,8 @@ impl ProjectDialog {
             layout.buttons,
             self.action_label(),
             focus,
-            matches!(self.action, Action::ReloadSource) && !self.losses.is_empty(),
+            matches!(self.action, Action::DeleteResume)
+                || (matches!(self.action, Action::ReloadSource) && !self.losses.is_empty()),
         );
     }
 }
