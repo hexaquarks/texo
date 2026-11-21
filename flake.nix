@@ -11,12 +11,16 @@
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
       craneLib = crane.mkLib pkgs;
+      templateAssets = "${self}/assets/resume-templates";
       texo = craneLib.buildPackage {
         src = pkgs.lib.cleanSourceWith {
           src = self;
           filter = path: type:
             craneLib.filterCargoSources path type
-            || builtins.baseNameOf path == "kitty_diacritics.txt";
+            || builtins.baseNameOf path == "kitty_diacritics.txt"
+            || path == "${self}/assets"
+            || path == templateAssets
+            || pkgs.lib.hasPrefix "${templateAssets}/" path;
         };
         strictDeps = true;
         nativeBuildInputs = [ pkgs.pkg-config ];
