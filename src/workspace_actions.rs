@@ -534,7 +534,16 @@ impl App {
         let name = dialog.name.lines().join("");
         let root = self.projects.root().to_path_buf();
         let project = match dialog.action {
-            Action::NewResume => Some(resume_project::create(&root, &name)?),
+            Action::NewResume => {
+                let template = dialog
+                    .selected_template()
+                    .ok_or_else(|| anyhow::anyhow!("Choose a resume template"))?;
+                Some(resume_project::create_from_source(
+                    &root,
+                    &name,
+                    template.source,
+                )?)
+            }
             Action::ImportResume => {
                 if dialog.plan.is_none() {
                     let source = dialog.source.lines().join("");

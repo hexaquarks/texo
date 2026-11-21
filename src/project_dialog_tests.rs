@@ -11,7 +11,12 @@ fn press(app: &mut App, code: KeyCode) {
 
 fn rendered_dialog(app: &mut App) -> anyhow::Result<String> {
     let mut terminal = Terminal::new(TestBackend::new(SCREEN.width, SCREEN.height))?;
-    terminal.draw(|frame| app.project_dialog.as_mut().unwrap().draw(frame))?;
+    terminal.draw(|frame| {
+        app.project_dialog
+            .as_mut()
+            .unwrap()
+            .draw(frame, &app.session.preview)
+    })?;
 
     Ok(terminal
         .backend()
@@ -21,6 +26,113 @@ fn rendered_dialog(app: &mut App) -> anyhow::Result<String> {
         .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+fn wait_for_gallery_thumbnail(app: &mut App) -> anyhow::Result<String> {
+    const PREVIEW_TIMEOUT: Duration = Duration::from_secs(10);
+    const POLL_INTERVAL: Duration = Duration::from_millis(10);
+    let deadline = std::time::Instant::now() + PREVIEW_TIMEOUT;
+
+    loop {
+        let screen = rendered_dialog(app)?;
+        if !app
+            .project_dialog
+            .as_ref()
+            .unwrap()
+            .is_preparing_thumbnail()
+        {
+            return Ok(screen);
+        }
+
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Gallery preview did not finish"
+        );
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+#[test]
+fn creating_from_a_template_preserves_the_previous_resume_draft() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let root = workspace.path().canonicalize()?;
+    let original = resume_project::create(&root, "Original")?;
+    let mut app =
+        App::with_workspace(Editor::open(original.document())?, Preview::default(), root)?;
+    app.session.editor.text.insert_str("Unsaved original ");
+    let original_draft = app.session.editor.source();
+
+    app.open_project_dialog(Action::NewResume);
+    assert!(rendered_dialog(&mut app)?.contains("Start from scratch"));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(rendered_dialog(&mut app)?.contains("Template · Jake's Resume"));
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.project_dialog.is_none());
+    assert_eq!(app.projects.catalog.projects.len(), 1);
+    assert_eq!(app.session.editor.source(), original_draft);
+
+    app.open_project_dialog(Action::NewResume);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    app.handle_event(Event::Paste("Template draft".into()), SCREEN);
+    press(&mut app, KeyCode::Enter);
+    app.session.job = None;
+
+    let created = app.projects.project_for(&app.session.editor.path).unwrap();
+    let created_source = include_str!("../assets/resume-templates/jake.tex");
+    assert_ne!(created.manifest.id, original.manifest.id);
+    assert_eq!(created.manifest.name, "Template draft");
+    assert_eq!(std::fs::read_to_string(created.document())?, created_source);
+    assert_eq!(app.session.editor.source(), created_source);
+
+    app.open_document(original.document());
+    assert_eq!(app.session.editor.source(), original_draft);
+    assert!(app.session.editor.is_modified());
+    assert_eq!(
+        std::fs::read_to_string(original.document())?,
+        crate::editor::STARTER_DOCUMENT
+    );
+    Ok(())
+}
+
+#[test]
+fn gallery_prefetches_and_reuses_native_thumbnails_until_it_closes() -> anyhow::Result<()> {
+    let (_workspace, mut app) = application()?;
+    app.open_project_dialog(Action::NewResume);
+
+    let first = wait_for_gallery_thumbnail(&mut app)?;
+    assert!(first.contains("PDF preview"));
+    assert!(!first.contains("Preview unavailable"));
+
+    // The second template was prepared before it was selected.
+    press(&mut app, KeyCode::Down);
+    let second = rendered_dialog(&mut app)?;
+    assert!(!second.contains("Loading preview"));
+    assert!(second.contains("a=T"));
+
+    press(&mut app, KeyCode::Up);
+    let revisited = rendered_dialog(&mut app)?;
+    assert!(!revisited.contains("Loading preview"));
+    assert!(!revisited.contains("a=T"));
+
+    let mut retired = Vec::new();
+    app.session.preview.flush_retired_images(&mut retired)?;
+    assert!(retired.is_empty());
+
+    // Returning from naming also reuses the upload.
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
+    let returned = rendered_dialog(&mut app)?;
+    assert!(!returned.contains("Loading preview"));
+    assert!(!returned.contains("a=T"));
+
+    press(&mut app, KeyCode::Esc);
+    assert!(app.project_dialog.is_none());
+    app.session.preview.flush_retired_images(&mut retired)?;
+    assert_eq!(String::from_utf8(retired)?.matches("d=I").count(), 2);
+    Ok(())
 }
 
 #[test]
@@ -245,7 +357,12 @@ fn project_dialogs_fit_small_terminals_and_show_action_specific_titles() -> anyh
         assert!(rendered_dialog(&mut app)?.contains(title));
         for (width, height) in [(1, 1), (20, 5)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height))?;
-            terminal.draw(|frame| app.project_dialog.as_mut().unwrap().draw(frame))?;
+            terminal.draw(|frame| {
+                app.project_dialog
+                    .as_mut()
+                    .unwrap()
+                    .draw(frame, &app.session.preview)
+            })?;
         }
     }
 
@@ -255,7 +372,12 @@ fn project_dialogs_fit_small_terminals_and_show_action_specific_titles() -> anyh
     )?;
     app.project_dialog.as_mut().unwrap().plan = Some(ImportPlan::inspect(workspace.path())?);
     let mut terminal = Terminal::new(TestBackend::new(20, 5))?;
-    terminal.draw(|frame| app.project_dialog.as_mut().unwrap().draw(frame))?;
+    terminal.draw(|frame| {
+        app.project_dialog
+            .as_mut()
+            .unwrap()
+            .draw(frame, &app.session.preview)
+    })?;
     Ok(())
 }
 

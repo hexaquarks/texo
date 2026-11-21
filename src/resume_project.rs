@@ -283,9 +283,16 @@ fn reserve_directory(workspace: &Path, name: &str) -> Result<PathBuf> {
     anyhow::bail!("Choose another name; too many matching directories")
 }
 
+#[cfg(test)]
 pub fn create(workspace: &Path, name: &str) -> Result<Project> {
-    create_project(workspace, name, Path::new("main.tex"), None, |root| {
-        fs::write(root.join("main.tex"), crate::editor::STARTER_DOCUMENT)?;
+    create_from_source(workspace, name, crate::editor::STARTER_DOCUMENT)
+}
+
+pub fn create_from_source(workspace: &Path, name: &str, source: &str) -> Result<Project> {
+    let entrypoint = Path::new("main.tex");
+
+    create_project(workspace, name, entrypoint, None, |root| {
+        fs::write(root.join(entrypoint), source)?;
         Ok(())
     })
 }

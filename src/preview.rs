@@ -26,6 +26,7 @@ use ratatui_image::{
 
 use tui_spinner::CircleSpinner;
 
+pub use crate::page_thumbnail::PageThumbnail;
 use crate::theme;
 use crate::{
     pdf::PdfPages,
@@ -158,6 +159,27 @@ impl Preview {
             horizontal_pixels: 0,
             displayed_horizontal: None,
         }
+    }
+
+    pub fn prepare_page_thumbnail(
+        &self,
+        png: &'static [u8],
+        area: Rect,
+    ) -> Result<Receiver<Result<PageThumbnail>>> {
+        let picker = self.picker.clone();
+        let terminal_images = self.terminal_images.clone();
+        let (sender, receiver) = mpsc::channel();
+
+        thread::Builder::new()
+            .name("texo-gallery-preview".into())
+            .spawn(move || {
+                let thumbnail = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|image| PageThumbnail::new(image, area, &picker, terminal_images));
+                let _ = sender.send(thumbnail);
+            })?;
+
+        Ok(receiver)
     }
 
     pub fn empty_like(&self) -> Self {

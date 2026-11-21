@@ -1,0 +1,170 @@
+% Resume by Gabriel G. Carvalho.
+% Source: https://www.overleaf.com/latex/templates/resume/ffrnqyxzqrbs
+% License: Creative Commons Attribution 4.0 International.
+% https://creativecommons.org/licenses/by/4.0/
+% Texo changes: pdfTeX-specific glyph mapping and font encoding are guarded for Tectonic's XeTeX.
+
+\documentclass[letterpaper,10pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\usepackage{multicol}
+\ifdefined\pdfgentounicode\input{glyphtounicode}\fi
+
+\usepackage[default]{sourcesanspro}
+\ifdefined\pdftexversion
+    \usepackage[T1]{fontenc}
+\fi
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\centering
+}{}{0em}{}[\color{black}\titlerule\vspace{-5pt}]
+
+
+\ifdefined\pdfgentounicode\pdfgentounicode=1\fi
+
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-2pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubSubheading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \textit{\small#1} & \textit{\small #2} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+
+
+\begin{center}
+    {\LARGE John Zlad Doe} \\ \vspace{2pt}
+    \begin{multicols}{2}
+    \begin{flushleft}
+    \href{{your github page link}}{my github}\\
+    \href{{your linkedin page link}}{my linkedin}
+    \end{flushleft}
+
+    \begin{flushright}
+    \href{{your personal websit link}}{my personal site}\\
+    \href{mailto:{your email adress}}{my email}
+    \end{flushright}
+    \end{multicols}
+\end{center}
+
+
+%-----------EDUCATION-----------
+\vspace{-2pt}
+\section{Education}
+  \resumeSubHeadingListStart
+      \resumeSubheading
+      {University of Molvanîa -- UM}{Aug. 2019 -- Present}
+      {PhD. Student in Technology}{Molvanîa, Mv}
+
+  \resumeSubHeadingListEnd
+
+
+%-----------EXPERIENCE-----------
+\section{Experience}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Ph.D. Researcher}{Sep. 2019 -- Present}
+      {Laser beams shooting research}{Molvanîa, Mv}
+      \resumeItemListStart
+        \resumeItem{Laser beams}
+        \resumeItem{Laser cooling techniques}
+        \resumeItem{Off blast!}
+    \resumeItemListEnd
+
+  \resumeSubHeadingListEnd
+
+%-----------PUBLICATIONS-----------
+\section{Publications}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+    \textbf{New techniques for Elektronik supersonik laser shootings. WORKSHOP ON INDUSTRY APPLICATION - Molvanîan Academy o Science, 2020 . p. 225-231.}{\\J. Zlad Doe}\\
+        \textbf{Space Rockets . WORKSHOP ON INDUSTRY APPLICATION - Molvanîan Academy o Science, 2021 . p. 25-31.}{\\J. Zlad Doe, Darth Vapor}\\
+\
+}}
+ \end{itemize}
+
+%-----------PROGRAMMING SKILLS-----------
+\section{Technical Skills, Language Skills, and Interests}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+    \textbf{OS}{: Windows} \\
+     \textbf{Programming Languages}{: C/C++} \\
+     \textbf{Libraries}{: OpenCV}\\
+     \textbf{Version Control}{: Git} \\
+     \textbf{Writing}{: \LaTeX, Office} \\
+     \textbf{Languages}{: Molvanîan (native), English (fluent)} \\
+     \textbf{Interests}{: Lasers and Music}
+
+    }}
+ \end{itemize}
+
+%-----------CERTIFICATIONS-----------
+\section{Extracurricular}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Specialization}{:\href{certification site}{ Course} }
+    }}
+
+ \end{itemize}
+
+\end{document}

@@ -124,7 +124,7 @@ fn empty_workspace_to_revised_resume_export_and_reopen() -> Result<()> {
     assert!(app.projects.catalog.projects.is_empty());
 
     app.perform_action(Action::NewResume);
-    app.project_dialog.as_mut().unwrap().name.select_all();
+    press(&mut app, KeyCode::Enter);
     app.handle_event(Event::Paste("Alex's resume".into()), SCREEN);
     press(&mut app, KeyCode::Enter);
     wait_for_reviews(&mut app)?;

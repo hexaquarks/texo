@@ -16,7 +16,9 @@ mod proposal;
 mod render_job;
 mod resume_label;
 mod resume_project;
+mod resume_templates;
 mod settings;
+mod template_gallery;
 mod terminal;
 mod workspace;
 

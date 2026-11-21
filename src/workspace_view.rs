@@ -171,7 +171,7 @@ impl App {
             dialog.draw(frame);
         }
         if let Some(dialog) = &mut self.project_dialog {
-            dialog.draw(frame);
+            dialog.draw(frame, &self.session.preview);
         }
         if self.diagnostic_details_open() {
             self.draw_diagnostic_details(frame);

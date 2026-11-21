@@ -9,6 +9,8 @@ license = "MIT"
 publish = ["crates-io"]
 include = [
     "/src/**",
+    "/assets/resume-templates/*.tex",
+    "/assets/resume-templates/*.png",
     "/tests/*.rs",
     "/tests/*.py",
     "/tests/fixtures/**",

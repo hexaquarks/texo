@@ -248,6 +248,8 @@ fn plain_q_quits_navigation_panes_but_remains_text_in_inputs() -> anyhow::Result
 
     app.focus = Focus::Projects;
     app.open_project_dialog(Action::NewResume);
+    let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_event(enter, area);
     assert!(!app.handle_event(Event::Key(key), area));
     assert_eq!(app.project_dialog.as_ref().unwrap().name.lines(), &["q"]);
     Ok(())
@@ -1491,9 +1493,11 @@ fn vim_menu_navigation_leaves_editable_fields_and_document_untouched() -> anyhow
 
     app.open_project_dialog(Action::NewResume);
     assert!(app.project_dialog.is_some());
+    press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Char('j'));
     press(&mut app, KeyCode::Char('k'));
     assert_eq!(app.project_dialog.as_ref().unwrap().name.lines(), &["jk"]);
+    press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
 
     app.open_settings();

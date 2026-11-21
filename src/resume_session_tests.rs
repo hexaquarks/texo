@@ -209,6 +209,10 @@ fn empty_workspaces_require_project_creation_and_missing_sources_require_confirm
         Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         area,
     );
+    app.handle_project_dialog(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        area,
+    );
     app.session.job = None;
     assert!(!app.session.empty_workspace);
     assert_ne!(app.session.editor.path, loose);
