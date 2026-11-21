@@ -18,7 +18,7 @@ use texo::theme;
 
 const DIALOG_WIDTH: u16 = 64;
 const RESUME_MENU_WIDTH: u16 = 76;
-const RESUME_MENU_HEIGHT: u16 = 15;
+const RESUME_MENU_HEIGHT: u16 = 16;
 const MENU_FRAME_HEIGHT: u16 = 6;
 
 #[derive(Clone, Copy)]
@@ -28,6 +28,7 @@ pub enum Action {
     RenameResume,
     LabelResume,
     DuplicateResume,
+    DeleteResume,
     ReloadSource,
     RecoverSource,
     OpenRevision,
@@ -35,11 +36,12 @@ pub enum Action {
     DeleteRevision,
 }
 
-const RESUME_ACTIONS: [(Action, &str); 4] = [
+const RESUME_ACTIONS: [(Action, &str); 5] = [
     (Action::RenameResume, "Rename"),
     (Action::LabelResume, "Change label"),
     (Action::DuplicateResume, "Duplicate"),
     (Action::ReloadSource, "Reload from disk"),
+    (Action::DeleteResume, "Delete"),
 ];
 
 pub struct ActionMenu {

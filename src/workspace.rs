@@ -15,6 +15,10 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    pub fn placeholder_path(root: &Path) -> PathBuf {
+        root.join(DEFAULT_DOCUMENT)
+    }
+
     pub fn resolve(input: Option<&Path>) -> Result<Self> {
         Self::resolve_with_settings(input, &crate::config::Settings::path()?)
     }
@@ -53,7 +57,7 @@ impl Workspace {
                 .projects
                 .first()
                 .map(crate::resume_project::Project::document)
-                .unwrap_or_else(|| root.join(DEFAULT_DOCUMENT));
+                .unwrap_or_else(|| Self::placeholder_path(&root));
             return Ok(Self {
                 root,
                 document,

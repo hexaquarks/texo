@@ -93,6 +93,13 @@ impl Projects {
         Ok(())
     }
 
+    pub fn remove_project(&mut self, root: &Path) {
+        self.catalog.projects.retain(|project| project.root != root);
+        let selected = self.state.selected().unwrap_or(0);
+        let last = self.catalog.projects.len().checked_sub(1);
+        self.state.select(last.map(|last| selected.min(last)));
+    }
+
     pub fn project_for(&self, path: &Path) -> Option<&Project> {
         self.catalog
             .projects

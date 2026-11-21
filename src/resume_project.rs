@@ -14,6 +14,8 @@ use crate::resume_label::ResumeLabel;
 use texo::sandbox::MAX_PROJECT_MANIFEST_BYTES;
 pub use texo::sandbox::PROJECT_MANIFEST_FILE as MANIFEST_FILE;
 
+pub const TRASH_DIRECTORY: &str = ".texo-trash";
+
 const MAX_NAME_CHARS: usize = 80;
 const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_IMPORT_FILES: usize = 10_000;
@@ -103,6 +105,45 @@ impl Project {
         self.manifest = manifest;
         Ok(())
     }
+
+    pub fn move_to_trash(&self, workspace: &Path) -> Result<()> {
+        ensure!(
+            self.root.parent() == Some(workspace) && fs::symlink_metadata(&self.root)?.is_dir(),
+            "The resume must be a folder directly inside the workspace"
+        );
+
+        let current = Self::load(&self.root)?.manifest;
+        ensure!(
+            current.id == self.manifest.id
+                && current.name == self.manifest.name
+                && current.entrypoint == self.manifest.entrypoint,
+            "Resume changed on disk. Reopen Manage to review it before deleting"
+        );
+
+        let trash = workspace.join(TRASH_DIRECTORY);
+        match fs::create_dir(&trash) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error).context("Could not create the workspace trash"),
+        }
+        ensure!(
+            fs::symlink_metadata(&trash)?.is_dir(),
+            "Workspace trash must be a directory"
+        );
+
+        let folder_name = self.root.file_name().context("Resume folder has no name")?;
+        let destination = tempfile::Builder::new()
+            .prefix("deleted-")
+            .tempdir_in(&trash)
+            .context("Could not reserve a workspace trash folder")?;
+
+        // Keep the entire folder recoverable. Renaming on the same filesystem is atomic.
+        fs::rename(&self.root, destination.path().join(folder_name))
+            .context("Could not move the resume to the workspace trash")?;
+        let _ = destination.keep();
+
+        Ok(())
+    }
 }
 
 pub fn discover(root: &Path) -> Result<Catalog> {
@@ -119,6 +160,10 @@ pub fn discover(root: &Path) -> Result<Catalog> {
     let mut ids = HashSet::new();
 
     for path in paths {
+        if path.file_name().is_some_and(|name| name == TRASH_DIRECTORY) {
+            continue;
+        }
+
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() {
             continue;

@@ -188,3 +188,33 @@ test('a TeX file argument opens the document directly', async () => {
         await terminal.getByText('PDF current').expect();
     });
 });
+
+test('Manage deletes only after confirmation and preserves saved files in the workspace trash', async () => {
+    await withTexo('delete-resume', async ({ terminal, workspace }) => {
+        await createResume(terminal, 'Keep me');
+        await terminal.press('Ctrl+a');
+        await paste(terminal, RESUME);
+
+        await createResume(terminal, 'Remove me');
+        const removed = join(workspace, 'remove-me');
+        const source = join(removed, 'main.tex');
+        const saved = await readFile(source, 'utf8');
+
+        await action(terminal, 'Delete');
+        await terminal.getByText('Delete resume?').expect();
+        await terminal.press('Enter');
+        await terminal.getByText('Delete resume?').expect({ not: true });
+        assert.equal(await readFile(source, 'utf8'), saved);
+
+        await action(terminal, 'Delete');
+        await terminal.getByText('Delete resume?').expect();
+        await terminal.press('Right', 'Enter');
+        await terminal.getByText('Terminal workflow resume.').expect();
+
+        const trash = join(workspace, '.texo-trash');
+        const entries = await readdir(trash);
+        assert.equal(entries.length, 1);
+        assert.equal(await readFile(join(trash, entries[0], 'remove-me', 'main.tex'), 'utf8'), saved);
+        await assert.rejects(readFile(source), { code: 'ENOENT' });
+    });
+});
