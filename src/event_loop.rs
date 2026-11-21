@@ -126,7 +126,12 @@ impl App {
     }
 
     fn input_poll_interval(&mut self) -> Duration {
-        let preparing_image = !self.overlay_open() && self.active_preview().is_preparing();
+        let preparing_thumbnail = self
+            .project_dialog
+            .as_ref()
+            .is_some_and(crate::project_dialog::ProjectDialog::is_preparing_thumbnail);
+        let preparing_image =
+            preparing_thumbnail || (!self.overlay_open() && self.active_preview().is_preparing());
         let running_job = self.history_preview_loading()
             || self.session.job.is_some()
             || self.session.proposed_job.is_some()
@@ -141,6 +146,7 @@ impl App {
         &mut self,
         writer: &mut impl Write,
     ) -> anyhow::Result<()> {
+        self.project_dialog = None;
         self.sessions.clear();
         self.session.history.view = None;
         self.session.preview.clear();

@@ -7,6 +7,7 @@ import { TuiTest } from '@microsoft/tui-test';
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const BACKEND = process.env.TEXO_TUI_BACKEND ?? 'alacritty';
+const TEXO_BINARY = process.env.TEXO_TUI_BIN ?? join(REPOSITORY, 'target/debug/texo');
 export const ARTIFACTS = join(REPOSITORY, 'target/tui-artifacts', BACKEND);
 export const UI_TIMEOUT_MS = 15_000;
 
@@ -33,7 +34,7 @@ export async function withTexo(name, scenario, options = {}) {
         const preparedEnvironment = options.prepare ? await options.prepare(root, workspace) : {};
         const restart = async ({ configuredWorkspace = false, path = workspace } = {}) => {
             await terminal.closeQuiet();
-            await terminal.run(join(REPOSITORY, 'target/debug/texo'), configuredWorkspace ? [] : [path], {
+            await terminal.run(TEXO_BINARY, configuredWorkspace ? [] : [path], {
                 cols: 120,
                 rows: 35,
                 env: {
@@ -68,7 +69,9 @@ export async function prefix(terminal, key) {
 
 export async function createResume(terminal, name) {
     await prefix(terminal, 'n');
-    await terminal.getByText('New resume').first().expect();
+    await terminal.getByText('New resume · Templates').expect();
+    await terminal.press('Enter');
+    await terminal.getByText('Resume name').expect();
     await paste(terminal, name);
     await terminal.press('Enter');
     await terminal.getByText('PDF current').expect();

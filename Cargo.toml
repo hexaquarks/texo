@@ -1,6 +1,6 @@
 [package]
 name = "texo"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A terminal workspace for LaTeX resumes with PDF preview and AI assistance"
 repository = "https://github.com/hexaquarks/texo"
@@ -9,6 +9,8 @@ license = "MIT"
 publish = ["crates-io"]
 include = [
     "/src/**",
+    "/assets/resume-templates/*.tex",
+    "/assets/resume-templates/*.png",
     "/tests/*.rs",
     "/tests/*.py",
     "/tests/fixtures/**",

@@ -1,0 +1,180 @@
+% Jake's Resume by Jake Gutierrez (https://github.com/jakegut/resume).
+% Based on https://github.com/sb2nov/resume.
+% Adapted for Texo with fictional sample content and Tectonic support.
+%
+% MIT License
+%
+% Copyright (c) 2020 Jake Gutierrez
+% Copyright (c) 2015 Sourabh Bajaj
+%
+% Permission is hereby granted, free of charge, to any person obtaining a copy
+% of this software and associated documentation files (the "Software"), to deal
+% in the Software without restriction, including without limitation the rights
+% to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+% copies of the Software, and to permit persons to whom the Software is
+% furnished to do so, subject to the following conditions:
+%
+% The above copyright notice and this permission notice shall be included in all
+% copies or substantial portions of the Software.
+%
+% THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+% IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+% FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+% AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+% LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+% OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+% SOFTWARE.
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+
+\pagestyle{fancy}
+\fancyhf{} % clear all header and footer fields
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Adjust margins
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% Section headings
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+% Enable glyph mappings on pdfTeX. Tectonic uses XeTeX's PDF driver.
+\ifdefined\pdfgentounicode
+  \input{glyphtounicode}
+  \pdfgentounicode=1
+\fi
+
+% Resume entries
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-2pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+  \item
+  \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+    \small#1 & #2 \\
+  \end{tabular*}\vspace{-7pt}
+}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+\begin{center}
+  \textbf{\Huge\scshape Avery Morgan} \\[1pt]
+  \small 416-555-0142 $|$
+  \href{mailto:avery@example.com}{\underline{avery@example.com}} $|$
+  \href{https://example.com/avery}{\underline{example.com/avery}} $|$
+  \href{https://example.com/avery/code}{\underline{example.com/avery/code}}
+\end{center}
+
+\section{Education}
+\resumeSubHeadingListStart
+  \resumeSubheading
+    {Lakeview Institute}{Toronto, ON}
+    {B.Sc. in Computer Science, Minor in Statistics}{Sept. 2020 -- May 2024}
+  \resumeSubheading
+    {Westhaven College}{Hamilton, ON}
+    {Diploma in Software Development}{Sept. 2018 -- May 2020}
+\resumeSubHeadingListEnd
+
+\section{Experience}
+\resumeSubHeadingListStart
+  \resumeSubheading
+    {Software Engineer}{June 2024 -- Present}
+    {Juniper Transit Lab}{Toronto, ON}
+  \resumeItemListStart
+    \resumeItem{Built a route-planning API in Rust and PostgreSQL for forty transit dispatchers.}
+    \resumeItem{Reduced nightly schedule import time from fifty minutes to eighteen.}
+    \resumeItem{Added request tracing and dashboards for six services used by the operations team.}
+  \resumeItemListEnd
+
+  \resumeSubheading
+    {Engineering Intern}{May 2023 -- Aug. 2023}
+    {Harbour Signal Studio}{Toronto, ON}
+  \resumeItemListStart
+    \resumeItem{Added automated tests for service alerts, route changes, and schedule updates.}
+    \resumeItem{Built a fixture generator for validating edge cases in transit feeds.}
+    \resumeItem{Documented the staging environment and presented a handoff to the support team.}
+  \resumeItemListEnd
+
+  \resumeSubheading
+    {Computing Lab Assistant}{Sept. 2021 -- Apr. 2023}
+    {Lakeview Institute}{Toronto, ON}
+  \resumeItemListStart
+    \resumeItem{Ran weekly lab sessions on algorithms and relational databases.}
+    \resumeItem{Wrote a Python tool to check assignment setup and report missing dependencies.}
+    \resumeItem{Maintained sample datasets for classroom exercises and practical assessments.}
+    \resumeItem{Prepared exercises covering API requests, caching, and background jobs.}
+    \resumeItem{Reviewed lab feedback and revised instructions with the course instructor.}
+    \resumeItem{Presented a workshop on debugging queries using database execution plans.}
+  \resumeItemListEnd
+\resumeSubHeadingListEnd
+
+\section{Projects}
+\resumeSubHeadingListStart
+  \resumeProjectHeading
+    {\textbf{Route Monitor} $|$ \emph{Rust, PostgreSQL, React}}{Jan. 2024 -- May 2024}
+  \resumeItemListStart
+    \resumeItem{Built a dashboard for detecting gaps and duplicate records in a sample transit feed.}
+    \resumeItem{Added route filters and a timeline for comparing arrivals across service days.}
+    \resumeItem{Documented the API and packaged a local demo with Docker Compose.}
+    \resumeItem{Added an automated check that compares expected and observed service coverage.}
+  \resumeItemListEnd
+
+  \resumeProjectHeading
+    {\textbf{Trail Planner} $|$ \emph{Python, FastAPI, SQLite}}{Sept. 2022 -- Apr. 2023}
+  \resumeItemListStart
+    \resumeItem{Built a searchable trail directory with distance and difficulty filters.}
+    \resumeItem{Created an offline import tool for a collection of fictional trail routes.}
+    \resumeItem{Added integration tests for search, pagination, and route validation.}
+    \resumeItem{Published a setup guide with example requests and a test dataset.}
+  \resumeItemListEnd
+\resumeSubHeadingListEnd
+
+\section{Technical Skills}
+\begin{itemize}[leftmargin=0.15in, label={}]
+  \small\item
+    \textbf{Languages}: Rust, Python, SQL, JavaScript \\
+    \textbf{Frameworks}: FastAPI, React, Tokio \\
+    \textbf{Developer Tools}: Git, Docker, Linux, PostgreSQL \\
+    \textbf{Libraries}: pandas, pytest, SQLAlchemy
+\end{itemize}
+
+\end{document}

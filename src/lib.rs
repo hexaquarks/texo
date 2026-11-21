@@ -2,6 +2,7 @@ pub mod agent;
 pub mod auth;
 pub mod compiler;
 pub mod llm;
+mod page_thumbnail;
 pub mod pdf;
 pub mod preview;
 mod process;

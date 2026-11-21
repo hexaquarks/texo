@@ -93,6 +93,14 @@ impl FormLayout {
     }
 
     pub fn draw(&self, frame: &mut Frame, title: &str) {
+        self.draw_with_help(
+            frame,
+            title,
+            &[("Tab", "move"), ("Enter", "activate"), ("Esc", "cancel")],
+        );
+    }
+
+    pub fn draw_with_help(&self, frame: &mut Frame, title: &str, bindings: &[(&str, &str)]) {
         frame.render_widget(Clear, self.area);
         frame.render_widget(
             Block::bordered()
@@ -114,14 +122,7 @@ impl FormLayout {
                 .border_style(theme::muted()),
             rule,
         );
-        frame.render_widget(
-            Paragraph::new(theme::shortcuts(&[
-                ("Tab", "move"),
-                ("Enter", "activate"),
-                ("Esc", "cancel"),
-            ])),
-            self.help,
-        );
+        frame.render_widget(Paragraph::new(theme::shortcuts(bindings)), self.help);
     }
 }
 

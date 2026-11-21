@@ -34,11 +34,10 @@ test('workspace expansion restores on build and PDF controls use the enlarged pa
         await terminal.getByText('PDF current').click();
         await prefix(terminal, 'z');
         await terminal.getByText('texo / chat').expect({ not: true });
-        await terminal.getByText('This terminal does not support PDF').expect();
-        await terminal.getByText('rendering.').expect();
+        await terminal.getByText('▀').first().expect();
         await terminal.getByText('Open PDF').expect();
         await terminal.press('Right', 'Alt+Down');
-        // Dragging inside the enlarged placeholder must not edit the document.
+        // Dragging inside the enlarged preview must not edit the document.
         await terminal.mouse.drag(40, 16, 35, 12);
         await terminal.press('0');
         await terminal.getByText('PDF current').expect();

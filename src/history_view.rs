@@ -615,15 +615,11 @@ impl App {
         };
         let [title, body] =
             Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(area);
-        let label = if view.preview.uses_basic_rendering() {
-            format!("History PDF · {}", view.revision.label())
-        } else {
-            format!(
-                "History PDF · {} · {}%",
-                view.revision.label(),
-                view.preview.zoom_percent()
-            )
-        };
+        let label = format!(
+            "History PDF · {} · {}%",
+            view.revision.label(),
+            view.preview.zoom_percent()
+        );
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(label, theme::pane_title(true)),
@@ -641,7 +637,7 @@ impl App {
         } else if view.job.is_some() {
             view.preview.draw_loading(frame, body);
         } else if view.preview.uses_basic_rendering() {
-            self.draw_external_preview(frame, body);
+            self.draw_basic_preview(frame, body, overlay);
         } else if overlay {
             view.preview.draw_cached(frame, body);
         } else {

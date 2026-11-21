@@ -57,7 +57,10 @@ def check_startup(master, process, scenario):
             query_answered = True
 
         if not quit_sent and b"No resumes yet" in output:
-            assert query_answered, "The app did not query terminal graphics support"
+            if scenario == "herdr":
+                assert not query_answered, "Herdr should start without a native graphics query"
+            else:
+                assert query_answered, "The app did not query terminal graphics support"
             os.write(master, QUIT_KEY)
             quit_sent = True
             deadline = time.monotonic() + QUIT_TIMEOUT_SECONDS
@@ -76,7 +79,7 @@ def run(executable, scenario):
         workspace.mkdir()
         environment = os.environ.copy()
         for name in (
-            "TMUX", "TMUX_PANE", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
+            "TMUX", "TMUX_PANE", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "HERDR_PANE_ID",
             "ITERM_SESSION_ID", "WEZTERM_EXECUTABLE", "KITTY_WINDOW_ID", "KONSOLE_VERSION",
         ):
             environment.pop(name, None)
@@ -85,6 +88,9 @@ def run(executable, scenario):
             "XDG_CONFIG_HOME": str(root / "config"),
             "XDG_STATE_HOME": str(root / "state"),
         })
+
+        if scenario == "herdr":
+            environment["HERDR_PANE_ID"] = "test-pane"
 
         master, child = pty.openpty()
         termios.tcsetwinsize(child, (TERMINAL_ROWS, TERMINAL_COLUMNS))

@@ -40,7 +40,7 @@ test('history previews, restores with recovery and survives restart', async () =
         await prefix(terminal, 'c');
         await prefix(terminal, 'l');
         await prefix(terminal, 'z');
-        await terminal.getByText('This terminal does not support PDF rendering.').expect();
+        await terminal.getByText('▀').first().expect();
         await terminal.getByText('Open PDF').expect();
         await terminal.press('+', '0');
         await terminal.getByText('Open PDF').expect();

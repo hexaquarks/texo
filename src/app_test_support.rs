@@ -29,19 +29,7 @@ pub(super) fn wait_for_visible_pdf(
             app.session.diagnostics
         );
         terminal.draw(|frame| app.draw(frame))?;
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        let visible = if app.session.preview.uses_basic_rendering() {
-            text.contains("Open PDF")
-        } else {
-            app.session.preview.has_presented_image()
-        };
-        if app.session.job.is_none() && visible {
+        if app.session.job.is_none() && app.session.preview.has_presented_image() {
             return Ok(());
         }
 

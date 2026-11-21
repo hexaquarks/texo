@@ -26,6 +26,7 @@ use ratatui_image::{
 
 use tui_spinner::CircleSpinner;
 
+pub use crate::page_thumbnail::PageThumbnail;
 use crate::theme;
 use crate::{
     pdf::PdfPages,
@@ -112,6 +113,11 @@ impl Default for Preview {
 impl Preview {
     /// Query graphics support before entering the alternate screen or reading input events.
     pub fn detect() -> Self {
+        // Herdr can acknowledge Kitty graphics even when its outer client cannot show the image.
+        if std::env::var_os("HERDR_PANE_ID").is_some() {
+            return Self::default();
+        }
+
         // Resume pages compress well. Raw RGBA uploads can be several megabytes,
         // overwhelming a multiplexer's passthrough before the first page is visible.
         let options = QueryStdioOptions {
@@ -153,6 +159,27 @@ impl Preview {
             horizontal_pixels: 0,
             displayed_horizontal: None,
         }
+    }
+
+    pub fn prepare_page_thumbnail(
+        &self,
+        png: &'static [u8],
+        area: Rect,
+    ) -> Result<Receiver<Result<PageThumbnail>>> {
+        let picker = self.picker.clone();
+        let terminal_images = self.terminal_images.clone();
+        let (sender, receiver) = mpsc::channel();
+
+        thread::Builder::new()
+            .name("texo-gallery-preview".into())
+            .spawn(move || {
+                let thumbnail = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|image| PageThumbnail::new(image, area, &picker, terminal_images));
+                let _ = sender.send(thumbnail);
+            })?;
+
+        Ok(receiver)
     }
 
     pub fn empty_like(&self) -> Self {
@@ -384,7 +411,6 @@ impl Preview {
     }
 
     pub fn is_preparing(&self) -> bool {
-        // The app shows a static placeholder for basic terminals instead of starting image work.
         self.source_page.is_some()
             && (self.pending.is_some()
                 || (!self.uses_basic_rendering() && self.viewport_pixels.is_none()))

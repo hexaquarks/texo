@@ -91,7 +91,7 @@ def check_layout(executable, directory, frame_count, split):
     configuration.write_text('set -g status off\nset -g terminal-features "xterm*:RGB"\n')
     server = f"texo-preview-test-{os.getpid()}"
     environment = os.environ.copy()
-    for name in ("TMUX", "TMUX_PANE", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"):
+    for name in ("TMUX", "TMUX_PANE", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "HERDR_PANE_ID"):
         environment.pop(name, None)
     environment.update({"TERM": "xterm-256color", "NO_COLOR": "", DRIVER_ENVIRONMENT: str(directory)})
 

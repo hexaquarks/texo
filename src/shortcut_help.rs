@@ -42,6 +42,7 @@ impl App {
             ("Document", "b", "Build PDF"),
             ("Document", "w", "Save"),
             ("Document", "e", "Export PDF"),
+            ("Document", "p", "Focus PDF preview"),
             ("Document", "o", "Open PDF externally"),
         ];
 
@@ -394,7 +395,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(screen.contains("Export PDF"));
+        assert!(screen.contains("Focus PDF preview"));
 
         let mut tiny = Terminal::new(TestBackend::new(1, 1))?;
         tiny.draw(|frame| app.draw(frame))?;

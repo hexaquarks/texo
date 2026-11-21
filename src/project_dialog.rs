@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
 use ratatui::{
     Frame,
@@ -7,16 +7,19 @@ use ratatui::{
     widgets::{List, ListItem, ListState, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea;
-use texo::theme;
+use texo::{preview::Preview, theme};
 
 use crate::{
     actions::Action,
     dialog_ui::{ButtonFocus, DialogAction, FormLayout, buttons, field},
     resume_project::{ImportPlan, Project, TRASH_DIRECTORY},
+    resume_templates::ResumeTemplate,
+    template_gallery::TemplateGallery,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Control {
+    Templates,
     Source,
     Name,
     Choices,
@@ -30,6 +33,7 @@ pub struct ProjectDialog {
     pub name: TextArea<'static>,
     pub source: TextArea<'static>,
     focus: Control,
+    gallery: Option<TemplateGallery>,
     context: String,
     pub losses: Vec<&'static str>,
     pub plan: Option<ImportPlan>,
@@ -75,8 +79,10 @@ impl ProjectDialog {
                     Control::Cancel
                 }
                 Action::ImportResume => Control::Source,
+                Action::NewResume => Control::Templates,
                 _ => Control::Name,
             },
+            gallery: matches!(action, Action::NewResume).then(TemplateGallery::default),
             context: active
                 .map(|project| {
                     format!(
@@ -164,10 +170,37 @@ impl ProjectDialog {
         FormLayout::new(screen, self.content_rows(), focus_row, self.action_label())
     }
 
+    pub fn selected_template(&self) -> Option<&'static ResumeTemplate> {
+        self.gallery.as_ref().map(TemplateGallery::selected)
+    }
+
+    pub fn is_preparing_thumbnail(&self) -> bool {
+        self.focus == Control::Templates
+            && self
+                .gallery
+                .as_ref()
+                .is_some_and(TemplateGallery::is_preparing_thumbnail)
+    }
+
     pub fn handle_event(&mut self, event: Event, screen: Rect) -> Option<DialogAction> {
+        if self.focus == Control::Templates
+            && let Some(gallery) = &mut self.gallery
+        {
+            return match gallery.handle_event(event, screen) {
+                Some(DialogAction::Submit) => {
+                    self.focus = Control::Name;
+                    None
+                }
+                action => action,
+            };
+        }
+
         match event {
             Event::Key(key) if key.code == KeyCode::Esc => {
-                if self.plan.take().is_some() {
+                if self.gallery.is_some() {
+                    self.focus = Control::Templates;
+                    self.error.clear();
+                } else if self.plan.take().is_some() {
                     self.focus = Control::Source;
                 } else {
                     return Some(DialogAction::Cancel);
@@ -287,7 +320,14 @@ impl ProjectDialog {
         self.focus = Control::Source;
     }
 
-    pub fn draw(&mut self, frame: &mut Frame) {
+    pub fn draw(&mut self, frame: &mut Frame, preview: &Preview) {
+        if self.focus == Control::Templates
+            && let Some(gallery) = &mut self.gallery
+        {
+            gallery.draw(frame, preview);
+            return;
+        }
+
         let layout = self.layout(frame.area());
         let title = match self.action {
             Action::ImportResume => "Import resume",
@@ -298,14 +338,24 @@ impl ProjectDialog {
             Action::RecoverSource => "Restore missing source?",
             _ => "New resume",
         };
-        layout.draw(frame, title);
-        let intro = if matches!(self.action, Action::ImportResume) {
-            "Choose a .tex file or a project folder."
+        let intro = if let Some(template) = self.selected_template() {
+            layout.draw_with_help(
+                frame,
+                title,
+                &[("Tab", "move"), ("Enter", "activate"), ("Esc", "templates")],
+            );
+            format!("Template · {}", template.name).into()
         } else {
-            &self.context
+            layout.draw(frame, title);
+
+            if matches!(self.action, Action::ImportResume) {
+                "Choose a .tex file or a project folder.".into()
+            } else {
+                Cow::Borrowed(self.context.as_str())
+            }
         };
         frame.render_widget(
-            Paragraph::new(intro).style(theme::muted()),
+            Paragraph::new(intro.as_ref()).style(theme::muted()),
             layout.row(0, 1),
         );
 

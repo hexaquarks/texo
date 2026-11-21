@@ -150,7 +150,7 @@ impl App {
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     && matches!(key.code, KeyCode::Char('+' | '=' | '-' | '0')) =>
             {
-                let body = self.preview_body_area(self.preview_area(area));
+                let body = self.inline_preview_area(self.preview_area(area));
                 if key.code == KeyCode::Char('0') {
                     self.active_preview().reset_zoom(body);
                 } else {
@@ -209,7 +209,7 @@ impl App {
         }
 
         if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
-            let body = self.preview_body_area(layout.preview);
+            let body = self.inline_preview_area(layout.preview);
             let uri = self.active_preview().release_link(body, position);
             if let Some(uri) = uri {
                 self.open_preview_link(&uri);
@@ -315,7 +315,7 @@ impl App {
                 );
             } else if layout.preview.contains(position) {
                 self.focus = Focus::Preview;
-                let body = self.preview_body_area(layout.preview);
+                let body = self.inline_preview_area(layout.preview);
                 self.active_preview().begin_drag(body, position);
             } else if layout.editor.contains(position) {
                 self.focus = Focus::Editor;
@@ -344,7 +344,7 @@ impl App {
                 _ => {}
             }
         } else if layout.preview.contains(position) {
-            let body = self.preview_body_area(layout.preview);
+            let body = self.inline_preview_area(layout.preview);
             match mouse.kind {
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                     if mouse.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -412,6 +412,7 @@ impl App {
             KeyCode::Char('b') => self.start_render(),
             KeyCode::Char('e') => self.open_export(),
             KeyCode::Char('o') => self.open_pdf_externally(),
+            KeyCode::Char('p') => self.focus = Focus::Preview,
             KeyCode::Char('v') => self.refresh_projects(),
             KeyCode::Char('w') => {
                 self.handle_control_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))

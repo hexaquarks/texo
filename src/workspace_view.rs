@@ -156,7 +156,7 @@ impl App {
         self.draw_preview(frame, preview, &source_state);
         self.draw_diagnostics(frame, &layout);
 
-        self.draw_status_bar(frame, layout.status);
+        self.draw_status_bar(frame, layout.status, layout.preview.is_empty());
 
         if let Some(menu) = &mut self.actions {
             menu.draw(frame);
@@ -171,7 +171,7 @@ impl App {
             dialog.draw(frame);
         }
         if let Some(dialog) = &mut self.project_dialog {
-            dialog.draw(frame);
+            dialog.draw(frame, &self.session.preview);
         }
         if self.diagnostic_details_open() {
             self.draw_diagnostic_details(frame);
@@ -185,7 +185,7 @@ impl App {
         }
     }
 
-    fn draw_status_bar(&self, frame: &mut Frame, area: Rect) {
+    fn draw_status_bar(&self, frame: &mut Frame, area: Rect, preview_hidden: bool) {
         let prefix = self.prefix.label();
         let help = format!("{prefix} ?");
         let settings = format!("{prefix} s");
@@ -203,7 +203,13 @@ impl App {
             (&settings, "Settings"),
             (&help, "Shortcuts"),
         ]);
-        if tree_hint.width() + hint.width() > usize::from(area.width) {
+        if preview_hidden && !self.session.empty_workspace {
+            let preview = format!("{prefix} p");
+            hint = theme::shortcuts(&[(&preview, "PDF"), (&help, "Help")]);
+            if hint.width() > usize::from(area.width) {
+                hint = theme::shortcuts(&[(&preview, "PDF")]);
+            }
+        } else if tree_hint.width() + hint.width() > usize::from(area.width) {
             hint = theme::shortcuts(&[(&help, "Help")]);
         }
         if tree_hint.width() + hint.width() > usize::from(area.width) {
@@ -449,7 +455,7 @@ impl App {
         if building {
             self.active_preview().draw_loading(frame, body);
         } else if self.active_preview().uses_basic_rendering() {
-            self.draw_external_preview(frame, body);
+            self.draw_basic_preview(frame, body, self.overlay_open());
         } else if self.overlay_open() {
             // A finished proposal may switch versions while a dialog covers the upload cell.
             // Keep this resume's current image visible until the new version can be presented.
@@ -500,19 +506,12 @@ impl App {
             }
         };
         let zoom = self.active_preview().zoom_percent();
-        let basic = self.active_preview().uses_basic_rendering();
-        let title = if basic {
-            format!(" {state}  {page}")
-        } else {
-            format!(" {state}  {page} · {zoom}%")
-        };
+        let title = format!(" {state}  {page} · {zoom}%");
 
         let compact_title = if state == "PDF failed" {
             " PDF failed".into()
         } else if state.starts_with("PDF failed") {
             " PDF failed · stale".into()
-        } else if basic {
-            format!(" PDF {}", page.replace(' ', ""))
         } else {
             format!(" PDF {} {zoom}%", page.replace(' ', ""))
         };
@@ -521,7 +520,7 @@ impl App {
             title_area,
             title,
             compact_title,
-            self.focus == Focus::Preview && !basic,
+            self.focus == Focus::Preview && !self.active_preview().uses_basic_rendering(),
         );
 
         if self.session.proposal_review.is_some() {
