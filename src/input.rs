@@ -598,8 +598,7 @@ impl App {
         if self.focus == Focus::Assistant {
             let copy = key.modifiers == KeyModifiers::CONTROL
                 && matches!(key.code, KeyCode::Char('c') | KeyCode::Insert);
-            if copy && let Some(status) = self.session.assistant.copy_transcript_selection() {
-                self.session.status = status.into();
+            if copy && self.session.assistant.copy_transcript_selection() {
                 return false;
             }
 

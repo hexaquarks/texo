@@ -15,7 +15,7 @@ use texo::{
 
 use crate::assistant_job::{AssistantJob, ConversationMessage};
 
-const SCROLL_LINES: u16 = 3;
+const SCROLL_LINES: usize = 3;
 const CHAT_COMMANDS: [(&str, &str); 4] = [
     ("/settings", "Configure the resume folder"),
     ("/login", "Connect or switch an assistant provider"),
@@ -56,7 +56,7 @@ pub struct Assistant {
     source_snapshot: String,
     proposed_edit: Option<ProposedEdit>,
     compiled_draft: Option<texo::sandbox::CompiledDraft>,
-    scroll_from_bottom: u16,
+    scroll_from_bottom: usize,
     login: Option<LoginDialog>,
     command_selection: usize,
     profile: Profile,

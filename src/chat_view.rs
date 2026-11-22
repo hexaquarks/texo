@@ -106,7 +106,7 @@ impl Assistant {
         self.transcript.clear_selection();
     }
 
-    pub fn copy_transcript_selection(&mut self) -> Option<&'static str> {
+    pub fn copy_transcript_selection(&mut self) -> bool {
         self.transcript.copy(&self.messages)
     }
 
@@ -195,25 +195,7 @@ impl Assistant {
             .min(history.height);
         self.draw_transcript(frame, history, reviewing, covered_rows);
 
-        if let Some(job) = &self.job {
-            let phase =
-                (job.elapsed().as_millis() / THINKING_FRAME_MS) % THINKING_FRAMES.len() as u128;
-            let mut label = Line::styled(
-                format!("{} Texo is thinking…  ", THINKING_FRAMES[phase as usize]),
-                theme::text().fg(theme::ACCENT),
-            );
-            label.extend(theme::shortcuts(&[("Esc", "cancel")]).spans);
-
-            frame.render_widget(
-                Paragraph::new(label),
-                activity.inner(Margin::new(0, THINKING_VERTICAL_PADDING)),
-            );
-        } else if focused && !self.messages.is_empty() {
-            frame.render_widget(
-                Paragraph::new("Drag to select · Ctrl+C to copy").style(theme::muted()),
-                activity,
-            );
-        }
+        self.draw_activity(frame, activity, focused);
 
         if !choices.is_empty() {
             let suggestion_area = Rect::new(
@@ -316,6 +298,35 @@ impl Assistant {
             &self.messages,
             &mut self.scroll_from_bottom,
         );
+    }
+
+    fn draw_activity(&self, frame: &mut Frame, area: Rect, focused: bool) {
+        if let Some(job) = &self.job {
+            let phase =
+                (job.elapsed().as_millis() / THINKING_FRAME_MS) % THINKING_FRAMES.len() as u128;
+            let mut label = Line::styled(
+                format!("{} Texo is thinking…  ", THINKING_FRAMES[phase as usize]),
+                theme::text().fg(theme::ACCENT),
+            );
+            label.extend(theme::shortcuts(&[("Esc", "cancel")]).spans);
+
+            frame.render_widget(
+                Paragraph::new(label),
+                area.inner(Margin::new(0, THINKING_VERTICAL_PADDING)),
+            );
+        }
+
+        if !focused || self.messages.is_empty() || area.is_empty() {
+            return;
+        }
+
+        let label = match self.transcript.copy_notice() {
+            Some(notice) => notice,
+            None if !self.is_running() => "Drag to select · Ctrl+C to copy",
+            None => return,
+        };
+        let last_row = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+        frame.render_widget(Paragraph::new(label).style(theme::muted()), last_row);
     }
 
     fn activity_height(&self) -> u16 {

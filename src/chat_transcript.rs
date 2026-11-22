@@ -2,6 +2,7 @@ use std::{io, ops::Range};
 
 use ratatui::{
     Frame,
+    buffer::{Buffer, CellWidth},
     crossterm::{
         clipboard::CopyToClipboard,
         event::{MouseButton, MouseEvent, MouseEventKind},
@@ -9,8 +10,6 @@ use ratatui::{
     },
     layout::{Position, Rect},
     style::Modifier,
-    text::{Line, Span},
-    widgets::Paragraph,
 };
 use texo::theme;
 use unicode_segmentation::UnicodeSegmentation;
@@ -62,6 +61,7 @@ pub(super) struct Transcript {
     visible_rows: Vec<TranscriptRow>,
     selection: Option<Selection>,
     dragging: bool,
+    copy_notice: Option<&'static str>,
     clipboard: SystemClipboard,
 }
 
@@ -78,6 +78,7 @@ impl Transcript {
 
     pub(super) fn clear_selection(&mut self) {
         self.selection = None;
+        self.copy_notice = None;
         self.end_drag();
     }
 
@@ -104,6 +105,7 @@ impl Transcript {
                 end: point,
             });
         }
+        self.copy_notice = None;
         self.dragging = true;
     }
 
@@ -167,18 +169,17 @@ impl Transcript {
         Some(text)
     }
 
-    pub(super) fn copy(&mut self, messages: &[Message]) -> Option<&'static str> {
-        let text = self.selected_text(messages)?;
-        let status = if self.clipboard.write(text.clone()).is_ok() {
-            "Copied chat selection"
-        } else if execute!(io::stdout(), CopyToClipboard::to_clipboard_from(text)).is_ok() {
-            // OSC 52 has no acknowledgement. Terminal and multiplexer policy decide whether to accept it.
-            "Sent chat selection to terminal clipboard"
-        } else {
-            "Could not copy chat selection"
+    pub(super) fn copy(&mut self, messages: &[Message]) -> bool {
+        let Some(text) = self.selected_text(messages) else {
+            return false;
         };
 
-        Some(status)
+        self.copy_notice = Some(copy_text(&mut self.clipboard, io::stdout(), text));
+        true
+    }
+
+    pub(super) fn copy_notice(&self) -> Option<&'static str> {
+        self.copy_notice
     }
 
     pub(super) fn draw(
@@ -188,12 +189,11 @@ impl Transcript {
         rows: Vec<TranscriptRow>,
         covered_rows: u16,
         messages: &[Message],
-        scroll_from_bottom: &mut u16,
+        scroll_from_bottom: &mut usize,
     ) {
         let maximum_scroll = rows.len().saturating_sub(usize::from(area.height));
-        *scroll_from_bottom =
-            (*scroll_from_bottom).min(u16::try_from(maximum_scroll).unwrap_or(u16::MAX));
-        let offset = maximum_scroll - usize::from(*scroll_from_bottom);
+        *scroll_from_bottom = (*scroll_from_bottom).min(maximum_scroll);
+        let offset = maximum_scroll - *scroll_from_bottom;
         let selection = self.selection.as_ref().and_then(Selection::range);
 
         let mut visible_rows: Vec<_> = rows
@@ -201,11 +201,13 @@ impl Transcript {
             .skip(offset)
             .take(usize::from(area.height))
             .collect();
-        let lines: Vec<_> = visible_rows
-            .iter()
-            .map(|row| row.line(&messages[row.message], area.width, selection.as_ref()))
-            .collect();
-        frame.render_widget(Paragraph::new(lines).style(theme::text()), area);
+        let buffer = frame.buffer_mut();
+        buffer.set_style(area, theme::text());
+
+        for (y, row) in (area.top()..area.bottom()).zip(&visible_rows) {
+            let row_area = Rect::new(area.x, y, area.width, 1);
+            row.render(buffer, row_area, &messages[row.message], selection.as_ref());
+        }
 
         visible_rows.truncate(usize::from(area.height.saturating_sub(covered_rows)));
         self.viewport = Rect {
@@ -228,7 +230,7 @@ impl TranscriptRow {
         let mut cell = marker.len();
 
         for grapheme in content[self.bytes.clone()].graphemes(true) {
-            let width = Span::raw(grapheme).width();
+            let width = grapheme_width(grapheme);
             if column < cell + width {
                 break;
             }
@@ -243,50 +245,51 @@ impl TranscriptRow {
         }
     }
 
-    fn line<'a>(
+    fn render(
         &self,
-        message: &'a Message,
-        width: u16,
+        buffer: &mut Buffer,
+        area: Rect,
+        message: &Message,
         selection: Option<&Range<TextPosition>>,
-    ) -> Line<'a> {
+    ) {
         if matches!(self.kind, RowKind::Separator) {
-            return Line::default();
+            return;
         }
 
-        let is_user = message.role == "user";
         let style = if message.error {
             theme::text().fg(theme::ERROR)
-        } else if is_user {
+        } else if message.role == "user" {
             theme::text().fg(theme::ACCENT).bg(theme::ELEVATED)
         } else {
             theme::text()
         };
+        buffer.set_style(area, style);
 
-        let mut line = Line::default().style(style);
-        if let RowKind::Text(marker) = self.kind {
-            line.spans.push(Span::raw(marker));
+        let RowKind::Text(marker) = self.kind else {
+            return;
+        };
+        let mut x = area.x;
+        let mut write = |text, style| {
+            let width = usize::from(area.right().saturating_sub(x));
+            (x, _) = buffer.set_stringn(x, area.y, text, width, style);
+        };
 
-            let content = &message.content;
-            let bytes = self.bytes.clone();
-            if let Some(selected) = self.selected_bytes(selection) {
-                line.spans
-                    .push(Span::raw(&content[bytes.start..selected.start]));
-                line.spans.push(Span::styled(
-                    &content[selected.clone()],
-                    style.add_modifier(Modifier::REVERSED),
-                ));
-                line.spans
-                    .push(Span::raw(&content[selected.end..bytes.end]));
-            } else {
-                line.spans.push(Span::raw(&content[bytes]));
-            }
+        // Advance by the buffer's actual cell count so adding a style boundary
+        // cannot move the text that follows it.
+        write(marker, style);
+        let content = &message.content;
+        let bytes = self.bytes.clone();
+
+        if let Some(selected) = self.selected_bytes(selection) {
+            write(&content[bytes.start..selected.start], style);
+            write(
+                &content[selected.clone()],
+                style.add_modifier(Modifier::REVERSED),
+            );
+            write(&content[selected.end..bytes.end], style);
+        } else {
+            write(&content[bytes], style);
         }
-
-        if is_user {
-            let padding = usize::from(width).saturating_sub(line.width());
-            line.spans.push(Span::raw(" ".repeat(padding)));
-        }
-        line
     }
 
     fn selected_bytes(&self, selection: Option<&Range<TextPosition>>) -> Option<Range<usize>> {
@@ -333,25 +336,14 @@ pub(super) fn transcript_rows(
 
         for physical_line in message.content.split_inclusive('\n') {
             let paragraph = physical_line.lines().next().unwrap_or_default();
-            let mut remaining = paragraph;
 
-            for wrapped in textwrap::wrap(paragraph, &wrap_options) {
-                // Without indentation or inserted hyphens, each wrapped line is a source slice.
-                // Search forward so repeated words map to their own occurrence.
-                let skipped = remaining
-                    .find(wrapped.as_ref())
-                    .expect("wrapped transcript text is a source slice");
-                let start_byte = line_start + paragraph.len() - remaining.len() + skipped;
-
-                for bytes in grapheme_rows(&wrapped, start_byte, content_width) {
-                    rows.push(TranscriptRow {
-                        message: index,
-                        bytes,
-                        kind: RowKind::Text(marker),
-                    });
-                    marker = CONTINUATION;
-                }
-                remaining = &remaining[skipped + wrapped.len()..];
+            for bytes in paragraph_rows(paragraph, &wrap_options) {
+                rows.push(TranscriptRow {
+                    message: index,
+                    bytes: line_start + bytes.start..line_start + bytes.end,
+                    kind: RowKind::Text(marker),
+                });
+                marker = CONTINUATION;
             }
 
             line_start += physical_line.len();
@@ -376,25 +368,89 @@ fn spacer(message: usize, byte: usize, kind: RowKind) -> TranscriptRow {
     }
 }
 
-fn grapheme_rows(text: &str, start: usize, width: usize) -> Vec<Range<usize>> {
+fn paragraph_rows(paragraph: &str, options: &textwrap::Options<'_>) -> Vec<Range<usize>> {
     let mut rows = Vec::new();
-    let mut row_start = start;
+    let mut source_graphemes = paragraph.grapheme_indices(true).peekable();
+    let mut next_byte = 0;
+
+    for wrapped in textwrap::wrap(paragraph, options) {
+        // Without inserted hyphens or indentation, wrapped lines are source slices.
+        let skipped = paragraph[next_byte..]
+            .find(wrapped.as_ref())
+            .expect("wrapped transcript text is a source slice");
+        let start = next_byte + skipped;
+        let end = start + wrapped.len();
+        next_byte = end;
+
+        // The word wrapper can trim part of a grapheme at a word break. Skip
+        // only whole clusters, and consume each cluster once in source order.
+        while source_graphemes
+            .next_if(|(offset, grapheme)| offset + grapheme.len() <= start)
+            .is_some()
+        {}
+        let graphemes =
+            std::iter::from_fn(|| source_graphemes.next_if(|(offset, _)| *offset < end));
+        append_grapheme_rows(&mut rows, graphemes, options.width);
+    }
+
+    if rows.is_empty() {
+        rows.push(0..0);
+    }
+    rows
+}
+
+fn append_grapheme_rows<'a>(
+    rows: &mut Vec<Range<usize>>,
+    graphemes: impl Iterator<Item = (usize, &'a str)>,
+    width: usize,
+) {
+    let mut graphemes = graphemes.peekable();
+    let Some(&(start, _)) = graphemes.peek() else {
+        return;
+    };
+
+    let mut current = start..start;
     let mut columns = 0;
 
-    // Long words need a second pass so wraps never split a displayed grapheme.
-    for (offset, grapheme) in text.grapheme_indices(true) {
-        let grapheme_width = Span::raw(grapheme).width();
+    for (offset, grapheme) in graphemes {
+        let grapheme_width = grapheme_width(grapheme);
         if columns > 0 && columns + grapheme_width > width {
-            rows.push(row_start..start + offset);
-            row_start = start + offset;
+            rows.push(current);
+            current = offset..offset;
             columns = 0;
         }
 
+        current.end = offset + grapheme.len();
         columns += grapheme_width;
     }
 
-    rows.push(row_start..start + text.len());
-    rows
+    rows.push(current);
+}
+
+fn grapheme_width(grapheme: &str) -> usize {
+    // Match Buffer::set_stringn, which skips control characters.
+    if grapheme.contains(char::is_control) {
+        return 0;
+    }
+
+    usize::from(grapheme.cell_width())
+}
+
+fn copy_text(
+    clipboard: &mut impl ClipboardAccess,
+    mut terminal: impl io::Write,
+    text: String,
+) -> &'static str {
+    if clipboard.write(text.clone()).is_ok() {
+        return "Copied chat selection";
+    }
+
+    if execute!(terminal, CopyToClipboard::to_clipboard_from(text)).is_ok() {
+        // OSC 52 has no acknowledgement from the terminal.
+        "Sent to terminal clipboard"
+    } else {
+        "Could not copy chat selection"
+    }
 }
 
 #[cfg(test)]

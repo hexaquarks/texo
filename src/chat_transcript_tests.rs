@@ -117,7 +117,97 @@ fn long_words_wrap_at_grapheme_boundaries() {
         assert!(boundaries.contains(&row.bytes.start));
         assert!(row.bytes.end == reply.len() || boundaries.contains(&row.bytes.end));
 
-        let line = row.line(&messages[0], width, None);
-        assert!(line.width() <= usize::from(width));
+        let columns: usize = reply[row.bytes].graphemes(true).map(grapheme_width).sum();
+        assert!(columns <= usize::from(width) - CONTINUATION.len() - usize::from(RIGHT_PADDING));
     }
+}
+
+#[test]
+fn a_wrap_never_detaches_a_combining_mark_from_its_base() {
+    let mut assistant = Assistant::new();
+    assistant
+        .messages
+        .push(Message::new("assistant", "a \u{301}b".into(), false));
+    let mut terminal = Terminal::new(TestBackend::new(6, 3)).unwrap();
+    draw(&mut assistant, &mut terminal);
+
+    assert_eq!(terminal.backend().buffer()[(3, 1)].symbol(), " \u{301}");
+
+    assistant.begin_transcript_selection(Position::new(3, 1), false);
+    assistant.drag_transcript_selection(mouse(MouseEventKind::Up(MouseButton::Left), 4, 1));
+    let copied = assistant.transcript.selected_text(&assistant.messages);
+    assert_eq!(copied.as_deref(), Some(" \u{301}"));
+}
+
+#[test]
+fn copy_highlight_keeps_cell_positions_after_ligatures_and_tabs() {
+    let mut assistant = Assistant::new();
+    assistant
+        .messages
+        .push(Message::new("assistant", "لا\tend".into(), false));
+    let mut terminal = Terminal::new(TestBackend::new(15, 3)).unwrap();
+    draw(&mut assistant, &mut terminal);
+    assert_eq!(terminal.backend().buffer()[(5, 0)].symbol(), "e");
+
+    assistant.begin_transcript_selection(Position::new(5, 0), false);
+    assistant.drag_transcript_selection(mouse(MouseEventKind::Up(MouseButton::Left), 8, 0));
+    draw(&mut assistant, &mut terminal);
+
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(5, 0)].symbol(), "e");
+    assert!(buffer[(5, 0)].modifier.contains(Modifier::REVERSED));
+    assert_eq!(buffer[(7, 0)].symbol(), "d");
+    assert!(buffer[(7, 0)].modifier.contains(Modifier::REVERSED));
+
+    let copied = assistant.transcript.selected_text(&assistant.messages);
+    assert_eq!(copied.as_deref(), Some("end"));
+}
+
+#[test]
+fn scroll_reaches_start_of_a_transcript_with_more_than_u16_rows() {
+    let mut assistant = Assistant::new();
+    let viewport_rows = 3;
+    let blank_rows = usize::from(u16::MAX) + usize::from(viewport_rows);
+    let reply = format!("First row\n{}Last row", "\n".repeat(blank_rows));
+    assistant
+        .messages
+        .push(Message::new("assistant", reply, false));
+    let mut terminal = Terminal::new(TestBackend::new(20, viewport_rows)).unwrap();
+
+    draw(&mut assistant, &mut terminal);
+    assert_eq!(terminal.backend().buffer()[(3, 2)].symbol(), "L");
+
+    assistant.scroll_from_bottom = usize::MAX;
+    draw(&mut assistant, &mut terminal);
+    assert_eq!(terminal.backend().buffer()[(3, 0)].symbol(), "F");
+}
+
+#[cfg(unix)]
+#[test]
+fn unavailable_native_clipboard_sends_osc52_and_reports_terminal_write_failure() {
+    struct UnavailableClipboard;
+
+    impl ClipboardAccess for UnavailableClipboard {
+        fn read(&mut self) -> anyhow::Result<String> {
+            anyhow::bail!("Clipboard unavailable")
+        }
+
+        fn write(&mut self, _text: String) -> anyhow::Result<()> {
+            anyhow::bail!("Clipboard unavailable")
+        }
+    }
+
+    let mut terminal_output = Vec::new();
+    let notice = copy_text(
+        &mut UnavailableClipboard,
+        &mut terminal_output,
+        "Texo".into(),
+    );
+
+    assert_eq!(notice, "Sent to terminal clipboard");
+    assert_eq!(terminal_output, b"\x1b]52;c;VGV4bw==\x1b\\");
+
+    let read_only_terminal = io::Cursor::new(&mut [][..]);
+    let notice = copy_text(&mut UnavailableClipboard, read_only_terminal, "Texo".into());
+    assert_eq!(notice, "Could not copy chat selection");
 }

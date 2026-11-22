@@ -33,16 +33,21 @@ test('chat OS clipboard copy preserves the composer draft', {
         await terminal.getByText('Unknown command.').expect();
         await paste(terminal, 'Draft text');
         await terminal.press('End');
+        await prefix(terminal, 'z');
+        await terminal.getByText('Restore').expect();
 
         execFileSync('pbcopy', { input: 'Clipboard seed' });
         const reply = await terminal.getByText('Unknown command.').location();
         await terminal.mouse.drag(reply.start.column, reply.start.row, reply.end.column, reply.end.row);
         await terminal.press('Ctrl+c');
+        await terminal.getByText('Copied chat selection').expect();
         assert.equal(execFileSync('pbpaste', { encoding: 'utf8' }), 'Unknown command.');
 
         const word = await terminal.getByText('Unknown').location();
         await terminal.mouse.drag(word.start.column, word.start.row, word.end.column, word.end.row);
+        await terminal.getByText('Unknown').and(terminal.getByStyle({ inverse: true })).expect();
         await terminal.press('Ctrl+Insert');
+        await terminal.getByText('Copied chat selection').expect();
         assert.equal(execFileSync('pbpaste', { encoding: 'utf8' }), 'Unknown');
 
         await paste(terminal, ' stays here');
