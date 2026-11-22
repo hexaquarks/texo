@@ -8,7 +8,21 @@ import { fileURLToPath } from 'node:url';
 
 const WAIT_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 20;
-const SCENARIOS = new Set(['first', 'refine', 'repair', 'advice', 'hold', 'fail']);
+const MARKDOWN_PROMPT = '**markdown**';
+const SCENARIOS = new Set(['first', 'refine', 'repair', 'advice', 'hold', 'fail', MARKDOWN_PROMPT]);
+const MARKDOWN_REPLY = [
+    '## License check',
+    '',
+    '**MIT** is a *permissive* license.',
+    '',
+    '- Read the [Open Source Initiative license text](https://opensource.org/license/mit).',
+    '- Keep a copy of `LICENSE`.',
+    '',
+    '```text',
+    '  Copyright 2026 Example Authors',
+    '  SPDX-License-Identifier: MIT',
+    '```',
+].join('\n');
 const controls = dirname(fileURLToPath(import.meta.url));
 
 async function readRequest() {
@@ -82,7 +96,8 @@ async function respond() {
     }
 
     let calls = [];
-    if (prompt !== 'advice' && history.length === 0) {
+    const isAdvice = prompt === 'advice' || prompt === MARKDOWN_PROMPT;
+    if (!isAdvice && history.length === 0) {
         let content = 'First draft';
         if (prompt === 'refine') {
             content = 'Refined draft';
@@ -96,7 +111,8 @@ async function respond() {
 
     const outputFlag = args.indexOf('-o');
     assert.ok(outputFlag >= 0 && args[outputFlag + 1], 'Expected a Codex output file');
-    const response = { reply: `Fixture completed ${prompt}`, proposed_tex: null, tool_calls: calls };
+    const reply = prompt === MARKDOWN_PROMPT ? MARKDOWN_REPLY : `Fixture completed ${prompt}`;
+    const response = { reply, proposed_tex: null, tool_calls: calls };
     await writeFile(args[outputFlag + 1], JSON.stringify(response));
 }
 

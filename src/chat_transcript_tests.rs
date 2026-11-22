@@ -31,16 +31,14 @@ fn reverse_selection_copies_original_wrapped_unicode_reply() {
 
     // Start after the wide glyph and combining cluster, then drag to the reply marker.
     assistant.begin_transcript_selection(Position::new(6, 2), false);
-    assert!(assistant.drag_transcript_selection(mouse(
-        MouseEventKind::Drag(MouseButton::Left),
-        1,
-        0
-    )));
-    assert!(assistant.drag_transcript_selection(mouse(
-        MouseEventKind::Up(MouseButton::Left),
-        1,
-        0
-    )));
+    assert!(matches!(
+        assistant.drag_transcript_selection(mouse(MouseEventKind::Drag(MouseButton::Left), 1, 0)),
+        TranscriptGesture::Selection
+    ));
+    assert!(matches!(
+        assistant.drag_transcript_selection(mouse(MouseEventKind::Up(MouseButton::Left), 1, 0)),
+        TranscriptGesture::Selection
+    ));
     draw(&mut assistant, &mut terminal);
 
     let text = assistant.transcript.selected_text(&assistant.messages);
@@ -75,11 +73,10 @@ fn selection_reaches_offscreen_messages_and_survives_reflow() {
         assistant.scroll(false);
     }
     draw(&mut assistant, &mut terminal);
-    assert!(assistant.drag_transcript_selection(mouse(
-        MouseEventKind::Up(MouseButton::Left),
-        50,
-        5
-    )));
+    assert!(matches!(
+        assistant.drag_transcript_selection(mouse(MouseEventKind::Up(MouseButton::Left), 50, 5)),
+        TranscriptGesture::Selection
+    ));
 
     let mut narrower = Terminal::new(TestBackend::new(9, 4)).unwrap();
     draw(&mut assistant, &mut narrower);
@@ -210,4 +207,172 @@ fn unavailable_native_clipboard_sends_osc52_and_reports_terminal_write_failure()
     let read_only_terminal = io::Cursor::new(&mut [][..]);
     let notice = copy_text(&mut UnavailableClipboard, read_only_terminal, "Texo".into());
     assert_eq!(notice, "Could not copy chat selection");
+}
+
+#[test]
+fn wrapped_link_clicks_open_a_url_but_dragging_copies_displayed_text() {
+    let url = "https://example.com/licenses/mit";
+    let raw = format!("[**MIT** license documentation]({url})");
+    let mut assistant = Assistant::new();
+    assistant.messages.push(Message::reply(raw.clone()));
+    let mut terminal = Terminal::new(TestBackend::new(23, 8)).unwrap();
+    draw(&mut assistant, &mut terminal);
+
+    let first = Position::new(3, 0);
+    let continuation = Position::new(3, 1);
+    let last_row = u16::try_from(assistant.transcript.visible_rows.len() - 1).unwrap();
+    let past_end = Position::new(22, last_row);
+    let buffer = terminal.backend().buffer();
+
+    assert_eq!(buffer[(3, 1)].symbol(), "d");
+    assert!(buffer[first].modifier.contains(Modifier::BOLD));
+    assert!(buffer[continuation].modifier.contains(Modifier::UNDERLINED));
+
+    for position in [first, continuation] {
+        assistant.begin_transcript_selection(position, false);
+        let release = mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            position.x,
+            position.y,
+        );
+        let TranscriptGesture::OpenLink(opened) = assistant.drag_transcript_selection(release)
+        else {
+            panic!("Stationary click on the link should open its destination");
+        };
+        assert_eq!(opened.as_str(), url);
+        assert!(
+            assistant
+                .transcript
+                .selected_text(&assistant.messages)
+                .is_none()
+        );
+    }
+
+    // Cross back over the starting cell, then drag past the wrapped URL.
+    assistant.begin_transcript_selection(first, false);
+    for point in [continuation, first, past_end] {
+        let drag = mouse(MouseEventKind::Drag(MouseButton::Left), point.x, point.y);
+        assert!(matches!(
+            assistant.drag_transcript_selection(drag),
+            TranscriptGesture::Selection
+        ));
+    }
+    let release = mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        past_end.x,
+        past_end.y,
+    );
+    assert!(matches!(
+        assistant.drag_transcript_selection(release),
+        TranscriptGesture::Selection
+    ));
+
+    let expected = format!("MIT license documentation ({url})");
+    let copied = assistant.transcript.selected_text(&assistant.messages);
+    assert_eq!(copied.as_deref(), Some(expected.as_str()));
+    assert_eq!(assistant.messages[0].content, raw);
+
+    let mut wider = Terminal::new(TestBackend::new(80, 8)).unwrap();
+    draw(&mut assistant, &mut wider);
+    let selected = wider.backend().buffer()[first].modifier;
+    assert!(selected.contains(Modifier::BOLD | Modifier::UNDERLINED | Modifier::REVERSED));
+}
+
+#[test]
+fn mouse_gestures_over_padding_and_unsafe_links_do_not_open_anything() {
+    let mut assistant = Assistant::new();
+    assistant.messages.push(Message::reply(
+        "[MIT](https://example.com)\n[File](file:///tmp/example)".into(),
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(50, 4)).unwrap();
+    draw(&mut assistant, &mut terminal);
+
+    for (position, extend) in [
+        (Position::new(1, 0), false),  // Reply marker
+        (Position::new(35, 0), false), // Padding after the link
+        (Position::new(3, 0), true),   // Shift-click
+        (Position::new(3, 1), false),  // File link
+    ] {
+        assistant.begin_transcript_selection(position, extend);
+        let release = mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            position.x,
+            position.y,
+        );
+        assert!(matches!(
+            assistant.drag_transcript_selection(release),
+            TranscriptGesture::Selection
+        ));
+    }
+
+    let link = Position::new(3, 0);
+    let release = mouse(MouseEventKind::Up(MouseButton::Left), link.x, link.y);
+    assistant.begin_transcript_selection(link, false);
+    let scroll = mouse(MouseEventKind::ScrollUp, link.x, link.y);
+    assert!(matches!(
+        assistant.drag_transcript_selection(scroll),
+        TranscriptGesture::Ignored
+    ));
+    assert!(matches!(
+        assistant.drag_transcript_selection(release),
+        TranscriptGesture::Selection
+    ));
+
+    assistant.begin_transcript_selection(link, false);
+    for column in [4, 3] {
+        let drag = mouse(MouseEventKind::Drag(MouseButton::Left), column, 0);
+        assert!(matches!(
+            assistant.drag_transcript_selection(drag),
+            TranscriptGesture::Selection
+        ));
+    }
+    assert!(matches!(
+        assistant.drag_transcript_selection(mouse(MouseEventKind::Up(MouseButton::Left), 3, 0)),
+        TranscriptGesture::Selection
+    ));
+}
+
+#[test]
+fn styled_unicode_wraps_as_whole_graphemes_and_remains_copyable() {
+    let raw = "a ***e***&#769; 👩‍💻 字 a \u{301}b";
+    let messages = [Message::reply(raw.into())];
+    let content = messages[0].display_text();
+    assert_eq!(content, "a e\u{301} 👩‍💻 字 a \u{301}b");
+
+    let mut boundaries: Vec<_> = content
+        .grapheme_indices(true)
+        .map(|(byte, _)| byte)
+        .collect();
+    boundaries.push(content.len());
+
+    for width in 5..20 {
+        let rows = transcript_rows(&messages, width, false);
+        for row in rows {
+            assert!(boundaries.contains(&row.bytes.start));
+            assert!(boundaries.contains(&row.bytes.end));
+        }
+    }
+
+    let mut assistant = Assistant::new();
+    assistant.messages.extend(messages);
+    let mut terminal = Terminal::new(TestBackend::new(48, 5)).unwrap();
+    draw(&mut assistant, &mut terminal);
+
+    let accented = &terminal.backend().buffer()[(5, 0)];
+    assert_eq!(accented.symbol(), "e\u{301}");
+    assert!(
+        accented
+            .modifier
+            .contains(Modifier::BOLD | Modifier::ITALIC)
+    );
+
+    assistant.begin_transcript_selection(Position::new(5, 0), false);
+    let release = mouse(MouseEventKind::Up(MouseButton::Left), 6, 0);
+    assert!(matches!(
+        assistant.drag_transcript_selection(release),
+        TranscriptGesture::Selection
+    ));
+
+    let copied = assistant.transcript.selected_text(&assistant.messages);
+    assert_eq!(copied.as_deref(), Some("e\u{301}"));
 }

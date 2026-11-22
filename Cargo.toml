@@ -51,6 +51,7 @@ tui-spinner = "=0.4.18"
 arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 regex = "1.13.1"
 unicode-segmentation = "1"
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # This published release candidate includes the terminal query timeout fix.
 [dependencies.ratatui-image]

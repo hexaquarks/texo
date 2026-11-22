@@ -10,7 +10,7 @@ use ratatui::{
 use ratatui_textarea::{CursorMove, TextArea};
 use texo::{auth::Provider, theme};
 
-use super::{Assistant, chat_transcript::transcript_rows};
+use super::{Assistant, TranscriptGesture, chat_transcript::transcript_rows};
 
 const MIN_INPUT_HEIGHT: u16 = 3;
 const INPUT_VERTICAL_PADDING: u16 = 1;
@@ -94,7 +94,7 @@ impl Assistant {
         self.transcript.begin_drag(&self.messages, position, extend);
     }
 
-    pub fn drag_transcript_selection(&mut self, mouse: MouseEvent) -> bool {
+    pub fn drag_transcript_selection(&mut self, mouse: MouseEvent) -> TranscriptGesture {
         self.transcript.handle_drag(&self.messages, mouse)
     }
 
