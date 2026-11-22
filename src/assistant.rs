@@ -32,19 +32,26 @@ pub struct ProposedEdit {
     pub source_after: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MessageKind {
+    User,
+    Reply,
+    Notice,
+    Error,
+    Cancelled,
+}
+
 struct Message {
-    role: &'static str,
+    kind: MessageKind,
     content: String,
-    error: bool,
     markdown: Option<chat_markdown::Markdown>,
 }
 
 impl Message {
-    fn new(role: &'static str, content: String, error: bool) -> Self {
+    fn new(kind: MessageKind, content: String) -> Self {
         Self {
-            role,
+            kind,
             content,
-            error,
             markdown: None,
         }
     }
@@ -53,9 +60,10 @@ impl Message {
         // Conversation history still sends the original provider text. The transcript
         // shares this rendered text across drawing, selecting, and copying.
         let markdown = chat_markdown::Markdown::parse(&content);
+
         Self {
             markdown: Some(markdown),
-            ..Self::new("assistant", content, false)
+            ..Self::new(MessageKind::Reply, content)
         }
     }
 
@@ -64,6 +72,19 @@ impl Message {
             Some(markdown) => &markdown.text,
             None => &self.content,
         }
+    }
+
+    fn conversation_message(&self) -> Option<ConversationMessage> {
+        let role = match self.kind {
+            MessageKind::User => "user",
+            MessageKind::Reply | MessageKind::Notice => "assistant",
+            MessageKind::Error | MessageKind::Cancelled => return None,
+        };
+
+        Some(ConversationMessage {
+            role,
+            content: self.content.clone(),
+        })
     }
 }
 
@@ -158,7 +179,13 @@ impl Assistant {
     }
 
     fn notice(&mut self, text: String, error: bool) {
-        self.messages.push(Message::new("assistant", text, error));
+        let kind = if error {
+            MessageKind::Error
+        } else {
+            MessageKind::Notice
+        };
+
+        self.messages.push(Message::new(kind, text));
         self.scroll_from_bottom = 0;
     }
 
@@ -245,28 +272,27 @@ impl Assistant {
         );
         let prompt = self.input.lines().join("\n");
         ensure!(!prompt.trim().is_empty(), "Type a message first");
+
         if prompt.trim_start().starts_with('/') {
             if let Err(error) = self.run_command(prompt.trim()) {
                 self.notice(error.to_string(), true);
             }
             return Ok(());
         }
+
         let mut conversation: Vec<_> = self
             .messages
             .iter()
-            .filter(|message| !message.error)
-            .map(|message| ConversationMessage {
-                role: message.role,
-                content: message.content.clone(),
-            })
+            .filter_map(Message::conversation_message)
             .collect();
         conversation.push(ConversationMessage {
             role: "user",
             content: prompt.clone(),
         });
+
         let job = AssistantJob::start(&source, path, &conversation)?;
 
-        self.messages.push(Message::new("user", prompt, false));
+        self.messages.push(Message::new(MessageKind::User, prompt));
         self.input = new_input();
         self.source_snapshot = source;
         self.proposed_edit = None;
@@ -292,9 +318,11 @@ impl Assistant {
         if let Some(profile) = self.login.as_mut().and_then(LoginDialog::poll) {
             self.connected(profile);
         }
+
         let result = self.job.as_ref()?.poll()?;
         self.job = None;
         self.scroll_from_bottom = 0;
+
         match result {
             Ok(completed) => {
                 let response = completed.reply;
@@ -308,7 +336,7 @@ impl Assistant {
             }
             Err(error) => {
                 self.messages
-                    .push(Message::new("assistant", format!("{error:#}"), true));
+                    .push(Message::new(MessageKind::Error, format!("{error:#}")));
                 Some(Err(error))
             }
         }
@@ -322,9 +350,8 @@ impl Assistant {
     pub fn cancel(&mut self) {
         if self.job.take().is_some() {
             self.messages.push(Message::new(
-                "assistant",
+                MessageKind::Cancelled,
                 "Request cancelled. You can send another message.".into(),
-                true,
             ));
             self.scroll_from_bottom = 0;
         }

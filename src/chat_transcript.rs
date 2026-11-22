@@ -10,6 +10,7 @@ use ratatui::{
     },
     layout::{Position, Rect},
     style::{Modifier, Style},
+    text::Span,
 };
 use reqwest::Url;
 use texo::theme;
@@ -17,9 +18,11 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::clipboard::{ClipboardAccess, SystemClipboard};
 
-use super::Message;
+use super::{Message, MessageKind};
 
 const CONTINUATION: &str = "   ";
+// Every first-row marker uses one terminal cell and a space on either side.
+const PREFIX_WIDTH: usize = CONTINUATION.len();
 const RIGHT_PADDING: u16 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -51,7 +54,7 @@ pub(super) struct TranscriptRow {
 
 #[derive(Clone, Copy)]
 enum RowKind {
-    Text(&'static str),
+    Text { first: bool },
     PromptPadding,
     Separator,
 }
@@ -281,13 +284,14 @@ struct RowHit {
 impl TranscriptRow {
     fn hit(&self, content: &str, column: usize) -> RowHit {
         let mut byte = self.bytes.start;
-        let RowKind::Text(marker) = self.kind else {
+        let RowKind::Text { .. } = self.kind else {
             return RowHit {
                 byte,
                 cell_end: None,
             };
         };
-        let mut cell = marker.len();
+
+        let mut cell = PREFIX_WIDTH;
         if column < cell {
             return RowHit {
                 byte,
@@ -325,27 +329,30 @@ impl TranscriptRow {
             return;
         }
 
-        let style = if message.error {
-            theme::text().fg(theme::ERROR)
-        } else if message.role == "user" {
-            theme::text().fg(theme::ACCENT).bg(theme::ELEVATED)
-        } else {
-            theme::text()
+        let style = match message.kind {
+            MessageKind::User => theme::text().fg(theme::ACCENT).bg(theme::ELEVATED),
+            MessageKind::Error => theme::text().fg(theme::ERROR),
+            _ => theme::text(),
         };
         buffer.set_style(area, style);
 
-        let RowKind::Text(marker) = self.kind else {
+        let RowKind::Text { first } = self.kind else {
             return;
         };
+
+        let (marker, marker_style) = if first {
+            message_marker(message.kind)
+        } else {
+            (CONTINUATION, Style::new())
+        };
+
         let mut x = area.x;
         let mut write = |text, style| {
             let width = usize::from(area.right().saturating_sub(x));
             (x, _) = buffer.set_stringn(x, area.y, text, width, style);
         };
+        write(marker, style.patch(marker_style));
 
-        // Advance by the buffer's actual cell count so adding a style boundary
-        // cannot move the text that follows it.
-        write(marker, style);
         self.render_text(
             message,
             style,
@@ -435,6 +442,20 @@ fn write_span<'a>(
     write(&content[bytes], style);
 }
 
+fn message_marker(kind: MessageKind) -> (&'static str, Style) {
+    match kind {
+        MessageKind::User => (" > ", Style::new()),
+        MessageKind::Reply => (" • ", Style::new().fg(theme::GREEN)),
+        MessageKind::Notice => (" · ", theme::muted()),
+        MessageKind::Error => (" ! ", Style::new()),
+        MessageKind::Cancelled => (" – ", theme::muted()),
+    }
+}
+
+pub(super) fn pending_marker() -> Span<'static> {
+    Span::styled(" ◦ ", theme::muted())
+}
+
 pub(super) fn transcript_rows(
     messages: &[Message],
     width: u16,
@@ -442,21 +463,17 @@ pub(super) fn transcript_rows(
 ) -> Vec<TranscriptRow> {
     let mut rows = Vec::new();
     let content_width = usize::from(width)
-        .saturating_sub(CONTINUATION.len() + usize::from(RIGHT_PADDING))
+        .saturating_sub(PREFIX_WIDTH + usize::from(RIGHT_PADDING))
         .max(1);
     let wrap_options = textwrap::Options::new(content_width).break_words(false);
 
     for (index, message) in messages.iter().enumerate() {
-        let padded = message.role == "user" && !compact;
+        let padded = message.kind == MessageKind::User && !compact;
         if padded {
             rows.push(spacer(index, 0, RowKind::PromptPadding));
         }
 
-        let mut marker = match (message.role, message.error) {
-            ("user", _) => " > ",
-            (_, true) => " ! ",
-            _ => " * ",
-        };
+        let mut first = true;
         let content = message.display_text();
         let code_blocks = message
             .markdown
@@ -480,9 +497,9 @@ pub(super) fn transcript_rows(
                 rows.push(TranscriptRow {
                     message: index,
                     bytes: line_start + bytes.start..line_start + bytes.end,
-                    kind: RowKind::Text(marker),
+                    kind: RowKind::Text { first },
                 });
-                marker = CONTINUATION;
+                first = false;
             }
 
             line_start += physical_line.len();

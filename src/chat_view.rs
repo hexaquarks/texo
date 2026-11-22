@@ -4,13 +4,16 @@ use ratatui::{
     crossterm::event::MouseEvent,
     layout::{Alignment, Constraint, Layout, Margin, Position, Rect},
     style::{Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Padding, Paragraph, Widget},
 };
 use ratatui_textarea::{CursorMove, TextArea};
 use texo::{auth::Provider, theme};
 
-use super::{Assistant, TranscriptGesture, chat_transcript::transcript_rows};
+use super::{
+    Assistant, TranscriptGesture,
+    chat_transcript::{pending_marker, transcript_rows},
+};
 
 const MIN_INPUT_HEIGHT: u16 = 3;
 const INPUT_VERTICAL_PADDING: u16 = 1;
@@ -27,13 +30,8 @@ const MODEL_LABEL_HEIGHT: u16 = 1;
 
 const PROMPT_WIDTH: u16 = 2;
 
-const THINKING_VERTICAL_PADDING: u16 = 1;
-
-const THINKING_HEIGHT: u16 = 1 + THINKING_VERTICAL_PADDING * 2;
-
-const THINKING_FRAME_MS: u128 = 100;
-
-const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const REQUEST_VERTICAL_PADDING: u16 = 1;
+const PENDING_REQUEST_HEIGHT: u16 = 1 + REQUEST_VERTICAL_PADDING * 2;
 
 fn maximize_hint(maximized: bool, prefix: &str) -> Line<'static> {
     let shortcut = format!("{prefix} u");
@@ -301,18 +299,16 @@ impl Assistant {
     }
 
     fn draw_activity(&self, frame: &mut Frame, area: Rect, focused: bool) {
-        if let Some(job) = &self.job {
-            let phase =
-                (job.elapsed().as_millis() / THINKING_FRAME_MS) % THINKING_FRAMES.len() as u128;
-            let mut label = Line::styled(
-                format!("{} Texo is thinking…  ", THINKING_FRAMES[phase as usize]),
-                theme::text().fg(theme::ACCENT),
-            );
+        if self.is_running() {
+            let mut label = Line::from(vec![
+                pending_marker(),
+                Span::styled("Waiting for reply  ", theme::muted()),
+            ]);
             label.extend(theme::shortcuts(&[("Esc", "cancel")]).spans);
 
             frame.render_widget(
                 Paragraph::new(label),
-                area.inner(Margin::new(0, THINKING_VERTICAL_PADDING)),
+                area.inner(Margin::new(0, REQUEST_VERTICAL_PADDING)),
             );
         }
 
@@ -331,7 +327,7 @@ impl Assistant {
 
     fn activity_height(&self) -> u16 {
         if self.is_running() {
-            THINKING_HEIGHT
+            PENDING_REQUEST_HEIGHT
         } else {
             1
         }
