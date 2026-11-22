@@ -1,7 +1,14 @@
-use texo::preview::Preview;
+use std::sync::{Arc, atomic::Ordering};
+
+use texo::{preview::Preview, resume_tools::DocumentWorkspace};
 
 use super::{App, Focus};
-use crate::{assistant::ProposedEdit, proposal::ProposalReview, render_job::RenderJob};
+use crate::{
+    assistant::ProposedEdit,
+    proposal::ProposalReview,
+    render_job::RenderJob,
+    resume_documents::{OpenDocument, WorkspaceDocuments},
+};
 
 impl App {
     pub(super) fn send_message(&mut self) {
@@ -9,33 +16,60 @@ impl App {
             self.session.status = "Return to Working copy to ask AI for changes.".into();
             return;
         }
-        if self.session.assistant.input.lines().join("\n").trim() == "/settings" {
+        let input = self.session.assistant.input.lines().join("\n");
+        let command = input.trim();
+        if command == "/settings" {
             self.session.assistant.clear_input();
             self.open_settings();
             return;
         }
 
-        let command = self.session.assistant.input.lines().join("\n");
-        if self.session.empty_workspace && !command.trim_start().starts_with('/') {
-            self.session
-                .assistant
-                .report_edit_result("Create or import a resume first.");
-            return;
-        }
+        let workspace: Option<Box<dyn DocumentWorkspace>> =
+            if command.is_empty() || command.starts_with('/') {
+                None
+            } else {
+                match self.assistant_workspace() {
+                    Ok(workspace) => Some(Box::new(workspace)),
+                    Err(error) => {
+                        self.session.status = error.to_string();
+                        return;
+                    }
+                }
+            };
 
         let source = self.assistant_source();
-
         match self
             .session
             .assistant
-            .submit(source, &self.session.editor.path)
+            .submit(source, &self.session.editor.path, workspace)
         {
             Ok(()) => self.session.status.clear(),
             Err(error) => self.session.status = error.to_string(),
         }
     }
 
+    pub(super) fn assistant_workspace(&self) -> anyhow::Result<WorkspaceDocuments> {
+        let editor = &self.session.editor;
+        let current = (!self.session.empty_workspace).then(|| OpenDocument {
+            path: editor.path.clone(),
+            project_id: self
+                .projects
+                .project_for(&editor.path)
+                .map(|project| project.manifest.id),
+            source: editor.source(),
+        });
+        WorkspaceDocuments::new(
+            self.projects.root(),
+            current,
+            Arc::clone(&self.assistant_documents_changed),
+        )
+    }
+
     pub(super) fn assistant_source(&self) -> String {
+        if self.session.empty_workspace {
+            return String::new();
+        }
+
         self.session
             .proposal_review
             .as_ref()
@@ -44,6 +78,13 @@ impl App {
     }
 
     pub(super) fn receive_assistant(&mut self) {
+        if self
+            .assistant_documents_changed
+            .swap(false, Ordering::Acquire)
+        {
+            self.refresh_projects();
+        }
+
         if let Some(result) = self.session.assistant.poll() {
             match result {
                 Ok(()) if self.session.assistant.proposal().is_some() => {

@@ -1,4 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 #[cfg(test)]
 use anyhow::Context;
@@ -36,6 +41,7 @@ enum Focus {
 struct App {
     session: ResumeSession,
     projects: Projects,
+    assistant_documents_changed: Arc<AtomicBool>,
     projects_visible: bool,
     actions: Option<ActionMenu>,
     project_dialog: Option<ProjectDialog>,
@@ -99,6 +105,7 @@ impl App {
         Ok(Self {
             session: ResumeSession::new(editor, preview),
             projects,
+            assistant_documents_changed: Default::default(),
             projects_visible: true,
             actions: None,
             project_dialog: None,
@@ -218,6 +225,9 @@ mod pane_expansion_tests;
 #[cfg(test)]
 #[path = "project_dialog_tests.rs"]
 mod project_dialog_tests;
+#[cfg(test)]
+#[path = "resume_documents_tests.rs"]
+mod resume_documents_tests;
 #[cfg(test)]
 #[path = "resume_lifecycle_tests.rs"]
 mod resume_lifecycle_tests;

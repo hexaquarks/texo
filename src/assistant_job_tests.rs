@@ -261,7 +261,7 @@ fn pending_and_disconnected_workers_are_distinguished() {
 #[test]
 fn oversized_context_is_rejected_before_a_worker_can_start() {
     let source = "x".repeat(MAX_CONTEXT_BYTES + 1);
-    let result = AssistantJob::start(&source, Path::new("resume.tex"), &[]);
+    let result = AssistantJob::start(&source, Path::new("resume.tex"), &[], None);
 
     let error = result
         .err()

@@ -19,7 +19,7 @@ use texo::{
     agent::{self, AgentTurn},
     auth::{CODEX_STATUS_TIMEOUT, Keychain, Profile, Provider, codex_command, resolve_key},
     llm,
-    resume_tools::ResumeTools,
+    resume_tools::{DocumentWorkspace, ResumeTools},
 };
 
 const REQUEST_TIMEOUT: Duration = llm::REQUEST_TIMEOUT;
@@ -54,6 +54,12 @@ const ASSISTANT_INSTRUCTIONS: &str = "You are Texo, a concise resume editing ass
     claim the proposed edit has been accepted or saved to disk. Texo reports the actual result. \
     If you did not stage a changed draft, do not claim to have modified the resume.";
 
+const DOCUMENT_INSTRUCTIONS: &str = "When no resume is open, current_tex is empty and only workspace \
+    document operations are available. Use list_resumes to identify other resumes when the user asks to work \
+    with them. Only create a new resume or copy when requested. Report a new resume as saved only after \
+    create_resume succeeds. If the user asks for a copy before editing, confirm that create_resume succeeds \
+    in its own tool round before staging the edit. Edits to the open resume always require review.";
+
 #[derive(Clone, Serialize)]
 pub struct ConversationMessage {
     pub role: &'static str,
@@ -72,7 +78,12 @@ pub struct AssistantJob {
 }
 
 impl AssistantJob {
-    pub fn start(source: &str, path: &Path, messages: &[ConversationMessage]) -> Result<Self> {
+    pub fn start(
+        source: &str,
+        path: &Path,
+        messages: &[ConversationMessage],
+        workspace: Option<Box<dyn DocumentWorkspace>>,
+    ) -> Result<Self> {
         let prompt = build_prompt(source, path, messages)?;
 
         let document = path
@@ -85,6 +96,9 @@ impl AssistantJob {
                 .context("Resume needs a parent folder")?
                 .to_owned(),
         );
+        if let Some(workspace) = workspace {
+            tools = tools.in_workspace(workspace);
+        }
 
         let (sender, result) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -279,7 +293,9 @@ fn build_prompt(source: &str, path: &Path, messages: &[ConversationMessage]) -> 
         "This conversation is too large. Clear the chat and try again"
     );
 
-    Ok(format!("{ASSISTANT_INSTRUCTIONS}\n\n{context}"))
+    Ok(format!(
+        "{ASSISTANT_INSTRUCTIONS} {DOCUMENT_INSTRUCTIONS}\n\n{context}"
+    ))
 }
 
 fn request(

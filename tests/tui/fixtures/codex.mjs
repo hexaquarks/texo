@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const WAIT_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 20;
 const MARKDOWN_PROMPT = '**markdown**';
-const SCENARIOS = new Set(['first', 'refine', 'repair', 'advice', 'hold', 'fail', MARKDOWN_PROMPT]);
+const SCENARIOS = new Set(['first', 'refine', 'repair', 'advice', 'hold', 'fail', 'copy', MARKDOWN_PROMPT]);
 const MARKDOWN_REPLY = [
     '## License check',
     '',
@@ -80,6 +80,32 @@ function editAndCompile(content, identifier) {
     ];
 }
 
+function copyAndEdit(history) {
+    if (history.length === 0) {
+        return [
+            {
+                id: 'save-copy',
+                name: 'create_resume',
+                arguments_json: JSON.stringify({
+                    name: 'Assistant copy',
+                    source_document_id: 'current',
+                    tex: null,
+                }),
+            },
+        ];
+    }
+
+    const [copy] = history[0].results;
+    assert.equal(copy.is_error, false, JSON.stringify(copy.output));
+    assert.equal(copy.output.saved, true);
+
+    if (history.length === 1) {
+        return editAndCompile('Draft after copying', 'after-copy');
+    }
+
+    return [];
+}
+
 async function respond() {
     const args = process.argv.slice(2);
     if (args.length === 2 && args[0] === 'login' && args[1] === 'status') {
@@ -97,7 +123,9 @@ async function respond() {
 
     let calls = [];
     const isAdvice = prompt === 'advice' || prompt === MARKDOWN_PROMPT;
-    if (!isAdvice && history.length === 0) {
+    if (prompt === 'copy') {
+        calls = copyAndEdit(history);
+    } else if (!isAdvice && history.length === 0) {
         let content = 'First draft';
         if (prompt === 'refine') {
             content = 'Refined draft';

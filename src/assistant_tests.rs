@@ -29,7 +29,7 @@ fn slash_commands_complete_dynamically_and_never_enter_model_history() {
     assert!(assistant.complete_command(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     assert_eq!(assistant.input.lines()[0], "/login");
     assistant
-        .submit("resume".into(), Path::new("resume.tex"))
+        .submit("resume".into(), Path::new("resume.tex"), None)
         .unwrap();
     assert!(assistant.login_open());
     assert!(!assistant.is_running());
@@ -41,7 +41,7 @@ fn slash_commands_complete_dynamically_and_never_enter_model_history() {
     assert!(!assistant.login_open());
     assistant.input.insert_str("/unknown accidental-secret");
     assistant
-        .submit("resume".into(), Path::new("resume.tex"))
+        .submit("resume".into(), Path::new("resume.tex"), None)
         .unwrap();
     assert!(!assistant.is_running());
     assert!(
@@ -244,7 +244,7 @@ fn submit_empty_message_does_not_launch_cli() {
     let mut assistant = Assistant::new();
     assert!(
         assistant
-            .submit("source".into(), Path::new("resume.tex"))
+            .submit("source".into(), Path::new("resume.tex"), None)
             .is_err()
     );
     assert!(!assistant.is_running());

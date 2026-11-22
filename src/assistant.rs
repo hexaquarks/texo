@@ -10,6 +10,7 @@ use ratatui::{
 use ratatui_textarea::{TextArea, WrapMode};
 use texo::{
     auth::{Keychain, Profile, Provider, disconnect},
+    resume_tools::DocumentWorkspace,
     theme,
 };
 
@@ -265,7 +266,12 @@ impl Assistant {
         self.job.is_some()
     }
 
-    pub fn submit(&mut self, source: String, path: &Path) -> Result<()> {
+    pub fn submit(
+        &mut self,
+        source: String,
+        path: &Path,
+        workspace: Option<Box<dyn DocumentWorkspace>>,
+    ) -> Result<()> {
         ensure!(
             !self.is_running(),
             "Wait for Texo or cancel the current request"
@@ -290,7 +296,7 @@ impl Assistant {
             content: prompt.clone(),
         });
 
-        let job = AssistantJob::start(&source, path, &conversation)?;
+        let job = AssistantJob::start(&source, path, &conversation, workspace)?;
 
         self.messages.push(Message::new(MessageKind::User, prompt));
         self.input = new_input();
