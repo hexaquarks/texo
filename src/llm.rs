@@ -252,9 +252,16 @@ pub fn parse_codex_turn(bytes: &[u8]) -> Result<AgentTurn> {
         })
         .collect::<Result<Vec<_>>>()?;
 
+    let summary = response.reply.trim();
+    let continuation = if summary.is_empty() {
+        Value::Null
+    } else {
+        json!({ "summary": summary })
+    };
+
     Ok(AgentTurn::Tools {
         calls,
-        continuation: Value::Null,
+        continuation,
     })
 }
 
