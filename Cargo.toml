@@ -23,6 +23,7 @@ include = [
 [dependencies]
 anyhow = "1"
 clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "0.29", default-features = false, features = ["osc52"] }
 ignore = "0.4.33"
 lopdf = { version = "0.46", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -49,6 +50,7 @@ uuid = { version = "1.29.0", features = ["v4", "serde"] }
 tui-spinner = "=0.4.18"
 arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 regex = "1.13.1"
+unicode-segmentation = "1"
 
 # This published release candidate includes the terminal query timeout fix.
 [dependencies.ratatui-image]

@@ -36,10 +36,3 @@ impl ClipboardAccess for SystemClipboard {
             .context("Could not write clipboard")
     }
 }
-
-#[derive(Clone, Copy)]
-pub(super) enum ClipboardAction {
-    Copy,
-    Cut,
-    Paste,
-}

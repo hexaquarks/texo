@@ -14,7 +14,10 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 
-use crate::config::{EditingMode, EditorPreferences};
+use crate::{
+    clipboard::{ClipboardAccess, SystemClipboard},
+    config::{EditingMode, EditorPreferences},
+};
 use syntect::{
     easy::HighlightLines,
     highlighting::{StyleModifier, Theme, ThemeItem},
@@ -22,8 +25,6 @@ use syntect::{
 };
 use texo::theme;
 
-#[path = "editor_clipboard.rs"]
-mod clipboard;
 #[path = "vim_repeat.rs"]
 mod repeat;
 #[path = "editor_search.rs"]
@@ -31,7 +32,6 @@ mod search;
 #[path = "editor_vim.rs"]
 mod vim;
 
-use clipboard::{ClipboardAccess, ClipboardAction, SystemClipboard};
 use repeat::{EditInput, Repeat};
 use search::Search;
 use vim::{Vim, VimInput};
@@ -40,6 +40,13 @@ const TAB_WIDTH: u8 = 4;
 const HORIZONTAL_SCROLL_COLUMNS: i16 = 4;
 pub const STARTER_DOCUMENT: &str =
     "\\documentclass{article}\n\\begin{document}\nYour resume starts here.\n\\end{document}\n";
+
+#[derive(Clone, Copy)]
+enum ClipboardAction {
+    Copy,
+    Cut,
+    Paste,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DiskState {

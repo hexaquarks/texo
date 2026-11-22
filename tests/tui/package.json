@@ -5,7 +5,7 @@
   "scripts": {
     "pretest": "cargo build --manifest-path ../../Cargo.toml",
     "test": "node --test --test-concurrency=1 *.test.mjs",
-    "test:clipboard": "swift fixtures/clipboard_guard.swift node --test --test-name-pattern=\"OS clipboard\" editor.test.mjs"
+    "test:clipboard": "swift fixtures/clipboard_guard.swift node --test --test-concurrency=1 --test-name-pattern=\"OS clipboard\" editor.test.mjs chat-input.test.mjs"
   },
   "devDependencies": {
     "@microsoft/tui-test": "0.1.1"

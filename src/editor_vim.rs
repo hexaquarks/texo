@@ -5,7 +5,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui_textarea::{CursorMove, DataCursor, Scrolling, TextArea};
 
-use super::clipboard::ClipboardAction;
+use super::ClipboardAction;
 
 #[path = "vim_jumps.rs"]
 mod jumps;

@@ -1,15 +1,16 @@
 use ratatui::{
     Frame,
     buffer::Buffer,
+    crossterm::event::MouseEvent,
     layout::{Alignment, Constraint, Layout, Margin, Position, Rect},
     style::{Modifier, Style},
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, Padding, Paragraph, Widget},
 };
 use ratatui_textarea::{CursorMove, TextArea};
 use texo::{auth::Provider, theme};
 
-use super::{Assistant, Message};
+use super::{Assistant, chat_transcript::transcript_rows};
 
 const MIN_INPUT_HEIGHT: u16 = 3;
 const INPUT_VERTICAL_PADDING: u16 = 1;
@@ -89,6 +90,26 @@ impl Assistant {
         true
     }
 
+    pub fn begin_transcript_selection(&mut self, position: Position, extend: bool) {
+        self.transcript.begin_drag(&self.messages, position, extend);
+    }
+
+    pub fn drag_transcript_selection(&mut self, mouse: MouseEvent) -> bool {
+        self.transcript.handle_drag(&self.messages, mouse)
+    }
+
+    pub fn end_transcript_drag(&mut self) {
+        self.transcript.end_drag();
+    }
+
+    pub fn clear_transcript_selection(&mut self) {
+        self.transcript.clear_selection();
+    }
+
+    pub fn copy_transcript_selection(&mut self) -> Option<&'static str> {
+        self.transcript.copy(&self.messages)
+    }
+
     pub fn maximize_button(area: Rect, maximized: bool, prefix: &str) -> Rect {
         if area.is_empty() || area.height < MIN_INPUT_HEIGHT + 2 {
             return Rect::default();
@@ -113,6 +134,8 @@ impl Assistant {
         prefix: &str,
         reviewing: bool,
     ) {
+        self.transcript.hide();
+
         if let Some(login) = &self.login
             && !login.is_loading_models()
         {
@@ -162,7 +185,15 @@ impl Assistant {
                 Self::maximize_button(area, maximized, prefix),
             );
         }
-        self.draw_transcript(frame, history, reviewing);
+        let choices = if focused {
+            self.command_matches()
+        } else {
+            Vec::new()
+        };
+        let covered_rows = u16::try_from(choices.len())
+            .unwrap_or(u16::MAX)
+            .min(history.height);
+        self.draw_transcript(frame, history, reviewing, covered_rows);
 
         if let Some(job) = &self.job {
             let phase =
@@ -177,45 +208,44 @@ impl Assistant {
                 Paragraph::new(label),
                 activity.inner(Margin::new(0, THINKING_VERTICAL_PADDING)),
             );
+        } else if focused && !self.messages.is_empty() {
+            frame.render_widget(
+                Paragraph::new("Drag to select · Ctrl+C to copy").style(theme::muted()),
+                activity,
+            );
         }
 
-        if focused {
-            let choices = self.command_matches();
-            if !choices.is_empty() {
-                let count = u16::try_from(choices.len())
-                    .unwrap_or(u16::MAX)
-                    .min(history.height);
-                let suggestion_area = Rect::new(
-                    history.x,
-                    history.bottom().saturating_sub(count),
-                    history.width,
-                    count,
-                );
-                frame.render_widget(
-                    Block::default().style(theme::text().bg(theme::ELEVATED)),
-                    suggestion_area,
-                );
-                let selected = self.command_selection.min(choices.len() - 1);
-                let lines: Vec<_> = choices
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (name, description))| {
-                        let style = if index == selected {
-                            theme::text().fg(theme::ACCENT).bg(theme::SELECTION)
-                        } else {
-                            theme::muted()
-                        };
-                        Line::styled(
-                            format!(
-                                " {} {name}  {description}",
-                                if index == selected { "›" } else { " " }
-                            ),
-                            style,
-                        )
-                    })
-                    .collect();
-                frame.render_widget(Paragraph::new(lines), suggestion_area);
-            }
+        if !choices.is_empty() {
+            let suggestion_area = Rect::new(
+                history.x,
+                history.bottom().saturating_sub(covered_rows),
+                history.width,
+                covered_rows,
+            );
+            frame.render_widget(
+                Block::default().style(theme::text().bg(theme::ELEVATED)),
+                suggestion_area,
+            );
+            let selected = self.command_selection.min(choices.len() - 1);
+            let lines: Vec<_> = choices
+                .iter()
+                .enumerate()
+                .map(|(index, (name, description))| {
+                    let style = if index == selected {
+                        theme::text().fg(theme::ACCENT).bg(theme::SELECTION)
+                    } else {
+                        theme::muted()
+                    };
+                    Line::styled(
+                        format!(
+                            " {} {name}  {description}",
+                            if index == selected { "›" } else { " " }
+                        ),
+                        style,
+                    )
+                })
+                .collect();
+            frame.render_widget(Paragraph::new(lines), suggestion_area);
         }
 
         let [input, model] = composer_rows(composer);
@@ -243,18 +273,13 @@ impl Assistant {
 
     #[cfg(test)]
     pub(super) fn draw_history(&mut self, frame: &mut Frame, area: Rect) {
-        self.draw_transcript(frame, area, false);
+        self.draw_transcript(frame, area, false, 0);
     }
 
     pub fn review_height(&self, area: Rect) -> u16 {
         let inner = area.inner(Margin::new(theme::PANEL_PADDING, CHAT_VERTICAL_PADDING));
-        let transcript_width = inner.width;
-        let rows: usize = self
-            .messages
-            .iter()
-            .map(|message| message_lines(message, transcript_width, true).len())
-            .sum();
-        let transcript_rows = u16::try_from(rows.saturating_sub(1)).unwrap_or(u16::MAX);
+        let rows = transcript_rows(&self.messages, inner.width, true).len();
+        let transcript_rows = u16::try_from(rows).unwrap_or(u16::MAX);
         let composer = self.composer_height(inner);
 
         transcript_rows.saturating_add(
@@ -267,7 +292,7 @@ impl Assistant {
         )
     }
 
-    fn draw_transcript(&mut self, frame: &mut Frame, area: Rect, compact: bool) {
+    fn draw_transcript(&mut self, frame: &mut Frame, area: Rect, compact: bool, covered_rows: u16) {
         if area.is_empty() {
             return;
         }
@@ -282,23 +307,14 @@ impl Assistant {
             return;
         }
 
-        let mut lines: Vec<Line<'static>> = self
-            .messages
-            .iter()
-            .flat_map(|message| message_lines(message, area.width, compact))
-            .collect();
-        // Keep a blank line between turns without wasting the last visible transcript row.
-        lines.pop();
-        let maximum_scroll = u16::try_from(lines.len())
-            .unwrap_or(u16::MAX)
-            .saturating_sub(area.height);
-        self.scroll_from_bottom = self.scroll_from_bottom.min(maximum_scroll);
-        let offset = maximum_scroll.saturating_sub(self.scroll_from_bottom);
-        frame.render_widget(
-            Paragraph::new(lines)
-                .style(theme::text())
-                .scroll((offset, 0)),
+        let rows = transcript_rows(&self.messages, area.width, compact);
+        self.transcript.draw(
+            frame,
             area,
+            rows,
+            covered_rows,
+            &self.messages,
+            &mut self.scroll_from_bottom,
         );
     }
 
@@ -381,46 +397,4 @@ fn input_block() -> Block<'static> {
             INPUT_VERTICAL_PADDING,
             INPUT_VERTICAL_PADDING,
         ))
-}
-
-fn message_lines(message: &Message, width: u16, compact: bool) -> Vec<Line<'static>> {
-    let is_user = message.role == "user";
-    let prefix = if is_user {
-        "> "
-    } else if message.error {
-        "! "
-    } else {
-        "* "
-    };
-    let style = if message.error {
-        theme::text().fg(theme::ERROR)
-    } else if is_user {
-        theme::text().fg(theme::ACCENT).bg(theme::ELEVATED)
-    } else {
-        theme::text()
-    };
-    let content_width = usize::from(width.saturating_sub(PROMPT_WIDTH + 2)).max(1);
-    let padded_blank = || Line::from(" ".repeat(usize::from(width))).style(style);
-    let mut lines = Vec::new();
-    if is_user && !compact {
-        lines.push(padded_blank());
-    }
-    let mut first_line = true;
-    for paragraph in message.content.lines() {
-        for text in textwrap::wrap(paragraph, content_width) {
-            let marker = if first_line { prefix } else { "  " };
-            first_line = false;
-            let mut line = Line::from(format!(" {marker}{text}")).style(style);
-            if is_user {
-                let padding = usize::from(width).saturating_sub(line.width());
-                line.spans.push(Span::raw(" ".repeat(padding)));
-            }
-            lines.push(line);
-        }
-    }
-    if is_user && !compact {
-        lines.push(padded_blank());
-    }
-    lines.push(Line::default());
-    lines
 }
