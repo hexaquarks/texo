@@ -57,9 +57,11 @@ impl App {
                 .project_for(&editor.path)
                 .map(|project| project.manifest.id),
             source: editor.source(),
+            has_pending_proposal: self.session.proposal_review.is_some(),
         });
         WorkspaceDocuments::new(
             self.projects.root(),
+            &self.canonical_workspace_root,
             current,
             Arc::clone(&self.assistant_documents_changed),
         )
@@ -217,6 +219,13 @@ impl App {
             );
             return;
         };
+
+        // The project can move while the user reviews the rendered draft.
+        if let Err(error) = self.assistant_workspace() {
+            self.report_error(error);
+            return;
+        }
+
         let edit = review.edit.clone();
 
         // Stop an older current build before publishing the accepted PDF.

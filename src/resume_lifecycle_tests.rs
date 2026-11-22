@@ -356,6 +356,49 @@ fn failed_pdf_publish_preserves_the_review_and_can_be_retried() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+#[ignore = "requires macOS, Tectonic cache, and Poppler"]
+fn accepting_a_proposal_rechecks_the_project_path_before_publishing() -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let (_workspace, mut app) = built_resume()?;
+    let outside = tempfile::tempdir()?;
+    let document = app.session.editor.path.clone();
+    let project_root = document.parent().unwrap();
+    let moved = project_root.with_file_name("moved-project");
+    let outside_pdf = outside
+        .path()
+        .join(document.with_extension("pdf").file_name().unwrap());
+    fs::write(&outside_pdf, b"Existing file outside the workspace")?;
+
+    request_revision(
+        &mut app,
+        FULL_RESUME,
+        replace_text("Software engineer.", "Backend engineer."),
+    )?;
+
+    fs::rename(project_root, &moved)?;
+    symlink(outside.path(), project_root)?;
+    app.apply_proposal();
+
+    assert_eq!(
+        fs::read(&outside_pdf)?,
+        b"Existing file outside the workspace"
+    );
+    assert_eq!(app.session.editor.source(), FULL_RESUME);
+    assert!(app.session.proposal_review.is_some());
+    assert!(app.session.proposed_build.is_some());
+
+    fs::remove_file(project_root)?;
+    fs::rename(&moved, project_root)?;
+    app.apply_proposal();
+    assert!(app.session.editor.source().contains("Backend engineer."));
+    assert!(app.session.proposal_review.is_none());
+
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires macOS, Tectonic cache, and Poppler"]
 fn late_refinement_follows_its_project_and_preserves_the_other_resume() -> Result<()> {

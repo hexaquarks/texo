@@ -54,8 +54,8 @@ const ASSISTANT_INSTRUCTIONS: &str = "You are Texo, a concise resume editing ass
     claim the proposed edit has been accepted or saved to disk. Texo reports the actual result. \
     If you did not stage a changed draft, do not claim to have modified the resume.";
 
-const DOCUMENT_INSTRUCTIONS: &str = "When no resume is open, current_tex is empty and only workspace \
-    document operations are available. Use list_resumes to identify other resumes when the user asks to work \
+const DOCUMENT_INSTRUCTIONS: &str = "When no resume is open, current_tex is empty and tools for editing \
+    the open resume are unavailable. Use list_resumes to identify other resumes when the user asks to work \
     with them. Only create a new resume or copy when requested. Report a new resume as saved only after \
     create_resume succeeds. If the user asks for a copy before editing, confirm that create_resume succeeds \
     in its own tool round before staging the edit. Edits to the open resume always require review.";

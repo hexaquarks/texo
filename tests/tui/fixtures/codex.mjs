@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 const WAIT_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 20;
 const MARKDOWN_PROMPT = '**markdown**';
-const SCENARIOS = new Set(['first', 'refine', 'repair', 'advice', 'hold', 'fail', 'copy', MARKDOWN_PROMPT]);
+const SCENARIOS = new Set(['first', 'refine', 'repair', 'advice', 'hold', 'fail', 'copy', 'bootstrap', MARKDOWN_PROMPT]);
+const FIRST_RESUME = '\\documentclass{article}\n\\begin{document}\nMy first shared resume.\n\\end{document}\n';
 const MARKDOWN_REPLY = [
     '## License check',
     '',
@@ -43,7 +44,7 @@ async function readRequest() {
     const prompt = context.conversation.findLast(message => message.role === 'user')?.content;
     assert.ok(SCENARIOS.has(prompt), `Unknown scripted scenario: ${prompt}`);
     await writeFile(join(controls, 'context.json'), JSON.stringify(context));
-    return { prompt, history: protocol.tool_history };
+    return { prompt, history: protocol.tool_history, tools: protocol.tools };
 }
 
 async function holdReply() {
@@ -106,13 +107,63 @@ function copyAndEdit(history) {
     return [];
 }
 
+function createFirstResume(history, tools) {
+    assert.ok(tools.some(tool => tool.name === 'create_resume'));
+    assert.ok(!tools.some(tool => tool.name === 'propose_edit'));
+
+    if (history.length === 0) {
+        return [
+            {
+                id: 'list-workspace',
+                name: 'list_resumes',
+                arguments_json: '{}',
+            },
+        ];
+    }
+
+    if (history.length === 1) {
+        const [list] = history[0].results;
+        assert.equal(list.is_error, false);
+        assert.deepEqual(list.output.documents, []);
+        return [
+            {
+                id: 'create-first',
+                name: 'create_resume',
+                arguments_json: JSON.stringify({
+                    name: 'First shared resume',
+                    source_document_id: null,
+                    tex: FIRST_RESUME,
+                }),
+            },
+        ];
+    }
+
+    if (history.length === 2) {
+        const [creation] = history[1].results;
+        assert.equal(creation.is_error, false);
+        assert.equal(creation.output.saved, true);
+        return [
+            {
+                id: 'read-created',
+                name: 'read_resume',
+                arguments_json: JSON.stringify({ document_id: creation.output.created.id }),
+            },
+        ];
+    }
+
+    const [read] = history[2].results;
+    assert.equal(read.is_error, false);
+    assert.equal(read.output.tex, FIRST_RESUME);
+    return [];
+}
+
 async function respond() {
     const args = process.argv.slice(2);
     if (args.length === 2 && args[0] === 'login' && args[1] === 'status') {
         return;
     }
 
-    const { prompt, history } = await readRequest();
+    const { prompt, history, tools } = await readRequest();
     if (prompt === 'fail') {
         process.exitCode = 1;
         return;
@@ -125,6 +176,8 @@ async function respond() {
     const isAdvice = prompt === 'advice' || prompt === MARKDOWN_PROMPT;
     if (prompt === 'copy') {
         calls = copyAndEdit(history);
+    } else if (prompt === 'bootstrap') {
+        calls = createFirstResume(history, tools);
     } else if (!isAdvice && history.length === 0) {
         let content = 'First draft';
         if (prompt === 'refine') {

@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(test)]
 use anyhow::Context;
 
 use ratatui::DefaultTerminal;
@@ -41,6 +40,7 @@ enum Focus {
 struct App {
     session: ResumeSession,
     projects: Projects,
+    canonical_workspace_root: PathBuf,
     assistant_documents_changed: Arc<AtomicBool>,
     projects_visible: bool,
     actions: Option<ActionMenu>,
@@ -100,11 +100,15 @@ impl App {
     }
 
     fn with_workspace(editor: Editor, preview: Preview, root: PathBuf) -> anyhow::Result<Self> {
+        let canonical_workspace_root = root
+            .canonicalize()
+            .context("Could not open the resume workspace")?;
         let projects = Projects::new(root, &editor.path)?;
 
         Ok(Self {
             session: ResumeSession::new(editor, preview),
             projects,
+            canonical_workspace_root,
             assistant_documents_changed: Default::default(),
             projects_visible: true,
             actions: None,

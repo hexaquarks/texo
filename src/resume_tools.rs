@@ -25,6 +25,8 @@ pub struct DocumentSummary {
 /// Workspace operations use document IDs from the catalog, never model-supplied paths.
 pub trait DocumentWorkspace: Send {
     fn has_current(&self) -> bool;
+    fn has_pending_proposal(&self) -> bool;
+    fn validate_current(&self) -> Result<()>;
     fn list(&self) -> Result<Vec<DocumentSummary>>;
     /// The current document's source lives in the task draft.
     fn read(&self, id: &str) -> Result<(DocumentSummary, Option<String>)>;
@@ -95,6 +97,14 @@ impl ResumeTools {
             .context("No resume workspace is available")
     }
 
+    fn has_proposal(&self) -> bool {
+        self.proposed
+            || self
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.has_pending_proposal())
+    }
+
     fn read_resume(&self, arguments: &Value) -> Result<Value> {
         let request: ReadResume = serde_json::from_value(arguments.clone())
             .map_err(|_| anyhow!("read_resume accepts only a document_id or null"))?;
@@ -108,7 +118,7 @@ impl ResumeTools {
                 "document": document.name,
                 "document_id": document.id,
                 "tex": source.as_deref().unwrap_or(&self.draft),
-                "has_proposal": is_draft && self.proposed
+                "has_proposal": is_draft && self.has_proposal()
             }));
         }
 
@@ -120,7 +130,7 @@ impl ResumeTools {
             "document": self.document,
             "document_id": CURRENT_DOCUMENT_ID,
             "tex": self.draft,
-            "has_proposal": self.proposed
+            "has_proposal": self.has_proposal()
         }))
     }
 
@@ -319,6 +329,10 @@ impl ToolSet for ResumeTools {
                     .map_err(|_| anyhow!("compile_resume accepts no arguments"))?;
 
                 self.build = None;
+                if let Some(workspace) = &self.workspace {
+                    workspace.validate_current()?;
+                }
+
                 let directory = self
                     .directory
                     .as_ref()

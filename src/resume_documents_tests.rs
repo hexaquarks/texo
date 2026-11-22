@@ -55,17 +55,22 @@ fn list_read_and_copy_use_the_catalog_and_preserve_the_live_editor() -> Result<(
 
     let read_current = json!({"document_id": original_id});
     let read_other = json!({"document_id": other_id});
-    assert_eq!(
-        tools.execute("read_resume", &read_current, &cancelled)?["tex"],
-        "Pending proposal"
-    );
-    assert_eq!(
-        tools.execute("read_resume", &read_other, &cancelled)?["tex"],
-        "Other source"
-    );
+    let current = tools.execute("read_resume", &read_current, &cancelled)?;
+    assert_eq!(current["tex"], "Pending proposal");
+    assert_eq!(current["has_proposal"], true);
+
+    let other_draft = tools.execute("read_resume", &read_other, &cancelled)?;
+    assert_eq!(other_draft["tex"], "Other source");
+    assert_eq!(other_draft["has_proposal"], false);
+
+    let reply = tools.finish(AssistantReply {
+        reply: "Read the pending draft".into(),
+        proposed_tex: None,
+    })?;
+    assert!(reply.proposed_tex.is_none());
 
     // Same display names retain independent IDs, directories, and source files.
-    let copy = json!({"name": "Other", "source_document_id": "current"});
+    let copy = json!({"name": "Other", "source_document_id": original_id});
     let result = tools.execute("create_resume", &copy, &cancelled)?;
     let copy_id = result["created"]["id"].as_str().unwrap();
     assert_ne!(copy_id, other_id);
@@ -230,9 +235,55 @@ fn assistant_documents_reject_paths_and_symlinked_sources() -> Result<()> {
     fs::remove_dir_all(&original.root)?;
     fs::rename(&replacement.root, &original.root)?;
     assert!(tools.execute("create_resume", &copy, &cancelled).is_err());
+    let compile = tools.execute("compile_resume", &json!({}), &cancelled);
+    assert!(
+        compile
+            .unwrap_err()
+            .to_string()
+            .contains("The open resume changed on disk")
+    );
     assert_eq!(
         Project::load(&original.root)?.manifest.id,
         replacement.manifest.id
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn assistant_rejects_a_replaced_workspace_at_submission_and_execution() -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir()?;
+    let parent = directory.path().canonicalize()?;
+    let active = parent.join("active");
+    let root = active.join("workspace");
+    let project = resume_project::create_from_source(&root, "Original", "Original contents")?;
+    let outside = parent.join("outside");
+    let outside_workspace = outside.join("workspace");
+    let private =
+        resume_project::create_from_source(&outside_workspace, "Private", "Outside contents")?;
+    let editor = Editor::open(project.document())?;
+    let app = App::with_workspace(editor, Preview::default(), root.clone())?;
+    let mut tools = document_tools(&app)?;
+
+    fs::rename(&active, parent.join("moved"))?;
+    symlink(&outside, &active)?;
+
+    assert!(app.assistant_workspace().is_err());
+
+    let cancelled = AtomicBool::new(false);
+    let list = tools.execute("list_resumes", &json!({}), &cancelled);
+    let create = tools.execute("create_resume", &json!({"name": "Invalid"}), &cancelled);
+    let compile = tools.execute("compile_resume", &json!({}), &cancelled);
+    for error in [list, create, compile] {
+        assert_eq!(error.unwrap_err().to_string(), "The resume workspace moved");
+    }
+    assert_eq!(fs::read_to_string(private.document())?, "Outside contents");
+    assert_eq!(
+        resume_project::discover(&outside_workspace)?.projects.len(),
+        1
     );
 
     Ok(())

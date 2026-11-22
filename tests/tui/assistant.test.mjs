@@ -145,6 +145,21 @@ test('assistant copies unsaved text before proposing an edit to the open resume'
     }, { prepare });
 });
 
+test('assistant can create and read the first resume from an empty workspace', async () => {
+    await withTexo('assistant-bootstrap', async ({ terminal, workspace }) => {
+        await terminal.resize(160, 50);
+        await ask(terminal, 'bootstrap');
+
+        await terminal.getByText('Fixture completed bootstrap').expect();
+        const document = await documentPath(workspace);
+        assert.match(await readFile(document, 'utf8'), /My first shared resume/);
+
+        await terminal.getByText('First shared resume').first().click();
+        await terminal.getByText('My first shared resume').expect();
+        await terminal.getByText('PDF current').expect();
+    }, { prepare });
+});
+
 test('AI cancellation, provider failure, and failed compilation all allow another request', async () => {
     await withTexo('assistant-recovery', async ({ terminal, root, workspace }) => {
         await terminal.resize(160, 50);

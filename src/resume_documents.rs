@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::Read,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -23,6 +23,7 @@ pub struct OpenDocument {
     pub path: PathBuf,
     pub project_id: Option<Uuid>,
     pub source: String,
+    pub has_pending_proposal: bool,
 }
 
 pub struct WorkspaceDocuments {
@@ -34,12 +35,17 @@ pub struct WorkspaceDocuments {
 impl WorkspaceDocuments {
     pub fn new(
         root: &Path,
+        canonical_root: &Path,
         mut current: Option<OpenDocument>,
         changed: Arc<AtomicBool>,
     ) -> Result<Self> {
-        let canonical_root = root
+        let resolved_root = root
             .canonicalize()
             .context("Could not open the resume workspace")?;
+        ensure!(
+            resolved_root == canonical_root,
+            "The resume workspace moved"
+        );
 
         // Normalize the workspace prefix without resolving a document symlink.
         if let Some(document) = &mut current {
@@ -47,20 +53,19 @@ impl WorkspaceDocuments {
                 .path
                 .strip_prefix(root)
                 .context("Resume is outside the workspace")?;
-            ensure!(
-                relative
-                    .components()
-                    .all(|part| matches!(part, Component::Normal(_))),
-                "Resume is outside the workspace"
-            );
             document.path = canonical_root.join(relative);
         }
 
-        Ok(Self {
-            root: canonical_root,
+        let workspace = Self {
+            root: resolved_root,
             current,
             changed,
-        })
+        };
+        if workspace.has_current() {
+            workspace.validate_current()?;
+        }
+
+        Ok(workspace)
     }
 
     fn validate_root(&self) -> Result<()> {
@@ -99,6 +104,31 @@ impl WorkspaceDocuments {
             .context("That resume is no longer in the workspace")
     }
 
+    fn current_project(&self) -> Result<Option<Project>> {
+        self.validate_root()?;
+        let current = self.current.as_ref().context("No resume is open")?;
+        let relative = current.path.strip_prefix(&self.root)?;
+        resume_project::validate_entrypoint(&self.root, relative)?;
+
+        if current.project_id.is_none() {
+            return Ok(None);
+        }
+
+        // Managed projects are direct children of the workspace.
+        let folder = relative
+            .iter()
+            .next()
+            .context("Resume has no project folder")?;
+        let project = Project::load(&self.root.join(folder))
+            .context("Could not reopen the current resume")?;
+        ensure!(
+            self.is_current(&project),
+            "The open resume changed on disk. Reopen it to continue."
+        );
+
+        Ok(Some(project))
+    }
+
     fn copy_project(&self, project: &Project, name: &str) -> Result<Project> {
         let working_copy = self
             .current
@@ -110,24 +140,47 @@ impl WorkspaceDocuments {
     }
 
     fn copy_current(&self, name: &str) -> Result<Project> {
+        if let Some(project) = self.current_project()? {
+            return self.copy_project(&project, name);
+        }
+
         let current = self.current.as_ref().context("No resume is open")?;
-        let Some(id) = current.project_id else {
-            return resume_project::create_from_source(&self.root, name, &current.source);
-        };
+        resume_project::create_from_source(&self.root, name, &current.source)
+    }
 
-        let project = self.find_project(id)?;
-        ensure!(
-            self.is_current(&project),
-            "The open resume moved. Reopen it before copying."
-        );
+    fn copy_resume(&self, source_id: &str, name: &str) -> Result<Project> {
+        if source_id == CURRENT_DOCUMENT_ID {
+            return self.copy_current(name);
+        }
 
-        self.copy_project(&project, name)
+        let id = Uuid::parse_str(source_id).context("Use a resume ID from list_resumes")?;
+        let is_current = self
+            .current
+            .as_ref()
+            .is_some_and(|current| current.project_id == Some(id));
+        if is_current {
+            return self.copy_current(name);
+        }
+
+        let source = self.find_project(id)?;
+        self.copy_project(&source, name)
     }
 }
 
 impl DocumentWorkspace for WorkspaceDocuments {
     fn has_current(&self) -> bool {
         self.current.is_some()
+    }
+
+    fn has_pending_proposal(&self) -> bool {
+        self.current
+            .as_ref()
+            .is_some_and(|current| current.has_pending_proposal)
+    }
+
+    fn validate_current(&self) -> Result<()> {
+        self.current_project()?;
+        Ok(())
     }
 
     fn list(&self) -> Result<Vec<DocumentSummary>> {
@@ -163,7 +216,7 @@ impl DocumentWorkspace for WorkspaceDocuments {
             return Ok((document, None));
         }
 
-        let source = read_source(&project.document(), &self.root)?;
+        let source = read_source(&project.document(), &project.root)?;
         Ok((document, Some(source)))
     }
 
@@ -180,12 +233,7 @@ impl DocumentWorkspace for WorkspaceDocuments {
         self.validate_root()?;
 
         let project = match source_id {
-            Some(CURRENT_DOCUMENT_ID) => self.copy_current(name)?,
-            Some(id) => {
-                let id = Uuid::parse_str(id).context("Use a resume ID from list_resumes")?;
-                let source = self.find_project(id)?;
-                self.copy_project(&source, name)?
-            }
+            Some(id) => self.copy_resume(id, name)?,
             None => resume_project::create_from_source(
                 &self.root,
                 name,
