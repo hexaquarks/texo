@@ -2,8 +2,9 @@ use anyhow::{Result, anyhow, bail, ensure};
 use serde_json::{Value, json};
 
 use super::{
-    AssistantReply, TurnContext, WEB_RESEARCH_INSTRUCTIONS, parse_reply, reply_schema,
-    supported_models,
+    AssistantReply, TurnContext, WEB_RESEARCH_INSTRUCTIONS, parse_reply,
+    provider_citations::{anthropic_citations, openai_citations},
+    reply_schema, supported_models,
 };
 use crate::{
     agent::AgentTurn,
@@ -56,10 +57,26 @@ impl ProviderRequest {
         let mut turn = parse_turn(self.provider, &response)?;
         if let AgentTurn::Complete(reply) = &mut turn {
             let blocks = response_blocks(self.provider, &response);
-            let earlier_messages = self.body["messages"]
-                .as_array()
-                .map_or(&[][..], Vec::as_slice);
-            append_public_sources(&mut reply.reply, self.provider, &blocks, earlier_messages);
+
+            match self.provider {
+                Provider::OpenAi => openai_citations(&mut reply.reply, &blocks),
+                Provider::Anthropic => {
+                    let earlier_messages = self.body["messages"]
+                        .as_array()
+                        .map_or(&[][..], Vec::as_slice);
+
+                    // The final response already contains the paused blocks from the last message.
+                    let previous_count = earlier_messages
+                        .len()
+                        .saturating_sub(usize::from(self.pauses > 0));
+                    anthropic_citations(
+                        &mut reply.reply,
+                        &blocks,
+                        &earlier_messages[..previous_count],
+                    );
+                }
+                _ => {}
+            }
         }
 
         Ok(Some(turn))
@@ -344,82 +361,6 @@ fn parse_response(provider: Provider, response: &Value) -> Result<AssistantReply
         reply: text,
         proposed_tex: None,
     })
-}
-
-fn append_public_sources(
-    reply: &mut String,
-    provider: Provider,
-    blocks: &[&Value],
-    earlier_messages: &[Value],
-) {
-    let (field, kind) = match provider {
-        Provider::OpenAi => ("annotations", "url_citation"),
-        _ => ("citations", "web_search_result_location"),
-    };
-    let mut sources = Vec::new();
-
-    for block in blocks {
-        for citation in block[field].as_array().into_iter().flatten() {
-            if citation["type"] == kind {
-                add_public_source(&mut sources, &citation["url"]);
-            }
-        }
-
-        add_fetch_source(&mut sources, block);
-    }
-
-    // Claude's fetched-document citations can be offsets, including for pages read before a local tool call.
-    for message in earlier_messages {
-        if message["role"] == "assistant" {
-            for block in message["content"].as_array().into_iter().flatten() {
-                add_fetch_source(&mut sources, block);
-            }
-        }
-    }
-
-    sources.retain(|url| !reply.contains(url));
-
-    if !sources.is_empty() {
-        reply.push_str("\n\nSources");
-        for url in sources {
-            reply.push_str("\n- ");
-            reply.push_str(url);
-        }
-    }
-}
-
-fn add_fetch_source<'a>(sources: &mut Vec<&'a str>, block: &'a Value) {
-    if block["type"] == "web_fetch_tool_result" && block["content"]["type"] == "web_fetch_result" {
-        add_public_source(sources, &block["content"]["url"]);
-    }
-}
-
-fn add_public_source<'a>(sources: &mut Vec<&'a str>, value: &'a Value) {
-    let Some(link) = value.as_str() else {
-        return;
-    };
-    if link.contains(char::is_whitespace)
-        || link.contains(char::is_control)
-        || sources.contains(&link)
-    {
-        return;
-    }
-
-    let Ok(url) = reqwest::Url::parse(link) else {
-        return;
-    };
-    let public_domain = url.domain().is_some_and(|domain| {
-        let domain = domain.trim_end_matches('.');
-        domain.contains('.') && !domain.ends_with(".localhost") && !domain.ends_with(".local")
-    });
-
-    if matches!(url.scheme(), "http" | "https")
-        && public_domain
-        && url.username().is_empty()
-        && url.password().is_none()
-    {
-        sources.push(link);
-    }
 }
 
 #[cfg(test)]

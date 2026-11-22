@@ -61,33 +61,38 @@ fn openai_astra_replays_hosted_open_page_and_local_tool_output_then_shows_native
         history: &[exchange],
         ..context
     };
-    let text = json!({
-        "reply": "The README documents dual licensing. Personal contributions need separate evidence.",
-        "proposed_tex": null
-    })
-    .to_string();
+    // Offsets refer to the raw JSON in each text block, including escapes and Unicode.
+    let json_prefix = r#"{"reply":"Résumé \uD83D\uDE00: \"#;
+    let cited_text = r#""dual licensing\" — MIT."#;
+    let text = format!(
+        r#"{cited_text} Personal contributions need separate evidence.","proposed_tex":null}}"#
+    );
     let citation = json!({
         "type": "url_citation",
         "url": README,
         "title": "Rust README",
-        "start_index": 10,
-        "end_index": 44
+        "start_index": 1,
+        "end_index": cited_text.chars().count() - 1,
     });
     let response = json!({
         "status": "completed",
         "output": [{
             "type": "message",
             "role": "assistant",
-            "content": [{
-                "type": "output_text",
-                "text": text,
-                "annotations": [
-                    citation,
-                    citation,
-                    {"type": "url_citation", "url": "https://127.0.0.1/private"},
-                    {"type": "url_citation", "url": "https://user:secret@example.com/"}
-                ]
-            }]
+            "content": [
+                {"type": "output_text", "text": json_prefix, "annotations": []},
+                {
+                    "type": "output_text",
+                    "text": text,
+                    "annotations": [
+                        citation,
+                        citation,
+                        {"type": "url_citation", "url": "https://127.0.0.1/private"},
+                        {"type": "url_citation", "url": "https://user:secret@example.com/"},
+                        {"type": "url_citation", "url": REPO, "start_index": 0, "end_index": 900}
+                    ]
+                }
+            ]
         }]
     });
     let (turn, wire) = mock_turn_sequence(&profile, vec![ok(response)], &context);
@@ -104,7 +109,14 @@ fn openai_astra_replays_hosted_open_page_and_local_tool_output_then_shows_native
     );
 
     let reply = completed_reply(turn.unwrap());
-    assert_eq!(reply.reply.matches(README).count(), 1);
+    assert_eq!(
+        reply.reply,
+        format!(
+            "Résumé 😀: \"dual licensing\" — MIT. [1](<{README}>) \
+             Personal contributions need separate evidence.\n\n\
+             Sources\n- [2](<{REPO}>) github.com"
+        )
+    );
     assert!(!reply.reply.contains("127.0.0.1"));
     assert!(!reply.reply.contains("secret"));
     assert!(reply.proposed_tex.is_none());
@@ -204,6 +216,7 @@ fn claude_replays_two_pauses_and_mixed_web_and_local_results_before_returning_so
                     "url": README,
                     "content": {
                         "type": "document",
+                        "title": "Rust README",
                         "source": {"type": "text", "media_type": "text/plain", "data": "MIT and Apache-2.0"},
                         "citations": {"enabled": true}
                     },
@@ -213,14 +226,25 @@ fn claude_replays_two_pauses_and_mixed_web_and_local_results_before_returning_so
             {
                 "type": "text",
                 "text": "The README documents dual licensing.",
-                "citations": [{
-                    "type": "web_search_result_location",
-                    "url": REPO,
-                    "title": "Rust repository",
-                    "encrypted_index": "opaque-index",
-                    "cited_text": "Licenses"
-                }]
-            }
+                "citations": [
+                    {
+                        "type": "char_location",
+                        "document_index": 0,
+                        "document_title": "Rust README",
+                        "start_char_index": 0,
+                        "end_char_index": 18,
+                        "cited_text": "MIT and Apache-2.0"
+                    },
+                    {
+                        "type": "web_search_result_location",
+                        "url": REPO,
+                        "title": "Rust repository",
+                        "encrypted_index": "opaque-index",
+                        "cited_text": "Licenses"
+                    }
+                ]
+            },
+            {"type": "text", "text": " Contributions need separate evidence."}
         ]
     });
 
@@ -245,9 +269,72 @@ fn claude_replays_two_pauses_and_mixed_web_and_local_results_before_returning_so
     let reply = completed_reply(turn.unwrap());
     assert_eq!(
         reply.reply,
-        format!("The README documents dual licensing.\n\nSources\n- {README}\n- {REPO}")
+        format!(
+            "The README documents dual licensing. [1](<{README}>) [2](<{REPO}>) \
+             Contributions need separate evidence."
+        )
     );
     assert!(reply.proposed_tex.is_none());
+}
+
+#[test]
+fn claude_resolves_fetched_document_indexes_without_counting_paused_blocks_twice() {
+    let profile = Profile::new(Provider::Anthropic);
+    let context = TurnContext {
+        prompt: PROMPT,
+        tools: &[],
+        history: &[],
+    };
+    let responses = vec![
+        ok(json!({
+            "stop_reason": "pause_turn",
+            "content": [fetched_document(README, "Rust README", "srvtoolu_readme")]
+        })),
+        ok(json!({
+            "stop_reason": "end_turn",
+            "content": [
+                fetched_document(REPO, "Rust project", "srvtoolu_repo"),
+                {
+                    "type": "text",
+                    "text": "The project is public.",
+                    "citations": [{
+                        "type": "char_location",
+                        "document_index": 1,
+                        "document_title": "Rust project",
+                        "start_char_index": 0,
+                        "end_char_index": 10,
+                        "cited_text": "A language"
+                    }]
+                }
+            ]
+        })),
+    ];
+
+    let (turn, _) = mock_turn_sequence(&profile, responses, &context);
+    let reply = completed_reply(turn.unwrap());
+
+    assert_eq!(
+        reply.reply,
+        format!("The project is public. [1](<{REPO}>)\n\nSources\n- [2](<{README}>) github.com")
+    );
+}
+
+fn fetched_document(url: &str, title: &str, tool_use_id: &str) -> Value {
+    json!({
+        "type": "web_fetch_tool_result",
+        "tool_use_id": tool_use_id,
+        "content": {
+            "type": "web_fetch_result",
+            "url": url,
+            "content": {
+                "type": "document",
+                "title": title,
+                "source": {"type": "text", "media_type": "text/plain", "data": "A language"},
+                "citations": {"enabled": true}
+            },
+            "retrieved_at": "2026-11-21T12:00:00Z"
+        }
+    })
 }
 
 fn ok(response: Value) -> (String, Value) {
