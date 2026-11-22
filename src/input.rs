@@ -39,6 +39,12 @@ impl App {
             self.session.editor.cancel_pending_commands();
         }
 
+        if (previous_focus == Focus::Assistant && self.focus != Focus::Assistant)
+            || (has_overlay && !had_overlay)
+        {
+            self.session.assistant.clear_transcript_selection();
+        }
+
         quit
     }
 
@@ -52,6 +58,16 @@ impl App {
             self.session.preview.end_drag();
             self.session.proposed_preview.end_drag();
             self.session.editor.end_drag();
+        }
+
+        let continues_chat_drag = continues_pointer_gesture
+            || matches!(&event, Event::Mouse(mouse) if matches!(
+                mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ));
+        if !continues_chat_drag
+            && !matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Release)
+        {
+            self.session.assistant.end_transcript_drag();
         }
 
         if let Event::Key(key) = &event {
@@ -165,6 +181,7 @@ impl App {
                 let text = text.replace("\r\n", "\n").replace('\r', "\n");
 
                 if self.focus == Focus::Assistant {
+                    self.session.assistant.clear_transcript_selection();
                     self.session.assistant.input.insert_str(text);
                 } else if self.focus == Focus::Editor
                     && self.session.proposal_review.is_none()
@@ -194,6 +211,11 @@ impl App {
 
     fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) {
         if self.handle_pane_drag(mouse, area) {
+            return;
+        }
+
+        if self.focus == Focus::Assistant && self.session.assistant.drag_transcript_selection(mouse)
+        {
             return;
         }
 
@@ -308,6 +330,10 @@ impl App {
                 }
             } else if layout.assistant.contains(position) {
                 self.focus = Focus::Assistant;
+                self.session.assistant.begin_transcript_selection(
+                    position,
+                    mouse.modifiers.contains(KeyModifiers::SHIFT),
+                );
                 self.session.assistant.click(
                     pane_content(layout.assistant),
                     mouse.column,
@@ -569,8 +595,19 @@ impl App {
             return false;
         }
 
-        if self.focus == Focus::Assistant && self.session.assistant.complete_command(key) {
-            return false;
+        if self.focus == Focus::Assistant {
+            let copy = key.modifiers == KeyModifiers::CONTROL
+                && matches!(key.code, KeyCode::Char('c') | KeyCode::Insert);
+            if copy && self.session.assistant.copy_transcript_selection() {
+                return false;
+            }
+
+            if !matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+                self.session.assistant.clear_transcript_selection();
+            }
+            if self.session.assistant.complete_command(key) {
+                return false;
+            }
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             self.handle_control_key(key);

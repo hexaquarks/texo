@@ -3,6 +3,7 @@ mod app;
 mod assistant;
 mod assistant_job;
 mod build_diagnostics;
+mod clipboard;
 mod config;
 mod dialog_ui;
 mod editor;

@@ -15,7 +15,7 @@ use texo::{
 
 use crate::assistant_job::{AssistantJob, ConversationMessage};
 
-const SCROLL_LINES: u16 = 3;
+const SCROLL_LINES: usize = 3;
 const CHAT_COMMANDS: [(&str, &str); 4] = [
     ("/settings", "Configure the resume folder"),
     ("/login", "Connect or switch an assistant provider"),
@@ -51,11 +51,12 @@ impl Message {
 pub struct Assistant {
     pub input: TextArea<'static>,
     messages: Vec<Message>,
+    transcript: chat_transcript::Transcript,
     job: Option<AssistantJob>,
     source_snapshot: String,
     proposed_edit: Option<ProposedEdit>,
     compiled_draft: Option<texo::sandbox::CompiledDraft>,
-    scroll_from_bottom: u16,
+    scroll_from_bottom: usize,
     login: Option<LoginDialog>,
     command_selection: usize,
     profile: Profile,
@@ -72,6 +73,7 @@ impl Assistant {
         Self {
             input: new_input(),
             messages: Vec::new(),
+            transcript: chat_transcript::Transcript::default(),
             job: None,
             source_snapshot: String::new(),
             proposed_edit: None,
@@ -123,6 +125,7 @@ impl Assistant {
             return;
         }
         self.messages.clear();
+        self.transcript.reset();
         let mode = if profile.provider == Provider::Codex {
             "Connected through the existing Codex login.".into()
         } else {
@@ -157,6 +160,7 @@ impl Assistant {
                 self.profile = Profile::new(Provider::Disconnected);
                 result?;
                 self.messages.clear();
+                self.transcript.reset();
                 self.notice(
                     "Texo disconnected. External Codex sign-in and environment variables are unchanged.".into(),
                     false,
@@ -339,6 +343,9 @@ fn new_input() -> TextArea<'static> {
     input.set_placeholder_style(theme::muted().bg(theme::BUTTON));
     input
 }
+
+#[path = "chat_transcript.rs"]
+mod chat_transcript;
 
 #[path = "chat_view.rs"]
 mod chat_view;
