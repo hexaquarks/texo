@@ -17,7 +17,7 @@ fn review_confirmation_is_appended_and_scrolls_into_view() {
         assistant.messages[2].content,
         "Proposal discarded; no changes accepted."
     );
-    assert!(!assistant.messages[2].error);
+    assert_eq!(assistant.messages[2].kind, MessageKind::Notice);
     assert_eq!(assistant.scroll_from_bottom, 0);
 }
 
@@ -52,16 +52,15 @@ fn slash_commands_complete_dynamically_and_never_enter_model_history() {
             .content
             .contains("accidental-secret")
     );
-    assert!(assistant.messages.last().unwrap().error);
+    assert_eq!(assistant.messages.last().unwrap().kind, MessageKind::Error);
 }
 
 #[test]
 fn switching_providers_clears_old_conversation_without_changing_the_document() {
     let mut assistant = Assistant::new();
     assistant.messages.push(Message::new(
-        "user",
+        MessageKind::User,
         "Earlier private conversation".into(),
-        false,
     ));
     assistant.connected(Profile::new(Provider::Anthropic));
     assert_eq!(assistant.messages.len(), 1);
@@ -119,13 +118,13 @@ fn model_command_completes_and_current_model_renders_below_input() {
 fn transcript_uses_prompt_markers_and_compact_plain_responses() {
     use ratatui::{Terminal, backend::TestBackend};
     let mut assistant = Assistant::new();
-    assistant
-        .messages
-        .push(Message::new("user", "Shorten my bullets.".into(), false));
     assistant.messages.push(Message::new(
-        "assistant",
+        MessageKind::User,
+        "Shorten my bullets.".into(),
+    ));
+    assistant.messages.push(Message::new(
+        MessageKind::Reply,
         "Tighter wording.\nFacts preserved.".into(),
-        false,
     ));
     let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
     terminal
@@ -134,11 +133,97 @@ fn transcript_uses_prompt_markers_and_compact_plain_responses() {
     let buffer = terminal.backend().buffer();
     let rendered: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
     assert!(rendered.contains("> Shorten my bullets."));
-    assert!(rendered.contains("* Tighter wording."));
+    assert!(rendered.contains("• Tighter wording."));
     assert!(rendered.contains("Facts preserved."));
     assert_eq!(buffer[(59, 0)].bg, theme::ELEVATED);
     assert_eq!(buffer[(59, 3)].bg, theme::BACKGROUND);
     assert!(!rendered.contains("◉"));
+}
+
+#[test]
+fn request_states_render_distinct_markers_in_the_same_column() {
+    use crate::assistant_job::CompletedTask;
+    use ratatui::{Terminal, backend::TestBackend};
+    use texo::llm::AssistantReply;
+
+    let mut assistant = Assistant::new();
+    let mut terminal = Terminal::new(TestBackend::new(62, 24)).unwrap();
+    let reply = assistant.pending_request(String::new());
+    assert_chat_marker(
+        &mut assistant,
+        &mut terminal,
+        "◦ Waiting for reply",
+        theme::MUTED,
+    );
+
+    reply
+        .send(Ok(CompletedTask {
+            reply: AssistantReply {
+                reply: "A reply can mention an error.".into(),
+                proposed_tex: None,
+            },
+            build: None,
+        }))
+        .unwrap();
+    assistant.poll().unwrap().unwrap();
+    assert_chat_marker(
+        &mut assistant,
+        &mut terminal,
+        "• A reply can mention an error.",
+        theme::GREEN,
+    );
+
+    let failed = assistant.pending_request(String::new());
+    failed
+        .send(Err(anyhow::anyhow!("Provider unavailable.")))
+        .unwrap();
+    assert!(assistant.poll().unwrap().is_err());
+    assert_chat_marker(
+        &mut assistant,
+        &mut terminal,
+        "! Provider unavailable.",
+        theme::ERROR,
+    );
+
+    let _pending = assistant.pending_request(String::new());
+    assistant.cancel();
+    assert_chat_marker(
+        &mut assistant,
+        &mut terminal,
+        "– Request cancelled.",
+        theme::MUTED,
+    );
+    let rendered: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(!rendered.contains("Waiting for reply"));
+}
+
+fn assert_chat_marker(
+    assistant: &mut Assistant,
+    terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    text: &str,
+    color: ratatui::style::Color,
+) {
+    terminal
+        .draw(|frame| assistant.draw(frame, frame.area(), true, true, "Ctrl+x", false))
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let marker_column = theme::PANEL_PADDING + 1;
+    let row = (0..buffer.area.height)
+        .find(|&row| {
+            let rendered: String = (marker_column..buffer.area.width)
+                .map(|column| buffer[(column, row)].symbol())
+                .collect();
+            rendered.starts_with(text)
+        })
+        .unwrap_or_else(|| panic!("Expected {text} in column {marker_column}"));
+    assert_eq!(buffer[(marker_column, row)].fg, color);
 }
 
 #[test]

@@ -22,9 +22,8 @@ fn draw(assistant: &mut Assistant, terminal: &mut Terminal<TestBackend>) {
 fn reverse_selection_copies_original_wrapped_unicode_reply() {
     let mut assistant = Assistant::new();
     assistant.messages.push(Message::new(
-        "assistant",
+        MessageKind::Reply,
         "repeat   repeat\n李e\u{301} done".into(),
-        false,
     ));
     let mut terminal = Terminal::new(TestBackend::new(13, 5)).unwrap();
     draw(&mut assistant, &mut terminal);
@@ -57,10 +56,10 @@ fn selection_reaches_offscreen_messages_and_survives_reflow() {
     let reply = "One\nTwo\nThree\nFour\nFive\nSix\nSeven\nEight";
     assistant
         .messages
-        .push(Message::new("user", "Prompt".into(), false));
+        .push(Message::new(MessageKind::User, "Prompt".into()));
     assistant
         .messages
-        .push(Message::new("assistant", reply.into(), false));
+        .push(Message::new(MessageKind::Reply, reply.into()));
 
     let mut terminal = Terminal::new(TestBackend::new(30, 3)).unwrap();
     for _ in 0..3 {
@@ -104,7 +103,7 @@ fn selection_reaches_offscreen_messages_and_survives_reflow() {
 fn long_words_wrap_at_grapheme_boundaries() {
     let cluster = "👩‍💻";
     let reply = format!("a{cluster}b{cluster}c");
-    let messages = [Message::new("assistant", reply.clone(), false)];
+    let messages = [Message::new(MessageKind::Reply, reply.clone())];
     let width = 8;
     let rows = transcript_rows(&messages, width, false);
     let boundaries: Vec<_> = reply.grapheme_indices(true).map(|(byte, _)| byte).collect();
@@ -124,7 +123,7 @@ fn a_wrap_never_detaches_a_combining_mark_from_its_base() {
     let mut assistant = Assistant::new();
     assistant
         .messages
-        .push(Message::new("assistant", "a \u{301}b".into(), false));
+        .push(Message::new(MessageKind::Reply, "a \u{301}b".into()));
     let mut terminal = Terminal::new(TestBackend::new(6, 3)).unwrap();
     draw(&mut assistant, &mut terminal);
 
@@ -141,7 +140,7 @@ fn copy_highlight_keeps_cell_positions_after_ligatures_and_tabs() {
     let mut assistant = Assistant::new();
     assistant
         .messages
-        .push(Message::new("assistant", "لا\tend".into(), false));
+        .push(Message::new(MessageKind::Reply, "لا\tend".into()));
     let mut terminal = Terminal::new(TestBackend::new(15, 3)).unwrap();
     draw(&mut assistant, &mut terminal);
     assert_eq!(terminal.backend().buffer()[(5, 0)].symbol(), "e");
@@ -168,7 +167,7 @@ fn scroll_reaches_start_of_a_transcript_with_more_than_u16_rows() {
     let reply = format!("First row\n{}Last row", "\n".repeat(blank_rows));
     assistant
         .messages
-        .push(Message::new("assistant", reply, false));
+        .push(Message::new(MessageKind::Reply, reply));
     let mut terminal = Terminal::new(TestBackend::new(20, viewport_rows)).unwrap();
 
     draw(&mut assistant, &mut terminal);
