@@ -96,7 +96,7 @@ fn both_http_adapters_drive_real_tools_through_compile_failure_and_repair() {
                     } else {
                         json!({
                             "stop_reason": "end_turn",
-                            "content": [{"type": "text", "text": final_text}]
+                            "content": [{"type": "text", "text": "Updated draft"}]
                         })
                     }
                 };
@@ -212,7 +212,7 @@ fn native_tool_calls_and_results_round_trip_for_both_providers() {
                 }]
             })
         } else {
-            json!({"stop_reason":"end_turn", "content":[{"type":"text", "text":final_text}]})
+            json!({"stop_reason":"end_turn", "content":[{"type":"text", "text":"Done"}]})
         };
 
         let context = TurnContext {
@@ -222,7 +222,10 @@ fn native_tool_calls_and_results_round_trip_for_both_providers() {
         };
         let (turn, wire) = mock_turn(provider, "200 OK", final_response, &context);
 
-        assert!(matches!(turn.unwrap(), AgentTurn::Complete(_)));
+        let AgentTurn::Complete(reply) = turn.unwrap() else {
+            panic!("expected a final reply")
+        };
+        assert_eq!(reply.reply, "Done");
         assert!(wire.contains("unsaved source"));
         assert!(wire.contains("call1"));
         assert!(wire.contains(if provider == Provider::OpenAi {
@@ -262,7 +265,7 @@ fn codex_adapter_rejects_mixed_edits_and_tools_and_parses_calls() {
 }
 
 #[test]
-fn both_providers_send_only_their_own_auth_header_and_parse_edits() {
+fn both_providers_send_only_their_own_auth_header_and_parse_replies() {
     let reply = json!({"reply":"Updated wording", "proposed_tex":"new document"}).to_string();
     for provider in [Provider::OpenAi, Provider::Anthropic] {
         let body = if provider == Provider::OpenAi {
@@ -274,19 +277,20 @@ fn both_providers_send_only_their_own_auth_header_and_parse_edits() {
                 }]
             })
         } else {
-            json!({"stop_reason":"end_turn", "content":[{"type":"text", "text":reply}]})
+            json!({"stop_reason":"end_turn", "content":[{"type":"text", "text":"Updated wording"}]})
         };
         let (response, wire) = mock_request(provider, "200 OK", body);
-        assert_eq!(
-            response.unwrap().proposed_tex.as_deref(),
-            Some("new document")
-        );
+        let response = response.unwrap();
+
+        assert_eq!(response.reply, "Updated wording");
         assert!(wire.contains("current unsaved resume"));
         if provider == Provider::OpenAi {
+            assert_eq!(response.proposed_tex.as_deref(), Some("new document"));
             assert!(wire.contains("authorization: Bearer test-api-secret"));
             assert!(!wire.contains("x-api-key"));
             assert!(wire.contains("\"store\":false"));
         } else {
+            assert!(response.proposed_tex.is_none());
             assert!(wire.contains("x-api-key: test-api-secret"));
             assert!(!wire.contains("authorization:"));
             assert!(wire.contains("anthropic-version: 2023-06-01"));

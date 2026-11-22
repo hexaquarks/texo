@@ -96,7 +96,8 @@ fn check_status(provider: Provider, status: StatusCode) -> Result<()> {
             bail!("{label} rate limit or quota reached. Check your API billing and retry later")
         }
         StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND => bail!(
-            "{label} could not use the selected model or request. Check the model ID with /login"
+            "{label} could not use the selected model or request. Choose a supported model with /model, \
+             or switch providers with /login"
         ),
         _ if status.is_server_error() => {
             bail!("{label} is temporarily unavailable. Please retry later")
