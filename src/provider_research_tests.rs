@@ -48,6 +48,7 @@ fn openai_astra_replays_hosted_open_page_and_local_tool_output_then_shows_native
     assert_eq!(initial["model"], "gpt-6-astra");
     assert_eq!(initial["store"], false);
     assert_eq!(initial["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(initial["max_tool_calls"], 10);
     assert_eq!(initial["tools"][0]["name"], "read_resume");
     assert_eq!(
         initial["tools"][1],

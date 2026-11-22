@@ -12,6 +12,7 @@ use crate::{
 };
 
 const MAX_OUTPUT_TOKENS: u32 = 16_384;
+const MAX_OPENAI_WEB_CALLS_PER_RESPONSE: u32 = 10;
 const MAX_ANTHROPIC_PAUSES: usize = 3;
 const MAX_ANTHROPIC_WEB_USES: u32 = 5;
 const MAX_ANTHROPIC_FETCH_TOKENS: u32 = 6_000;
@@ -93,8 +94,8 @@ impl ProviderRequest {
 }
 
 fn take_anthropic_content(response: &mut Value) -> Result<Vec<Value>> {
-    match response["content"].take() {
-        Value::Array(blocks) => Ok(blocks),
+    match response.get_mut("content").map(Value::take) {
+        Some(Value::Array(blocks)) => Ok(blocks),
         _ => bail!("Claude returned invalid response content"),
     }
 }
@@ -140,7 +141,7 @@ fn openai_payload(profile: &Profile, context: &TurnContext<'_>) -> Value {
          explain this and suggest choosing a supported model with /model or pasting an excerpt."
     };
 
-    json!({
+    let mut body = json!({
         "model": profile.model,
         "instructions": instructions,
         "input": input,
@@ -158,7 +159,13 @@ fn openai_payload(profile: &Profile, context: &TurnContext<'_>) -> Value {
                 "schema": reply_schema(),
             },
         },
-    })
+    });
+
+    if web_enabled {
+        body["max_tool_calls"] = json!(MAX_OPENAI_WEB_CALLS_PER_RESPONSE);
+    }
+
+    body
 }
 
 fn anthropic_payload(profile: &Profile, context: &TurnContext<'_>) -> Value {
@@ -420,6 +427,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn malformed_claude_continuations_return_a_provider_error() {
+        let context = TurnContext {
+            prompt: "Read this public README",
+            tools: &[],
+            history: &[],
+        };
+        let profile = Profile::new(Provider::Anthropic);
+        let pause = json!({
+            "stop_reason": "pause_turn",
+            "content": [{
+                "type": "server_tool_use",
+                "name": "web_search",
+                "id": "srvtoolu_search",
+                "input": {"query": "Rust license"}
+            }]
+        });
+
+        for malformed in [json!([]), json!("unexpected body"), json!({})] {
+            let mut request = ProviderRequest::new(&profile, &context);
+            assert!(request.receive(pause.clone()).unwrap().is_none());
+
+            let error = request.receive(malformed).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "Claude returned invalid response content"
+            );
+        }
+    }
+
+    #[test]
     fn claude_pauses_stop_at_the_continuation_limit() {
         let context = TurnContext {
             prompt: "Read this public README",
@@ -474,6 +511,7 @@ mod tests {
 
         assert_eq!(request.body["tools"].as_array().unwrap().len(), 1);
         assert_eq!(request.body["tools"][0]["name"], "read_resume");
+        assert!(request.body.get("max_tool_calls").is_none());
         assert!(
             request.body["instructions"]
                 .as_str()
