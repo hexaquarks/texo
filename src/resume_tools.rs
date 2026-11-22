@@ -3,8 +3,8 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use anyhow::{Result, anyhow, bail, ensure};
-use serde::Deserialize;
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
@@ -13,14 +13,39 @@ use crate::{
 };
 
 pub const MAX_DRAFT_BYTES: usize = 128 * 1024;
+pub const CURRENT_DOCUMENT_ID: &str = "current";
 
-/// A task-local draft. Tools never mutate the live editor or the saved resume.
+#[derive(Serialize)]
+pub struct DocumentSummary {
+    pub id: String,
+    pub name: String,
+    pub current: bool,
+}
+
+/// Workspace operations use document IDs from the catalog, never model-supplied paths.
+pub trait DocumentWorkspace: Send {
+    fn has_current(&self) -> bool;
+    fn has_pending_proposal(&self) -> bool;
+    fn validate_current(&self) -> Result<()>;
+    fn list(&self) -> Result<Vec<DocumentSummary>>;
+    /// The current document's source lives in the task draft.
+    fn read(&self, id: &str) -> Result<(DocumentSummary, Option<String>)>;
+    fn create(
+        &self,
+        name: &str,
+        source_id: Option<&str>,
+        tex: Option<&str>,
+    ) -> Result<DocumentSummary>;
+}
+
+/// A task-local draft. Editing tools never mutate the live editor or an existing saved resume.
 pub struct ResumeTools {
     document: String,
     draft: String,
     proposed: bool,
     build: Option<crate::sandbox::CompiledDraft>,
     directory: Option<PathBuf>,
+    workspace: Option<Box<dyn DocumentWorkspace>>,
 }
 
 impl ResumeTools {
@@ -31,18 +56,12 @@ impl ResumeTools {
             proposed: false,
             build: None,
             directory: None,
+            workspace: None,
         }
     }
 
     fn stage(&mut self, draft: String) -> Result<Value> {
-        ensure!(
-            !draft.trim().is_empty(),
-            "The proposed resume cannot be empty"
-        );
-        ensure!(
-            draft.len() <= MAX_DRAFT_BYTES,
-            "The proposed resume is too large"
-        );
+        validate_source(&draft)?;
 
         self.draft = draft;
         self.proposed = true;
@@ -60,11 +79,110 @@ impl ResumeTools {
         self.directory = Some(directory);
         self
     }
+
+    pub fn in_workspace(mut self, workspace: Box<dyn DocumentWorkspace>) -> Self {
+        self.workspace = Some(workspace);
+        self
+    }
+
+    fn has_current(&self) -> bool {
+        self.workspace
+            .as_ref()
+            .is_none_or(|workspace| workspace.has_current())
+    }
+
+    fn workspace(&self) -> Result<&dyn DocumentWorkspace> {
+        self.workspace
+            .as_deref()
+            .context("No resume workspace is available")
+    }
+
+    fn has_proposal(&self) -> bool {
+        self.proposed
+            || self
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.has_pending_proposal())
+    }
+
+    fn read_resume(&self, arguments: &Value) -> Result<Value> {
+        let request: ReadResume = serde_json::from_value(arguments.clone())
+            .map_err(|_| anyhow!("read_resume accepts only a document_id or null"))?;
+
+        if let Some(id) = request.document_id.as_deref()
+            && id != CURRENT_DOCUMENT_ID
+        {
+            let (document, source) = self.workspace()?.read(id)?;
+            let is_draft = source.is_none();
+            return bounded_document_result(json!({
+                "document": document.name,
+                "document_id": document.id,
+                "tex": source.as_deref().unwrap_or(&self.draft),
+                "has_proposal": is_draft && self.has_proposal()
+            }));
+        }
+
+        ensure!(
+            self.has_current(),
+            "No resume is open. Choose an ID from list_resumes."
+        );
+        bounded_document_result(json!({
+            "document": self.document,
+            "document_id": CURRENT_DOCUMENT_ID,
+            "tex": self.draft,
+            "has_proposal": self.has_proposal()
+        }))
+    }
+
+    fn create_resume(&self, arguments: &Value) -> Result<Value> {
+        let request: CreateResume = serde_json::from_value(arguments.clone()).map_err(|_| {
+            anyhow!("create_resume requires a name and accepts source_document_id and tex")
+        })?;
+        if let Some(tex) = &request.tex {
+            validate_source(tex)?;
+        }
+
+        let created = self.workspace()?.create(
+            &request.name,
+            request.source_document_id.as_deref(),
+            request.tex.as_deref(),
+        )?;
+
+        Ok(json!({"created": created, "saved": true}))
+    }
+}
+
+fn validate_source(tex: &str) -> Result<()> {
+    ensure!(!tex.trim().is_empty(), "Resume TeX cannot be empty");
+    ensure!(tex.len() <= MAX_DRAFT_BYTES, "Resume TeX is too large");
+    Ok(())
+}
+
+fn bounded_document_result(value: Value) -> Result<Value> {
+    ensure!(
+        serde_json::to_vec(&value)?.len() <= crate::tools::MAX_TOOL_RESULT_BYTES,
+        "The requested document data exceeds the tool output limit"
+    );
+    Ok(value)
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NoArguments {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadResume {
+    document_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateResume {
+    name: String,
+    source_document_id: Option<String>,
+    tex: Option<String>,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,7 +199,7 @@ struct TextReplacement {
 
 impl ToolSet for ResumeTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![
+        let mut definitions = vec![
             ToolDefinition {
                 name: "replace_text".into(),
                 description: "Stage a targeted edit by replacing one exact, unique old_text with new_text. \
@@ -109,17 +227,6 @@ impl ToolSet for ResumeTools {
                 }),
             },
             ToolDefinition {
-                name: "read_resume".into(),
-                description: "Read the task's current resume draft, including unsaved text and any staged edits. \
-                    This tool does not read other files.".into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
                 name: "propose_edit".into(),
                 description: "Stage a COMPLETE revised TeX document in memory. Does not change the editor or save files. \
                     Preserve the user's facts.".into(),
@@ -132,11 +239,67 @@ impl ToolSet for ResumeTools {
                     "additionalProperties": false
                 }),
             },
-        ]
+        ];
+
+        if !self.has_current() {
+            definitions.clear();
+        }
+        definitions.push(ToolDefinition {
+            name: "read_resume".into(),
+            description: "Read a resume by ID from list_resumes. Use null or current for the open draft, which \
+                includes unsaved text and staged edits.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "document_id": {"type": ["string", "null"]}
+                },
+                "required": ["document_id"],
+                "additionalProperties": false
+            }),
+        });
+
+        if self.workspace.is_some() {
+            definitions.extend([
+                ToolDefinition {
+                    name: "list_resumes".into(),
+                    description: "List managed resumes in the workspace with their IDs and the current resume.".into(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                    }),
+                },
+                ToolDefinition {
+                    name: "create_resume".into(),
+                    description: "Save a new resume without switching the open editor. For a copy, pass an ID from \
+                        list_resumes or current as source_document_id and null as tex. Managed copies include supporting \
+                        files. A copy of the open resume includes its unsaved editor text from the start of the request. \
+                        For a new resume, pass null as source_document_id and complete TeX or null for the starter. \
+                        Creation does not compile the new resume. Use only when the user requests a new resume or copy."
+                        .into(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "source_document_id": {"type": ["string", "null"]},
+                            "tex": {"type": ["string", "null"], "maxLength": MAX_DRAFT_BYTES}
+                        },
+                        "required": ["name", "source_document_id", "tex"],
+                        "additionalProperties": false
+                    }),
+                },
+            ]);
+        }
+
+        definitions
     }
 
     fn execute(&mut self, name: &str, arguments: &Value, cancelled: &AtomicBool) -> Result<Value> {
         ensure!(!cancelled.load(Ordering::Relaxed), "Assistant cancelled");
+        if matches!(name, "replace_text" | "propose_edit" | "compile_resume") {
+            ensure!(self.has_current(), "No resume is open for editing");
+        }
 
         match name {
             "replace_text" => {
@@ -166,6 +329,10 @@ impl ToolSet for ResumeTools {
                     .map_err(|_| anyhow!("compile_resume accepts no arguments"))?;
 
                 self.build = None;
+                if let Some(workspace) = &self.workspace {
+                    workspace.validate_current()?;
+                }
+
                 let directory = self
                     .directory
                     .as_ref()
@@ -178,16 +345,13 @@ impl ToolSet for ResumeTools {
 
                 Ok(result)
             }
-            "read_resume" => {
+            "read_resume" => self.read_resume(arguments),
+            "list_resumes" => {
                 serde_json::from_value::<NoArguments>(arguments.clone())
-                    .map_err(|_| anyhow!("read_resume accepts no arguments"))?;
-
-                Ok(json!({
-                    "document": self.document,
-                    "tex": self.draft,
-                    "has_proposal": self.proposed
-                }))
+                    .map_err(|_| anyhow!("list_resumes accepts no arguments"))?;
+                bounded_document_result(json!({"documents": self.workspace()?.list()?}))
             }
+            "create_resume" => self.create_resume(arguments),
             "propose_edit" => {
                 let edit: ProposedEdit = serde_json::from_value(arguments.clone())
                     .map_err(|_| anyhow!("propose_edit requires only a tex string"))?;

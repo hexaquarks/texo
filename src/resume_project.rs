@@ -96,9 +96,17 @@ impl Project {
 
     pub fn rename(&mut self, name: &str) -> Result<()> {
         let name = validate_name(name)?;
+        ensure!(
+            fs::symlink_metadata(&self.root)?.is_dir(),
+            "The resume must be a project folder"
+        );
 
         // A dialog may hold an older project; preserve metadata changed since it opened.
         let mut manifest = Self::load(&self.root)?.manifest;
+        ensure!(
+            manifest.id == self.manifest.id && manifest.entrypoint == self.manifest.entrypoint,
+            "Resume changed on disk. Reopen Manage before renaming"
+        );
         manifest.name = name;
 
         write_manifest(&self.root, &manifest)?;
@@ -418,8 +426,9 @@ impl ImportPlan {
             "Choose one of the discovered entrypoints"
         );
         validate_entrypoint(&self.source, entrypoint)?;
+        let has_working_entrypoint = working_copies.iter().any(|(path, _)| path == entrypoint);
         ensure!(
-            self.source.join(entrypoint).is_file(),
+            has_working_entrypoint || self.source.join(entrypoint).is_file(),
             "The selected source is missing"
         );
 
@@ -516,17 +525,30 @@ pub fn duplicate(
     name: &str,
     working_copies: &[(PathBuf, String)],
 ) -> Result<Project> {
+    let workspace = workspace.canonicalize()?;
+    ensure!(
+        fs::symlink_metadata(&project.root)?.is_dir(),
+        "The resume must be a project folder"
+    );
+    let root = project.root.canonicalize()?;
+    ensure!(
+        root.parent() == Some(workspace.as_path()),
+        "The resume must be directly inside the workspace"
+    );
+    let current = Project::load(&root)?;
+    ensure!(
+        current.manifest.id == project.manifest.id
+            && current.manifest.entrypoint == project.manifest.entrypoint,
+        "Resume changed on disk. Reopen it before copying"
+    );
+
+    let entrypoint = current.manifest.entrypoint;
     let plan = ImportPlan {
-        source: project.root.clone(),
-        candidates: vec![project.manifest.entrypoint.clone()],
-        label: project.manifest.label.clone(),
+        source: root,
+        candidates: vec![entrypoint.clone()],
+        label: current.manifest.label,
     };
-    plan.copy_project(
-        workspace,
-        name,
-        &project.manifest.entrypoint,
-        working_copies,
-    )
+    plan.copy_project(&workspace, name, &entrypoint, working_copies)
 }
 
 #[cfg(test)]
@@ -622,6 +644,24 @@ mod tests {
             discover(directory.path())?.projects[0].manifest.name,
             "AI engineer"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_project_cannot_rename_or_copy_a_replacement() -> Result<()> {
+        let workspace = tempfile::tempdir()?;
+        let mut stale = create(workspace.path(), "Original")?;
+        let replacement = create(workspace.path(), "Replacement")?;
+        fs::remove_dir_all(&stale.root)?;
+        fs::rename(&replacement.root, &stale.root)?;
+
+        assert!(stale.rename("Invalid rename").is_err());
+        assert!(duplicate(workspace.path(), &stale, "Invalid copy", &[]).is_err());
+
+        let catalog = discover(workspace.path())?;
+        assert_eq!(catalog.projects.len(), 1);
+        assert_eq!(catalog.projects[0].manifest.id, replacement.manifest.id);
+        assert_eq!(catalog.projects[0].manifest.name, "Replacement");
         Ok(())
     }
 
