@@ -10,7 +10,12 @@ use super::{
     App, Focus,
     workspace_view::{WorkspaceLayout, pane_content, preview_header},
 };
-use crate::{actions::Action, assistant::Assistant, keybindings::PrefixInput, projects::Projects};
+use crate::{
+    actions::Action,
+    assistant::{Assistant, TranscriptGesture},
+    keybindings::PrefixInput,
+    projects::Projects,
+};
 
 impl App {
     pub(super) fn handle_event(&mut self, event: Event, area: Rect) -> bool {
@@ -197,15 +202,15 @@ impl App {
         false
     }
 
-    fn open_preview_link(&mut self, uri: &str) {
+    fn open_link(&mut self, uri: &str, kind: &str) {
         #[cfg(not(test))]
         if open::that_detached(uri).is_err() {
-            self.session.status = "Could not open PDF link.".into();
+            self.session.status = format!("Could not open {kind} link.");
         }
 
         #[cfg(test)]
         {
-            self.session.status = format!("Opened PDF link: {uri}");
+            self.session.status = format!("Opened {kind} link: {uri}");
         }
     }
 
@@ -214,9 +219,15 @@ impl App {
             return;
         }
 
-        if self.focus == Focus::Assistant && self.session.assistant.drag_transcript_selection(mouse)
-        {
-            return;
+        if self.focus == Focus::Assistant {
+            match self.session.assistant.drag_transcript_selection(mouse) {
+                TranscriptGesture::Ignored => {}
+                TranscriptGesture::Selection => return,
+                TranscriptGesture::OpenLink(url) => {
+                    self.open_link(url.as_str(), "chat");
+                    return;
+                }
+            }
         }
 
         if self.history_mouse(mouse, area) {
@@ -234,7 +245,7 @@ impl App {
             let body = self.inline_preview_area(layout.preview);
             let uri = self.active_preview().release_link(body, position);
             if let Some(uri) = uri {
-                self.open_preview_link(&uri);
+                self.open_link(&uri, "PDF");
             }
 
             self.session.preview.end_drag();

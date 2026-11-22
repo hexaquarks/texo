@@ -36,6 +36,7 @@ struct Message {
     role: &'static str,
     content: String,
     error: bool,
+    markdown: Option<chat_markdown::Markdown>,
 }
 
 impl Message {
@@ -44,6 +45,24 @@ impl Message {
             role,
             content,
             error,
+            markdown: None,
+        }
+    }
+
+    fn reply(content: String) -> Self {
+        // Conversation history still sends the original provider text. The transcript
+        // shares this rendered text across drawing, selecting, and copying.
+        let markdown = chat_markdown::Markdown::parse(&content);
+        Self {
+            markdown: Some(markdown),
+            ..Self::new("assistant", content, false)
+        }
+    }
+
+    fn display_text(&self) -> &str {
+        match &self.markdown {
+            Some(markdown) => &markdown.text,
+            None => &self.content,
         }
     }
 }
@@ -284,8 +303,7 @@ impl Assistant {
                     source_before: self.source_snapshot.clone(),
                     source_after,
                 });
-                self.messages
-                    .push(Message::new("assistant", response.reply, false));
+                self.messages.push(Message::reply(response.reply));
                 Some(Ok(()))
             }
             Err(error) => {
@@ -344,8 +362,12 @@ fn new_input() -> TextArea<'static> {
     input
 }
 
+#[path = "chat_markdown.rs"]
+mod chat_markdown;
+
 #[path = "chat_transcript.rs"]
 mod chat_transcript;
+pub(crate) use chat_transcript::TranscriptGesture;
 
 #[path = "chat_view.rs"]
 mod chat_view;

@@ -9,8 +9,9 @@ use ratatui::{
         execute,
     },
     layout::{Position, Rect},
-    style::Modifier,
+    style::{Modifier, Style},
 };
+use reqwest::Url;
 use texo::theme;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -61,8 +62,15 @@ pub(super) struct Transcript {
     visible_rows: Vec<TranscriptRow>,
     selection: Option<Selection>,
     dragging: bool,
+    link_press: Option<(Position, TextPosition)>,
     copy_notice: Option<&'static str>,
     clipboard: SystemClipboard,
+}
+
+pub(crate) enum TranscriptGesture {
+    Ignored,
+    Selection,
+    OpenLink(Url),
 }
 
 impl Transcript {
@@ -84,6 +92,7 @@ impl Transcript {
 
     pub(super) fn end_drag(&mut self) {
         self.dragging = false;
+        self.link_press = None;
     }
 
     pub(super) fn begin_drag(&mut self, messages: &[Message], position: Position, extend: bool) {
@@ -107,40 +116,86 @@ impl Transcript {
         }
         self.copy_notice = None;
         self.dragging = true;
+        self.link_press = (!extend)
+            .then_some((position, point))
+            .filter(|_| self.link_at(messages, position).is_some());
     }
 
-    pub(super) fn handle_drag(&mut self, messages: &[Message], mouse: MouseEvent) -> bool {
-        if !self.dragging {
-            return false;
+    pub(super) fn handle_drag(
+        &mut self,
+        messages: &[Message],
+        mouse: MouseEvent,
+    ) -> TranscriptGesture {
+        if matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            self.link_press = None;
+            return TranscriptGesture::Ignored;
         }
 
         let released = mouse.kind == MouseEventKind::Up(MouseButton::Left);
-        if !released && mouse.kind != MouseEventKind::Drag(MouseButton::Left) {
-            return false;
+        if !self.dragging || (!released && mouse.kind != MouseEventKind::Drag(MouseButton::Left)) {
+            return TranscriptGesture::Ignored;
         }
 
         let position = Position::new(mouse.column, mouse.row);
-        if let Some(point) = self.hit(messages, position)
+        let point = self.hit(messages, position);
+        if let Some(point) = point
             && let Some(selection) = &mut self.selection
         {
             selection.end = point;
         }
-        if released {
-            self.end_drag();
+
+        if !released {
+            self.link_press = None;
+            return TranscriptGesture::Selection;
         }
 
-        true
+        let press = self.link_press;
+        self.end_drag();
+        if let Some((pressed_position, pressed_point)) = press
+            && position == pressed_position
+            && point == Some(pressed_point)
+            && let Some(url) = self.link_at(messages, position)
+        {
+            return TranscriptGesture::OpenLink(url.clone());
+        }
+
+        TranscriptGesture::Selection
     }
 
     fn hit(&self, messages: &[Message], position: Position) -> Option<TextPosition> {
         // An active drag can leave the pane. Keep its endpoint on a visible row.
-        let index = usize::from(position.y.saturating_sub(self.viewport.y))
+        let row_index = usize::from(position.y.saturating_sub(self.viewport.y))
             .min(self.visible_rows.len().saturating_sub(1));
-        let row = self.visible_rows.get(index)?;
-        let message = messages.get(row.message)?;
+        let row = self.visible_rows.get(row_index)?;
+        let content = messages.get(row.message)?.display_text();
         let column = usize::from(position.x.saturating_sub(self.viewport.x));
 
-        Some(row.position(&message.content, column))
+        Some(TextPosition {
+            message: row.message,
+            byte: row.hit(content, column).byte,
+        })
+    }
+
+    fn link_at<'a>(&self, messages: &'a [Message], position: Position) -> Option<&'a Url> {
+        if !self.viewport.contains(position) {
+            return None;
+        }
+
+        let row = self
+            .visible_rows
+            .get(usize::from(position.y - self.viewport.y))?;
+        let markdown = messages.get(row.message)?.markdown.as_ref()?;
+        let column = usize::from(position.x - self.viewport.x);
+        let hit = row.hit(&markdown.text, column);
+        let cell_end = hit.cell_end?;
+        if cell_end > usize::from(self.viewport.width) {
+            return None;
+        }
+
+        markdown.link_at(hit.byte)
     }
 
     fn selected_text(&self, messages: &[Message]) -> Option<String> {
@@ -148,7 +203,7 @@ impl Transcript {
         let mut text = String::new();
 
         for index in range.start.message..=range.end.message {
-            let content = &messages.get(index)?.content;
+            let content = messages.get(index)?.display_text();
             let start = if index == range.start.message {
                 range.start.byte
             } else {
@@ -218,30 +273,44 @@ impl Transcript {
     }
 }
 
+struct RowHit {
+    byte: usize,
+    cell_end: Option<usize>,
+}
+
 impl TranscriptRow {
-    fn position(&self, content: &str, column: usize) -> TextPosition {
+    fn hit(&self, content: &str, column: usize) -> RowHit {
         let mut byte = self.bytes.start;
         let RowKind::Text(marker) = self.kind else {
-            return TextPosition {
-                message: self.message,
+            return RowHit {
                 byte,
+                cell_end: None,
             };
         };
         let mut cell = marker.len();
+        if column < cell {
+            return RowHit {
+                byte,
+                cell_end: None,
+            };
+        }
 
         for grapheme in content[self.bytes.clone()].graphemes(true) {
             let width = grapheme_width(grapheme);
             if column < cell + width {
-                break;
+                return RowHit {
+                    byte,
+                    cell_end: Some(cell + width),
+                };
             }
 
             byte += grapheme.len();
             cell += width;
         }
 
-        TextPosition {
-            message: self.message,
+        RowHit {
             byte,
+            cell_end: None,
         }
     }
 
@@ -277,18 +346,52 @@ impl TranscriptRow {
         // Advance by the buffer's actual cell count so adding a style boundary
         // cannot move the text that follows it.
         write(marker, style);
-        let content = &message.content;
-        let bytes = self.bytes.clone();
+        self.render_text(
+            message,
+            style,
+            self.selected_bytes(selection).as_ref(),
+            write,
+        );
+    }
 
-        if let Some(selected) = self.selected_bytes(selection) {
-            write(&content[bytes.start..selected.start], style);
-            write(
-                &content[selected.clone()],
-                style.add_modifier(Modifier::REVERSED),
-            );
-            write(&content[selected.end..bytes.end], style);
+    fn render_text<'a>(
+        &self,
+        message: &'a Message,
+        style: Style,
+        selection: Option<&Range<usize>>,
+        mut write: impl FnMut(&'a str, Style),
+    ) {
+        if self.bytes.is_empty() {
+            return;
+        }
+
+        if let Some(markdown) = &message.markdown {
+            let first = markdown
+                .styles
+                .partition_point(|span| span.bytes.end <= self.bytes.start);
+            for span in &markdown.styles[first..] {
+                if span.bytes.start >= self.bytes.end {
+                    break;
+                }
+
+                let start = self.bytes.start.max(span.bytes.start);
+                let end = self.bytes.end.min(span.bytes.end);
+                write_span(
+                    &mut write,
+                    &markdown.text,
+                    start..end,
+                    style.patch(span.style),
+                    selection,
+                );
+            }
         } else {
-            write(&content[bytes], style);
+            write_span(
+                &mut write,
+                &message.content,
+                self.bytes.clone(),
+                style,
+                selection,
+            );
         }
     }
 
@@ -308,6 +411,28 @@ impl TranscriptRow {
 
         (!bytes.is_empty()).then_some(bytes)
     }
+}
+
+fn write_span<'a>(
+    write: &mut impl FnMut(&'a str, Style),
+    content: &'a str,
+    bytes: Range<usize>,
+    style: Style,
+    selection: Option<&Range<usize>>,
+) {
+    if let Some(selection) = selection {
+        let start = bytes.start.max(selection.start);
+        let end = bytes.end.min(selection.end);
+
+        if start < end {
+            write(&content[bytes.start..start], style);
+            write(&content[start..end], style.add_modifier(Modifier::REVERSED));
+            write(&content[end..bytes.end], style);
+            return;
+        }
+    }
+
+    write(&content[bytes], style);
 }
 
 pub(super) fn transcript_rows(
@@ -332,12 +457,26 @@ pub(super) fn transcript_rows(
             (_, true) => " ! ",
             _ => " * ",
         };
+        let content = message.display_text();
+        let code_blocks = message
+            .markdown
+            .as_ref()
+            .map_or(&[][..], |markdown| &markdown.code_blocks);
+        let mut code = code_blocks.iter().peekable();
         let mut line_start = 0;
 
-        for physical_line in message.content.split_inclusive('\n') {
+        for physical_line in content.split_inclusive('\n') {
             let paragraph = physical_line.lines().next().unwrap_or_default();
+            while code.next_if(|block| block.end <= line_start).is_some() {}
 
-            for bytes in paragraph_rows(paragraph, &wrap_options) {
+            let is_code = code.peek().is_some_and(|block| block.contains(&line_start));
+            let ranges = if is_code {
+                code_rows(paragraph, content_width)
+            } else {
+                paragraph_rows(paragraph, &wrap_options)
+            };
+
+            for bytes in ranges {
                 rows.push(TranscriptRow {
                     message: index,
                     bytes: line_start + bytes.start..line_start + bytes.end,
@@ -350,10 +489,10 @@ pub(super) fn transcript_rows(
         }
 
         if padded {
-            rows.push(spacer(index, message.content.len(), RowKind::PromptPadding));
+            rows.push(spacer(index, content.len(), RowKind::PromptPadding));
         }
         // Keep a blank line between turns without wasting the last visible transcript row.
-        rows.push(spacer(index, message.content.len(), RowKind::Separator));
+        rows.push(spacer(index, content.len(), RowKind::Separator));
     }
 
     rows.pop();
@@ -396,6 +535,18 @@ fn paragraph_rows(paragraph: &str, options: &textwrap::Options<'_>) -> Vec<Range
     if rows.is_empty() {
         rows.push(0..0);
     }
+    rows
+}
+
+fn code_rows(code: &str, width: usize) -> Vec<Range<usize>> {
+    let mut rows = Vec::new();
+    // Keep indentation and spaces at wrap boundaries inside a code block.
+    append_grapheme_rows(&mut rows, code.grapheme_indices(true), width);
+
+    if rows.is_empty() {
+        rows.push(0..0);
+    }
+
     rows
 }
 

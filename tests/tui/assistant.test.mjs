@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { copyFile, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join, delimiter } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
@@ -304,4 +304,77 @@ test('model command opens the picker and persists the selected model', async () 
         await terminal.getByText(`› ${profile.model}`).expect();
         await terminal.press('Escape');
     }, { prepare });
+});
+
+test('assistant Markdown is styled while the prompt and provider history remain literal', async () => {
+    await withTexo('assistant-markdown', async ({ terminal, root }) => {
+        await createResume(terminal, 'License example');
+        await ask(terminal, '**markdown**');
+        await terminal.getByText('SPDX-License-Identifier: MIT').expect();
+        await prefix(terminal, 'z');
+        await terminal.resize(80, 28);
+
+        const bold = terminal.getByStyle({ bold: true });
+        const italic = terminal.getByStyle({ italic: true });
+        const link = terminal.getByStyle({ underlineStyle: 'single' });
+        await terminal.getByText('License check').and(bold).expect();
+        await terminal.getByText('MIT is a permissive license.').expect();
+        await terminal.getByText('MIT').and(bold).expect();
+        await terminal.getByText('permissive').and(italic).expect();
+        await terminal.getByText('Open Source Initiative license text').and(link).expect();
+        await terminal.getByText('https://').and(link).expect();
+        await terminal.getByText('opensource.org/license/mit').and(link).expect();
+        const code = terminal.getByStyle({ background: '#181825' });
+        await terminal.getByText('LICENSE').and(code).expect();
+        await terminal.getByText('Copyright 2026 Example Authors').and(code).expect();
+        await terminal.getByText('**markdown**', { whitespace: 'exact' }).expect();
+
+        await ask(terminal, 'advice');
+        await terminal.getByText('Fixture completed advice').expect();
+        const context = JSON.parse(await readFile(join(root, 'bin/context.json'), 'utf8'));
+        const assistantReply = context.conversation.find(message => message.role === 'assistant');
+        assert.match(assistantReply.content, /\*\*MIT\*\* is a \*permissive\*/);
+        assert.ok(assistantReply.content.includes(
+            '[Open Source Initiative license text](https://opensource.org/license/mit)',
+        ));
+        assert.equal(context.conversation[0].content, '**markdown**');
+    }, { prepare, env: { NO_COLOR: '' } });
+});
+
+test('assistant Markdown copies across a wrapped link to the OS clipboard', {
+    skip: process.env.TEXO_CLIPBOARD_GUARDED !== '1' ? 'Run with the OS pasteboard guard' : false,
+}, async () => {
+    await withTexo('assistant-markdown-clipboard', async ({ terminal }) => {
+        await createResume(terminal, 'Clipboard example');
+        await ask(terminal, '**markdown**');
+        await terminal.getByText('SPDX-License-Identifier: MIT').expect();
+        await prefix(terminal, 'z');
+        await terminal.resize(46, 25);
+
+        const linkLabel = terminal.getByText('Open Source');
+        const linkSuffix = terminal.getByText('opensource.org/license/mit');
+        await linkLabel.expect();
+        await linkSuffix.expect();
+
+        const label = await linkLabel.location();
+        const url = await linkSuffix.location();
+        assert.ok(url.start.row > label.start.row);
+
+        const draft = 'Draft stays here';
+        await paste(terminal, draft);
+        await terminal.getByText(draft).expect();
+        execFileSync('pbcopy', { input: 'Clipboard seed' });
+
+        await terminal.mouse.drag(label.start.column, label.start.row, url.end.column, url.end.row);
+        const selected = terminal.getByStyle({ inverse: true, underlineStyle: 'single' });
+        await terminal.getByText('Open Source').and(selected).expect();
+        await terminal.getByText('https://').and(selected).expect();
+        await terminal.getByText('opensource.org/license/mit').and(selected).expect();
+        await terminal.press('Ctrl+c');
+        await terminal.getByText('Copied chat selection').expect();
+
+        const copied = execFileSync('pbpaste', { encoding: 'utf8' });
+        assert.equal(copied, 'Open Source Initiative license text (https://opensource.org/license/mit');
+        await terminal.getByText(draft).expect();
+    }, { prepare, env: { NO_COLOR: '' } });
 });

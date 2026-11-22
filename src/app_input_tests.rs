@@ -88,6 +88,59 @@ fn chat_maximizes_and_restores_without_changing_documents_or_prompt() -> anyhow:
 }
 
 #[test]
+fn chat_link_opens_only_on_click_after_the_assistant_reply_is_drawn() -> anyhow::Result<()> {
+    use crate::assistant_job::{AssistantReply, CompletedTask};
+    use ratatui::style::Modifier;
+
+    let (_directory, mut app) = application()?;
+    let area = Rect::new(0, 0, 100, 35);
+    let url = "https://example.com/license";
+    let source = app.session.editor.source();
+
+    app.focus = Focus::Assistant;
+    let sender = app.session.assistant.pending_request(source);
+    sender.send(Ok(CompletedTask {
+        reply: AssistantReply {
+            reply: format!("Read the [license]({url})."),
+            proposed_tex: None,
+        },
+        build: None,
+    }))?;
+    app.receive_assistant();
+
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))?;
+    terminal.draw(|frame| app.draw(frame))?;
+    let buffer = terminal.backend().buffer();
+    let chat = app.workspace_layout(area).assistant;
+    let link = chat
+        .positions()
+        .find(|&position| buffer[position].modifier.contains(Modifier::UNDERLINED))
+        .expect("the assistant chat should show the link");
+
+    app.session.status.clear();
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        link.x,
+        link.y,
+        area,
+    );
+    assert!(app.session.status.is_empty());
+
+    terminal.draw(|frame| app.draw(frame))?;
+    pane_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        link.x,
+        link.y,
+        area,
+    );
+    assert_eq!(app.session.status, format!("Opened chat link: {url}"));
+
+    Ok(())
+}
+
+#[test]
 fn chat_toggle_uses_reloaded_prefix_and_cancels_without_typing_action_keys() -> anyhow::Result<()> {
     let (directory, mut app) = application()?;
     app.settings_path = directory.path().join("config.toml");
