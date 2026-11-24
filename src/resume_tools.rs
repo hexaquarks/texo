@@ -15,7 +15,7 @@ use crate::{
 pub const MAX_DRAFT_BYTES: usize = 128 * 1024;
 pub const CURRENT_DOCUMENT_ID: &str = "current";
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct DocumentSummary {
     pub id: String,
     pub name: String,
@@ -46,6 +46,7 @@ pub struct ResumeTools {
     build: Option<crate::sandbox::CompiledDraft>,
     directory: Option<PathBuf>,
     workspace: Option<Box<dyn DocumentWorkspace>>,
+    pub created_for_review: Option<DocumentSummary>,
 }
 
 impl ResumeTools {
@@ -57,6 +58,7 @@ impl ResumeTools {
             build: None,
             directory: None,
             workspace: None,
+            created_for_review: None,
         }
     }
 
@@ -134,10 +136,11 @@ impl ResumeTools {
         }))
     }
 
-    fn create_resume(&self, arguments: &Value) -> Result<Value> {
+    fn create_resume(&mut self, arguments: &Value) -> Result<Value> {
         let request: CreateResume = serde_json::from_value(arguments.clone()).map_err(|_| {
             anyhow!("create_resume requires a name and accepts source_document_id and tex")
         })?;
+
         if let Some(tex) = &request.tex {
             validate_source(tex)?;
         }
@@ -148,7 +151,18 @@ impl ResumeTools {
             request.tex.as_deref(),
         )?;
 
-        Ok(json!({"created": created, "saved": true}))
+        let preview_on_completion = request.source_document_id.is_none() || !self.has_current();
+        let result = json!({
+            "created": created,
+            "saved": true,
+            "preview_on_completion": preview_on_completion,
+        });
+
+        if preview_on_completion {
+            self.created_for_review = Some(created);
+        }
+
+        Ok(result)
     }
 }
 
@@ -272,11 +286,11 @@ impl ToolSet for ResumeTools {
                 },
                 ToolDefinition {
                     name: "create_resume".into(),
-                    description: "Save a new resume without switching the open editor. For a copy, pass an ID from \
-                        list_resumes or current as source_document_id and null as tex. Managed copies include supporting \
-                        files. A copy of the open resume includes its unsaved editor text from the start of the request. \
+                    description: "Save a new resume. Texo opens and builds it for review after this turn. For a copy, pass \
+                        an ID from list_resumes or current as source_document_id and null as tex. Managed copies include \
+                        supporting files. A copy of the open resume includes its unsaved editor text from the start of the request. \
                         For a new resume, pass null as source_document_id and complete TeX or null for the starter. \
-                        Creation does not compile the new resume. Use only when the user requests a new resume or copy."
+                        Copies preserve the open editor. Use only when the user requests a new resume or copy."
                         .into(),
                     parameters: json!({
                         "type": "object",

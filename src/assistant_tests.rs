@@ -157,13 +157,14 @@ fn request_states_render_distinct_markers_in_the_same_column() {
     );
 
     reply
-        .send(Ok(CompletedTask {
-            reply: AssistantReply {
+        .send(CompletedTask {
+            created_for_review: None,
+            reply: Ok(AssistantReply {
                 reply: "A reply can mention an error.".into(),
                 proposed_tex: None,
-            },
+            }),
             build: None,
-        }))
+        })
         .unwrap();
     assistant.poll().unwrap().unwrap();
     assert_chat_marker(
@@ -175,7 +176,9 @@ fn request_states_render_distinct_markers_in_the_same_column() {
 
     let failed = assistant.pending_request(String::new());
     failed
-        .send(Err(anyhow::anyhow!("Provider unavailable.")))
+        .send(CompletedTask::failed(anyhow::anyhow!(
+            "Provider unavailable."
+        )))
         .unwrap();
     assert!(assistant.poll().unwrap().is_err());
     assert_chat_marker(

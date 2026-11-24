@@ -250,6 +250,7 @@ fn pending_and_disconnected_workers_are_distinguished() {
     let error = job
         .poll()
         .expect("Disconnected worker must finish")
+        .reply
         .err()
         .unwrap();
     assert_eq!(

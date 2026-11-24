@@ -5,7 +5,7 @@ import { join, delimiter } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { createResume, documentPath, paste, prefix, withTexo } from './helpers.mjs';
+import { ARTIFACTS, createResume, documentPath, paste, prefix, withTexo } from './helpers.mjs';
 
 const run = promisify(execFile);
 const POLL_INTERVAL_MS = 20;
@@ -145,18 +145,86 @@ test('assistant copies unsaved text before proposing an edit to the open resume'
     }, { prepare });
 });
 
-test('assistant can create and read the first resume from an empty workspace', async () => {
+test('assistant opens and compiles the first resume for review in one turn', async () => {
     await withTexo('assistant-bootstrap', async ({ terminal, workspace }) => {
         await terminal.resize(160, 50);
         await ask(terminal, 'bootstrap');
 
-        await terminal.getByText('Fixture completed bootstrap').expect();
+        await terminal.getByText('The PDF is ready for review.').expect();
         const document = await documentPath(workspace);
         assert.match(await readFile(document, 'utf8'), /My first shared resume/);
 
-        await terminal.getByText('First shared resume').first().click();
         await terminal.getByText('My first shared resume').expect();
         await terminal.getByText('PDF current').expect();
+    }, { prepare });
+});
+
+test('a saved resume reaches preview even when the provider disconnects', async () => {
+    await withTexo('assistant-create-disconnect', async ({ terminal }) => {
+        await terminal.resize(160, 50);
+        await ask(terminal, 'create then disconnect');
+
+        await terminal.getByText('The PDF is ready for review.').expect();
+        await terminal.getByText('Codex could not complete').expect();
+        await terminal.getByText('PDF current').expect();
+    }, { prepare });
+});
+
+test('the new resume carries the question and sends it with the next answer', async () => {
+    await withTexo('assistant-create-clarification', async ({ terminal, root }) => {
+        await terminal.resize(160, 50);
+        await ask(terminal, 'create and ask');
+
+        const question = 'Which city should appear on the resume?';
+        await terminal.getByText('The PDF is ready for review.').expect();
+        await terminal.getByText(question).expect();
+        await terminal.getByText('PDF current').expect();
+        await terminal.screenshot(join(ARTIFACTS, 'created-resume-question.png'));
+
+        await ask(terminal, 'Alder City');
+        await terminal.getByText('Fixture completed Alder City').expect();
+        const context = JSON.parse(await readFile(join(root, 'bin/context.json'), 'utf8'));
+        assert.match(context.current_tex, /My first shared resume/);
+
+        const conversation = context.conversation.filter(message =>
+            ['create and ask', question, 'Alder City'].includes(message.content)
+        );
+        assert.deepEqual(conversation, [
+            { role: 'user', content: 'create and ask' },
+            { role: 'assistant', content: question },
+            { role: 'user', content: 'Alder City' },
+        ]);
+    }, { prepare });
+});
+
+test('a newly created resume with invalid TeX opens with diagnostics', async () => {
+    await withTexo('assistant-create-failure', async ({ terminal, workspace }) => {
+        await terminal.resize(160, 50);
+        await ask(terminal, 'broken-create');
+
+        await terminal.getByText('Resume saved. PDF build failed.').expect();
+        await terminal.getByText('ready for review').expect({ not: true });
+
+        const document = await documentPath(workspace);
+        assert.match(await readFile(document, 'utf8'), /unknownResumeCommand/);
+        await assert.rejects(readFile(join(workspace, 'broken-resume', 'main.pdf')), { code: 'ENOENT' });
+    }, { prepare });
+});
+
+test('creating a resume preserves a dirty editor and its saved source', async () => {
+    await withTexo('assistant-create-dirty', async ({ terminal, workspace }) => {
+        await terminal.resize(160, 50);
+        await createResume(terminal, 'Original');
+
+        const original = await documentPath(workspace);
+        const saved = await readFile(original, 'utf8');
+        await terminal.press('Ctrl+End');
+        await paste(terminal, '\n% Unsaved inventory work');
+
+        await ask(terminal, 'broken-create');
+        await terminal.getByText('Kept your current view open').expect();
+        await terminal.getByText('Unsaved inventory work').first().expect();
+        assert.equal(await readFile(original, 'utf8'), saved);
     }, { prepare });
 });
 

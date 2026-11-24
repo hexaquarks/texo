@@ -17,9 +17,11 @@ pub(super) struct ResumeSession {
     pub(super) rendered_source: Option<String>,
     pub(super) rendered_pdf: Option<PathBuf>,
     pub(super) render_failed: bool,
+    pub(super) review_created_build: bool,
     pub(super) proposed_render_failed: bool,
 
     pub(super) assistant: Assistant,
+    pub(super) pending_created_review: Option<crate::assistant::CreatedReview>,
     pub(super) column_expansion: Option<super::Focus>,
 
     pub(super) proposal_review: Option<ProposalReview>,
@@ -60,9 +62,15 @@ impl ResumeSession {
         let result = self.job.as_ref()?.poll()?;
         self.job = None;
 
-        Some(result.and_then(|mut document| {
+        let created = std::mem::take(&mut self.review_created_build);
+        let outcome = result.and_then(|mut document| {
             if document.source != self.editor.source() {
                 self.status = "Build is outdated; rebuild the current text.".into();
+                if created {
+                    self.assistant.report_edit_result(
+                        "Resume saved. The build is outdated because the editor changed.",
+                    );
+                }
                 return Ok(());
             }
 
@@ -76,8 +84,20 @@ impl ResumeSession {
                 self.clear_diagnostics();
             }
 
+            if created {
+                self.assistant
+                    .report_edit_result("Resume saved and compiled. The PDF is ready for review.");
+            }
+
             Ok(())
-        }))
+        });
+
+        if created && outcome.is_err() {
+            self.assistant
+                .report_edit_result("Resume saved. PDF build failed. See the build diagnostics.");
+        }
+
+        Some(outcome)
     }
 
     pub(super) fn clear_diagnostics(&mut self) {
@@ -141,9 +161,11 @@ impl ResumeSession {
             rendered_source: None,
             rendered_pdf: None,
             render_failed: false,
+            review_created_build: false,
             proposed_render_failed: false,
 
             assistant: Assistant::new(),
+            pending_created_review: None,
             column_expansion: None,
 
             proposal_review: None,

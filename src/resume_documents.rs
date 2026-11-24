@@ -96,6 +96,15 @@ impl WorkspaceDocuments {
         }
     }
 
+    pub fn review_entrypoint(&self, id: &str) -> Result<PathBuf> {
+        let project = self.find_project(Uuid::parse_str(id)?)?;
+        let document = project.document();
+        ensure!(document.is_file(), "The created resume source is missing");
+
+        // App sessions are keyed by paths under the workspace as originally opened.
+        Ok(document.strip_prefix(&self.root)?.to_owned())
+    }
+
     fn find_project(&self, id: Uuid) -> Result<Project> {
         self.catalog()?
             .projects

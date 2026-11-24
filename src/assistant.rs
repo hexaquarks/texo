@@ -10,7 +10,7 @@ use ratatui::{
 use ratatui_textarea::{TextArea, WrapMode};
 use texo::{
     auth::{Keychain, Profile, Provider, disconnect},
-    resume_tools::DocumentWorkspace,
+    resume_tools::{DocumentSummary, DocumentWorkspace},
     theme,
 };
 
@@ -42,6 +42,7 @@ enum MessageKind {
     Cancelled,
 }
 
+#[derive(Clone)]
 struct Message {
     kind: MessageKind,
     content: String,
@@ -87,6 +88,14 @@ impl Message {
             content: self.content.clone(),
         })
     }
+}
+
+/// Carry only the creation turn into the new resume's chat.
+pub struct CreatedReview {
+    pub document: DocumentSummary,
+    pub source_before: String,
+    request: Option<Message>,
+    response: Message,
 }
 
 pub struct Assistant {
@@ -312,7 +321,7 @@ impl Assistant {
     pub fn pending_request(
         &mut self,
         source: String,
-    ) -> std::sync::mpsc::Sender<Result<crate::assistant_job::CompletedTask>> {
+    ) -> std::sync::mpsc::Sender<crate::assistant_job::CompletedTask> {
         let (job, sender) = AssistantJob::pending();
         self.source_snapshot = source;
         self.job = Some(job);
@@ -320,32 +329,57 @@ impl Assistant {
         sender
     }
 
-    pub fn poll(&mut self) -> Option<Result<()>> {
+    pub fn poll(&mut self) -> Option<Result<Option<CreatedReview>>> {
         if let Some(profile) = self.login.as_mut().and_then(LoginDialog::poll) {
             self.connected(profile);
         }
 
-        let result = self.job.as_ref()?.poll()?;
+        let completed = self.job.as_ref()?.poll()?;
         self.job = None;
         self.scroll_from_bottom = 0;
 
-        match result {
-            Ok(completed) => {
-                let response = completed.reply;
+        let response = match completed.reply {
+            Ok(reply) => {
                 self.compiled_draft = completed.build;
-                self.proposed_edit = response.proposed_tex.map(|source_after| ProposedEdit {
+                self.proposed_edit = reply.proposed_tex.map(|source_after| ProposedEdit {
                     source_before: self.source_snapshot.clone(),
                     source_after,
                 });
-                self.messages.push(Message::reply(response.reply));
-                Some(Ok(()))
+
+                Message::reply(reply.reply)
             }
             Err(error) => {
-                self.messages
-                    .push(Message::new(MessageKind::Error, format!("{error:#}")));
-                Some(Err(error))
+                let message = Message::new(MessageKind::Error, format!("{error:#}"));
+
+                if completed.created_for_review.is_none() {
+                    self.messages.push(message);
+                    return Some(Err(error));
+                }
+
+                message
             }
-        }
+        };
+
+        let review = completed.created_for_review.map(|document| CreatedReview {
+            document,
+            source_before: self.source_snapshot.clone(),
+            request: self
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.kind == MessageKind::User)
+                .cloned(),
+            response: response.clone(),
+        });
+
+        self.messages.push(response);
+        Some(Ok(review))
+    }
+
+    pub fn receive_creation_turn(&mut self, review: CreatedReview) {
+        self.messages.extend(review.request);
+        self.messages.push(review.response);
+        self.scroll_from_bottom = 0;
     }
 
     /// Append the review outcome without rewriting the assistant's earlier summary.

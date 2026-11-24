@@ -19,7 +19,7 @@ use texo::{
     agent::{self, AgentTurn},
     auth::{CODEX_STATUS_TIMEOUT, Keychain, Profile, Provider, codex_command, resolve_key},
     llm,
-    resume_tools::{DocumentWorkspace, ResumeTools},
+    resume_tools::{DocumentSummary, DocumentWorkspace, ResumeTools},
 };
 
 const REQUEST_TIMEOUT: Duration = llm::REQUEST_TIMEOUT;
@@ -57,7 +57,9 @@ const ASSISTANT_INSTRUCTIONS: &str = "You are Texo, a concise resume editing ass
 const DOCUMENT_INSTRUCTIONS: &str = "When no resume is open, current_tex is empty and tools for editing \
     the open resume are unavailable. Use list_resumes to identify other resumes when the user asks to work \
     with them. Only create a new resume or copy when requested. Report a new resume as saved only after \
-    create_resume succeeds. If the user asks for a copy before editing, confirm that create_resume succeeds \
+    create_resume succeeds. When its result says preview_on_completion, Texo opens and builds the saved resume \
+    automatically. Summarize the content and let Texo report the build outcome. No manual open or compile is needed. \
+    If the user asks for a copy before editing, confirm that create_resume succeeds \
     in its own tool round before staging the edit. Edits to the open resume always require review.";
 
 #[derive(Clone, Serialize)]
@@ -67,12 +69,23 @@ pub struct ConversationMessage {
 }
 
 pub struct CompletedTask {
-    pub reply: AssistantReply,
+    pub created_for_review: Option<DocumentSummary>,
+    pub reply: Result<AssistantReply>,
     pub build: Option<texo::sandbox::CompiledDraft>,
 }
 
+impl CompletedTask {
+    pub fn failed(error: anyhow::Error) -> Self {
+        Self {
+            created_for_review: None,
+            reply: Err(error),
+            build: None,
+        }
+    }
+}
+
 pub struct AssistantJob {
-    result: Receiver<Result<CompletedTask>>,
+    result: Receiver<CompletedTask>,
     cancelled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -106,16 +119,7 @@ impl AssistantJob {
         let worker = thread::Builder::new()
             .name("texo-assistant".into())
             .spawn(move || {
-                let reply = request_selected_provider(&prompt, &mut tools, &worker_cancelled);
-                let completed = reply.map(|reply| {
-                    let build = if reply.proposed_tex.is_some() {
-                        tools.take_build()
-                    } else {
-                        None
-                    };
-
-                    CompletedTask { reply, build }
-                });
+                let completed = complete_task(&prompt, tools, &worker_cancelled);
                 let _ = sender.send(completed);
             })?;
 
@@ -127,7 +131,7 @@ impl AssistantJob {
     }
 
     #[cfg(test)]
-    pub fn pending() -> (Self, mpsc::Sender<Result<CompletedTask>>) {
+    pub fn pending() -> (Self, mpsc::Sender<CompletedTask>) {
         let (sender, result) = mpsc::channel();
         let job = Self {
             result,
@@ -138,13 +142,13 @@ impl AssistantJob {
         (job, sender)
     }
 
-    pub fn poll(&self) -> Option<Result<CompletedTask>> {
+    pub fn poll(&self) -> Option<CompletedTask> {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                Some(Err(anyhow!("The assistant worker stopped unexpectedly")))
-            }
+            Err(TryRecvError::Disconnected) => Some(CompletedTask::failed(anyhow!(
+                "The assistant worker stopped unexpectedly"
+            ))),
         }
     }
 }
@@ -155,6 +159,25 @@ impl Drop for AssistantJob {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+fn complete_task(prompt: &str, mut tools: ResumeTools, cancelled: &AtomicBool) -> CompletedTask {
+    let reply = request_selected_provider(prompt, &mut tools, cancelled);
+    let has_proposal = reply
+        .as_ref()
+        .is_ok_and(|response| response.proposed_tex.is_some());
+    let build = if has_proposal {
+        tools.take_build()
+    } else {
+        None
+    };
+
+    // Saving a project is a completed tool action even if the next provider round fails.
+    CompletedTask {
+        reply,
+        build,
+        created_for_review: tools.created_for_review,
     }
 }
 
