@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::dialog_ui::{ButtonFocus, DialogAction, FormLayout, buttons, field};
+use crate::{export_files, resume_project::Project};
 use anyhow::{Context, Result, ensure};
 use ratatui::{
     Frame,
@@ -212,8 +213,8 @@ pub struct ExportDialog {
 
 impl ExportDialog {
     pub fn new(document: &Path) -> Self {
-        let stem = document.file_stem().unwrap_or_default().to_string_lossy();
-        let mut input = TextArea::new(vec![format!("{stem}-export.pdf")]);
+        let filename = export_files::document_filename(document);
+        let mut input = TextArea::new(vec![filename]);
         input.set_style(theme::dialog());
         input.set_cursor_line_style(Style::default());
         input.set_cursor_style(Style::default().bg(theme::ACCENT).fg(theme::BACKGROUND));
@@ -288,8 +289,13 @@ impl ExportDialog {
             return Ok(None);
         }
 
-        let temporary = tempfile::NamedTempFile::new_in(parent)?;
+        let temporary = tempfile::NamedTempFile::new_in(&parent)?;
         fs::copy(source, temporary.path()).context("Could not copy the built PDF")?;
+
+        if Project::containing(&parent).is_some() {
+            export_files::record_export(&destination, temporary.path())?;
+        }
+
         temporary
             .persist(&destination)
             .context("Could not write the exported PDF")?;

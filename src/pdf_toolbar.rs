@@ -244,6 +244,23 @@ mod tests {
             "compiled PDF"
         );
         assert!(!nested.join("Application.pdf").exists());
+
+        fs::write(nested.join("main.pdf"), "new build")?;
+        fs::write(project.root.join("main-export.pdf"), "user PDF")?;
+        let copy = crate::resume_project::duplicate(workspace.path(), &project, "First copy", &[])?;
+        assert!(!copy.root.join("source/main.pdf").exists());
+        assert!(!copy.root.join("Application.pdf").exists());
+        assert_eq!(
+            fs::read_to_string(copy.root.join("main-export.pdf"))?,
+            "user PDF"
+        );
+
+        fs::write(project.root.join("Application.pdf"), "replacement asset")?;
+        let copy = crate::resume_project::duplicate(workspace.path(), &project, "Next copy", &[])?;
+        assert_eq!(
+            fs::read_to_string(copy.root.join("Application.pdf"))?,
+            "replacement asset"
+        );
         Ok(())
     }
 }

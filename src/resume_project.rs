@@ -10,7 +10,7 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::resume_label::ResumeLabel;
+use crate::{export_files::ProjectOutputs, resume_label::ResumeLabel};
 use texo::sandbox::MAX_PROJECT_MANIFEST_BYTES;
 pub use texo::sandbox::PROJECT_MANIFEST_FILE as MANIFEST_FILE;
 
@@ -45,6 +45,10 @@ pub struct Catalog {
 }
 
 impl Project {
+    pub fn containing(directory: &Path) -> Option<Self> {
+        directory.ancestors().find_map(|root| Self::load(root).ok())
+    }
+
     pub fn document(&self) -> PathBuf {
         self.root.join(&self.manifest.entrypoint)
     }
@@ -342,6 +346,7 @@ fn create_project(
 pub struct ImportPlan {
     pub source: PathBuf,
     pub candidates: Vec<PathBuf>,
+    outputs: Option<ProjectOutputs>,
     label: Option<ResumeLabel>,
 }
 
@@ -356,11 +361,14 @@ impl ImportPlan {
                 path.extension().is_some_and(|extension| extension == "tex"),
                 "Choose a .tex file or project folder"
             );
+
+            let directory = path.parent().context("Source needs a parent folder")?;
+            let outputs =
+                Project::containing(directory).map(|project| ProjectOutputs::new(&project));
+
             return Ok(Self {
-                source: path
-                    .parent()
-                    .context("Source needs a parent folder")?
-                    .to_path_buf(),
+                source: directory.to_path_buf(),
+                outputs,
                 candidates: vec![PathBuf::from(path.file_name().unwrap())],
                 label: None,
             });
@@ -368,16 +376,12 @@ impl ImportPlan {
 
         if path.join(MANIFEST_FILE).exists() {
             let project = Project::load(&path)?;
-            return Ok(Self {
-                source: path,
-                candidates: vec![project.manifest.entrypoint],
-                label: project.manifest.label,
-            });
+            return Ok(Self::from_project(project));
         }
 
         let mut candidates = Vec::new();
         let mut fallback = Vec::new();
-        for entry in source_files(&path)? {
+        for entry in source_files(&path, None)? {
             if entry
                 .extension()
                 .is_some_and(|extension| extension == "tex")
@@ -404,8 +408,19 @@ impl ImportPlan {
         Ok(Self {
             source: path,
             candidates,
+            outputs: None,
             label: None,
         })
+    }
+
+    fn from_project(project: Project) -> Self {
+        let outputs = ProjectOutputs::new(&project);
+        Self {
+            source: project.root,
+            candidates: vec![project.manifest.entrypoint],
+            outputs: Some(outputs),
+            label: project.manifest.label,
+        }
     }
 
     pub fn import(&self, workspace: &Path, name: &str, entrypoint: &Path) -> Result<Project> {
@@ -439,7 +454,7 @@ impl ImportPlan {
             "Choose a project folder, not a parent of the workspace"
         );
 
-        let files = source_files(&self.source)?;
+        let files = source_files(&self.source, self.outputs.as_ref())?;
         create_project(
             &workspace,
             name,
@@ -472,9 +487,10 @@ impl ImportPlan {
     }
 }
 
-pub(crate) fn source_files(root: &Path) -> Result<Vec<PathBuf>> {
+fn source_files(root: &Path, outputs: Option<&ProjectOutputs>) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut total_bytes = 0;
+
     for entry in WalkBuilder::new(root)
         .standard_filters(false)
         .follow_links(false)
@@ -492,6 +508,13 @@ pub(crate) fn source_files(root: &Path) -> Result<Vec<PathBuf>> {
             continue;
         }
         ensure!(metadata.is_file(), "Import contains a non-regular file");
+
+        if let Some(outputs) = outputs
+            && outputs.contains(entry.path())?
+        {
+            continue;
+        }
+
         total_bytes += metadata.len();
         ensure!(
             total_bytes <= MAX_IMPORT_BYTES && files.len() < MAX_IMPORT_FILES,
@@ -542,13 +565,13 @@ pub fn duplicate(
         "Resume changed on disk. Reopen it before copying"
     );
 
-    let entrypoint = current.manifest.entrypoint;
-    let plan = ImportPlan {
-        source: root,
-        candidates: vec![entrypoint.clone()],
-        label: current.manifest.label,
-    };
-    plan.copy_project(&workspace, name, &entrypoint, working_copies)
+    let plan = ImportPlan::from_project(current);
+    plan.copy_project(
+        &workspace,
+        name,
+        &project.manifest.entrypoint,
+        working_copies,
+    )
 }
 
 #[cfg(test)]
@@ -707,6 +730,29 @@ mod tests {
             "unsaved duplicate"
         );
         assert_eq!(fs::read_to_string(imported.document())?, "changed copy");
+        Ok(())
+    }
+
+    #[test]
+    fn importing_a_managed_entrypoint_omits_outputs_and_preserves_pdf_assets() -> Result<()> {
+        let workspace = tempfile::tempdir()?;
+        let project = create(workspace.path(), "Original")?;
+        let build = project.document().with_extension("pdf");
+        fs::write(&build, "compiled PDF")?;
+
+        let exported = project.root.join("application.pdf");
+        fs::copy(&build, &exported)?;
+        crate::export_files::record_export(&exported, &build)?;
+        fs::copy(&build, project.root.join("portfolio.pdf"))?;
+
+        let plan = ImportPlan::inspect(&project.document())?;
+        let imported = plan.import(workspace.path(), "Imported", &project.manifest.entrypoint)?;
+        assert!(!imported.document().with_extension("pdf").exists());
+        assert!(!imported.root.join("application.pdf").exists());
+        assert_eq!(
+            fs::read(imported.root.join("portfolio.pdf"))?,
+            fs::read(build)?
+        );
         Ok(())
     }
 
