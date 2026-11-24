@@ -428,7 +428,12 @@ impl App {
 
     pub(super) fn open_project_dialog(&mut self, action: Action) {
         let active = self.projects.project_for(&self.session.editor.path);
-        if active.is_none() && !matches!(action, Action::NewResume | Action::ImportResume) {
+        if active.is_none()
+            && !matches!(
+                action,
+                Action::NewResume | Action::ImportResume | Action::ReloadSource
+            )
+        {
             self.session.status = "Select a recognized resume first.".into();
             return;
         }
@@ -596,7 +601,14 @@ impl App {
                     dialog.reset_confirmation();
                     return Ok(false);
                 }
-                self.session.editor.reload()?;
+
+                let reviewed = dialog.reviewed_disk_source.as_deref();
+                if let Err(error) = self.session.editor.reload(reviewed) {
+                    let changed = error.downcast::<crate::history::SourceChanged>()?;
+                    self.review_updated_conflict(changed);
+                    return Ok(true);
+                }
+
                 self.return_to_working_copy();
                 self.refresh_history();
                 self.session.assistant.cancel();

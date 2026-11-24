@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { RESUME, action, createResume, documentPath, paste, prefix, replaceField, withTexo } from './helpers.mjs';
+import {
+    ARTIFACTS, RESUME, action, createResume, documentPath, paste, prefix, replaceField, withTexo,
+} from './helpers.mjs';
 
 async function manifestAt(document) {
     return readFile(join(dirname(document), 'texo.toml'), 'utf8');
@@ -90,15 +92,20 @@ test('external edits block saving, reload safely, and deleted source can be rest
         const external = RESUME.replace('Terminal workflow', 'External edit');
         await writeFile(document, external);
         await prefix(terminal, 'w');
-        await terminal.getByText('Source changed').expect();
+        await terminal.getByText('Save conflict').expect();
+        await terminal.getByText('− External edit resume.').expect();
+        await terminal.getByText('+ Terminal workflow resume.').expect();
         assert.equal(await readFile(document, 'utf8'), external);
-        await terminal.getByText('Error details').expect();
-        await terminal.press('Escape');
-        await action(terminal, 'Reload from disk');
+
+        await terminal.getByText('Load from disk…').click();
         await terminal.getByText('Unsaved text changes will be discarded').expect();
         await terminal.press('Escape');
         await terminal.getByText('Terminal workflow resume.').expect();
-        await action(terminal, 'Reload from disk');
+
+        await prefix(terminal, 'w');
+        await terminal.getByText('Save conflict').expect();
+        await terminal.press('l');
+        await terminal.getByText('Reload from disk?').expect();
         await terminal.press('Right', 'Enter');
         await terminal.getByText('External edit resume.').expect();
         await terminal.getByText('PDF current').expect();
@@ -107,13 +114,109 @@ test('external edits block saving, reload safely, and deleted source can be rest
         await prefix(terminal, 'w');
         await terminal.getByText('Restore missing source').expect();
         await terminal.press('Escape');
+        await terminal.getByText('Restore missing source').expect({ not: true });
         await assert.rejects(readFile(document), { code: 'ENOENT' });
         await prefix(terminal, 'w');
         await terminal.getByText('Restore missing source').expect();
         await terminal.press('Right', 'Enter');
         await terminal.getByText('Restore missing source').expect({ not: true });
-        assert.equal(await readFile(document, 'utf8'), external);
         await terminal.getByText('PDF current').expect();
+        assert.equal(await readFile(document, 'utf8'), external);
+    });
+});
+
+test('standalone save conflicts preserve the draft in history and reload directly', async () => {
+    await withTexo('standalone-conflict', async ({ terminal, root, restart }) => {
+        const document = join(root, 'portfolio.tex');
+        const draft = RESUME.replace('Terminal workflow resume.', 'Designed a faster search index.');
+        const external = RESUME.replace('Terminal workflow resume.', 'Maintained the search service.');
+        await writeFile(document, RESUME);
+        await restart({ path: document });
+        await terminal.getByText('Terminal workflow resume.').expect();
+
+        await terminal.press('Ctrl+a');
+        await paste(terminal, draft);
+        await writeFile(document, external);
+        await terminal.press('Ctrl+s');
+        await terminal.getByText('Save conflict').expect();
+        await terminal.getByText('− Maintained the search service.').expect();
+        await terminal.getByText('+ Designed a faster search index.').expect();
+        await terminal.screenshot(join(ARTIFACTS, 'standalone-save-conflict.png'));
+
+        await terminal.press('Escape');
+        await terminal.getByText('Save conflict').expect({ not: true });
+        await terminal.getByText('Designed a faster search index.').expect();
+        assert.equal(await readFile(document, 'utf8'), external);
+
+        await terminal.press('Ctrl+s');
+        await terminal.getByText('Preserve draft in History').click();
+        await terminal.getByText('Draft preserved in History').expect();
+        await terminal.press('p', 'l');
+        await terminal.getByText('Reload from disk?').expect();
+
+        const latest = external.replace('Maintained the search service.', 'Released the search service.');
+        await writeFile(document, latest);
+        await terminal.press('Right', 'Enter');
+        await terminal.getByText('Disk changed again. Review before reloading.').expect();
+        await terminal.getByText('− Released the search service.').expect();
+        await terminal.getByText('+ Designed a faster search index.').expect();
+        await terminal.screenshot(join(ARTIFACTS, 'review-updated-save-conflict.png'));
+
+        await terminal.press('l');
+        await terminal.getByText('Reload from disk?').expect();
+        await terminal.press('Right', 'Enter');
+        await terminal.getByText('Reload from disk?').expect({ not: true });
+        await terminal.getByText('Released the search service.').expect();
+        assert.equal(await readFile(document, 'utf8'), latest);
+
+        await restart({ path: document });
+        await terminal.getByText('revision-2').click();
+        await terminal.getByText('read-only').expect();
+        await terminal.getByText('Designed a faster search index.').expect();
+
+        const historyPath = join(root, '.texo-history/portfolio.tex.json');
+        const journal = JSON.parse(await readFile(historyPath, 'utf8'));
+        const recoveries = journal.revisions.filter(entry => entry.kind === 'Recovery');
+        assert.deepEqual(recoveries.map(entry => entry.source), [draft]);
+    }, { env: { NO_COLOR: '' } });
+});
+
+test('damaged history permits conflict comparison and confirmed reload', async () => {
+    await withTexo('conflict-damaged-history', async ({ terminal, root, restart }) => {
+        const document = join(root, 'review.tex');
+        const historyPath = join(root, '.texo-history/review.tex.json');
+        const damaged = '{';
+        const external = RESUME.replace('Terminal workflow', 'Disk');
+        const draft = RESUME.replace('Terminal workflow', 'Local');
+
+        await writeFile(document, RESUME);
+        await restart({ path: document });
+        await terminal.getByText('Terminal workflow resume.').expect();
+        await terminal.press('Ctrl+a');
+        await paste(terminal, draft);
+        await writeFile(historyPath, damaged);
+        await writeFile(document, external);
+
+        await terminal.press('Ctrl+s');
+        await terminal.getByText('− Disk resume.').expect();
+        await terminal.getByText('+ Local resume.').expect();
+        await terminal.press('p');
+        await terminal.getByText('Source history is damaged').expect();
+        await terminal.press('Escape');
+        await terminal.getByText('Save conflict').expect({ not: true });
+        await terminal.getByText('Local resume.').expect();
+        assert.equal(await readFile(document, 'utf8'), external);
+
+        await terminal.press('Ctrl+s');
+        await terminal.getByText('Save conflict').expect();
+        await terminal.press('l');
+        await terminal.getByText('Reload from disk?').expect();
+        await terminal.press('Right', 'Enter');
+        await terminal.getByText('Reload from disk?').expect({ not: true });
+        await terminal.getByText('Disk resume.').expect();
+        await terminal.getByText('Unsaved changes').expect({ not: true });
+        assert.equal(await readFile(historyPath, 'utf8'), damaged);
+        assert.equal(await readFile(document, 'utf8'), external);
     });
 });
 
