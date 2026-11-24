@@ -180,6 +180,9 @@ impl App {
         if self.shortcuts_open {
             self.draw_shortcut_help(frame);
         }
+        if let Some(conflict) = &self.save_conflict {
+            conflict.draw(frame);
+        }
         if let Some(dialog) = &self.quit_dialog {
             dialog.draw(frame);
         }
@@ -300,7 +303,7 @@ impl App {
             let label = if !self.session.editor.path.is_file() {
                 "Source missing · Save to restore source".into()
             } else if matches!(source_state, Ok(crate::editor::DiskState::Changed)) {
-                "Source changed externally · Manage → Reload source".into()
+                "Ctrl+s Compare disk changes".into()
             } else if source_state.is_err() {
                 "Source unreadable · Your editor text is preserved".into()
             } else if self.session.proposal_review.is_some() {

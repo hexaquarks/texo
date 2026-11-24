@@ -428,7 +428,12 @@ impl App {
 
     pub(super) fn open_project_dialog(&mut self, action: Action) {
         let active = self.projects.project_for(&self.session.editor.path);
-        if active.is_none() && !matches!(action, Action::NewResume | Action::ImportResume) {
+        if active.is_none()
+            && !matches!(
+                action,
+                Action::NewResume | Action::ImportResume | Action::ReloadSource
+            )
+        {
             self.session.status = "Select a recognized resume first.".into();
             return;
         }
