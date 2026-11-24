@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
@@ -50,6 +51,112 @@ test('rename and duplicate preserve unsaved text, supporting files, and project 
         await terminal.getByText('Renamed 東京').first().expect();
         await terminal.getByText('Copy').first().expect();
         await terminal.getByText('PDF current').expect();
+    });
+});
+
+async function rebuildResume(terminal, text) {
+    await terminal.press('Ctrl+a');
+    await paste(terminal, RESUME.replace('Terminal workflow resume.', text));
+    await terminal.getByText(text).expect();
+
+    await prefix(terminal, 'w');
+    await terminal.getByText('unsaved').expect({ not: true });
+
+    await prefix(terminal, 'b');
+    await terminal.getByText('PDF current').expect();
+}
+
+async function exportWithDefaultName(terminal, name) {
+    await prefix(terminal, 'e');
+    await terminal.getByText(name).expect();
+    await terminal.waitIdle();
+    await terminal.screenshot(join(ARTIFACTS, name.replace('.pdf', '.png')));
+
+    await terminal.press('Enter');
+    await terminal.getByText('Export PDF', { whitespace: 'exact' }).expect({ not: true });
+}
+
+test('duplicate resumes keep PDF assets and export only the edited variant', async () => {
+    await withTexo('duplicate-exports', async ({ terminal, workspace }) => {
+        await createResume(terminal, 'River Original');
+        const original = dirname(await documentPath(workspace));
+        await rebuildResume(terminal, 'River Original. Field research.');
+        const originalName = 'River-Original-export.pdf';
+        await exportWithDefaultName(terminal, originalName);
+
+        const originalExport = join(original, originalName);
+        const originalBytes = await readFile(originalExport);
+        const originalText = execFileSync('pdftotext', [originalExport, '-'], { encoding: 'utf8' });
+        assert.match(originalText, /Field research/);
+
+        // Recreate the unmarked default from earlier Texo versions and an asset with identical bytes.
+        await copyFile(originalExport, join(original, 'main-export.pdf'));
+        await copyFile(originalExport, join(original, 'portfolio-export.pdf'));
+
+        await changeName(terminal, 'Duplicate resume', 'River Variant');
+        await terminal.getByText('PDF current').expect();
+
+        const variant = join(workspace, 'river-variant');
+        await assert.rejects(readFile(join(variant, originalName)), { code: 'ENOENT' });
+        await assert.rejects(readFile(join(variant, 'main-export.pdf')), { code: 'ENOENT' });
+        assert.deepEqual(await readFile(join(variant, 'portfolio-export.pdf')), originalBytes);
+
+        await rebuildResume(terminal, 'River Variant. Ocean engineering.');
+        const variantName = 'River-Variant-export.pdf';
+        await exportWithDefaultName(terminal, variantName);
+
+        const variantExport = join(variant, variantName);
+        const variantText = execFileSync('pdftotext', [variantExport, '-'], { encoding: 'utf8' });
+        assert.match(variantText, /Ocean engineering/);
+        assert.doesNotMatch(variantText, /Field research/);
+        assert.deepEqual(await readFile(variantExport), await readFile(join(variant, 'main.pdf')));
+        assert.deepEqual(await readFile(originalExport), originalBytes);
+    });
+});
+
+async function importResume(terminal, path, name) {
+    await prefix(terminal, 'i');
+    await terminal.getByText('Choose a .tex file').expect();
+    await paste(terminal, path);
+    await terminal.getByText('Imported resume').click();
+    await paste(terminal, name);
+    await terminal.press('Enter');
+
+    await terminal.getByText('Choose the TeX entrypoint').expect();
+    await terminal.press('Enter');
+    await terminal.getByText(name).first().expect();
+    await terminal.getByText('PDF current').expect();
+    await terminal.waitIdle();
+}
+
+test('the default export stays distinct from the build, including after a managed import', async () => {
+    await withTexo('managed-import-exports', async ({ terminal, root, workspace }) => {
+        const source = join(root, 'source');
+        await mkdir(source);
+        await writeFile(join(source, 'River-export.tex'), RESUME);
+        await importResume(terminal, source, 'River');
+
+        const original = join(workspace, 'river');
+        const build = join(original, 'River-export.pdf');
+        const buildBytes = await readFile(build);
+        await exportWithDefaultName(terminal, 'River-export-1.pdf');
+
+        const exported = join(original, 'River-export-1.pdf');
+        assert.deepEqual(await readFile(exported), buildBytes);
+        assert.deepEqual(await readFile(build), buildBytes);
+        const pdfText = execFileSync('pdftotext', [exported, '-'], { encoding: 'utf8' });
+        assert.match(pdfText, /Terminal workflow resume/);
+        await copyFile(exported, join(original, 'portfolio.pdf'));
+
+        await importResume(terminal, original, 'Imported');
+        await changeName(terminal, 'Duplicate resume', 'Variant');
+        await terminal.getByText('PDF current').expect();
+
+        for (const name of ['imported', 'variant']) {
+            const project = join(workspace, name);
+            await assert.rejects(readFile(join(project, 'River-export-1.pdf')), { code: 'ENOENT' });
+            assert.deepEqual(await readFile(join(project, 'portfolio.pdf')), buildBytes);
+        }
     });
 });
 

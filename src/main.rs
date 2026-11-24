@@ -7,6 +7,7 @@ mod clipboard;
 mod config;
 mod dialog_ui;
 mod editor;
+mod export_files;
 mod history;
 mod keybindings;
 mod label_dialog;
