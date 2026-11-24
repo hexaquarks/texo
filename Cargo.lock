@@ -3787,6 +3787,7 @@ dependencies = [
  "ratatui-textarea",
  "regex",
  "reqwest",
+ "same-file",
  "secrecy",
  "security-framework 3.7.0",
  "serde",

@@ -10,10 +10,51 @@ use crate::resume_project::Project;
 
 const EXPORT_RECORDS: &str = ".texo-exports";
 const EXPORT_SUFFIX: &str = "-export.pdf";
+const MAX_FILENAME_BYTES: usize = 255;
 
 pub fn document_filename(document: &Path) -> String {
     let stem = document.file_stem().unwrap_or_default().to_string_lossy();
     format!("{stem}{EXPORT_SUFFIX}")
+}
+
+pub fn resume_filename(project: &Project, document: &Path) -> String {
+    let mut stem = project
+        .manifest
+        .name
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    if stem.is_empty() {
+        stem.push_str("resume");
+    }
+
+    let build = document.with_extension("pdf");
+    let mut suffix = EXPORT_SUFFIX.to_owned();
+    let mut copy_number = 1;
+
+    loop {
+        let limit = stem.floor_char_boundary(MAX_FILENAME_BYTES - suffix.len());
+        let filename = format!("{}{suffix}", &stem[..limit]);
+        if !is_build_output(&project.root.join(&filename), &build) {
+            return filename;
+        }
+
+        suffix = format!("-export-{copy_number}.pdf");
+        copy_number += 1;
+    }
+}
+
+pub fn is_build_output(destination: &Path, build: &Path) -> bool {
+    if destination == build {
+        return true;
+    }
+
+    // File identity also catches alternate spellings on case-insensitive volumes.
+    destination.is_file()
+        && build.is_file()
+        && same_file::is_same_file(destination, build).unwrap_or(false)
 }
 
 fn content_digest(path: &Path) -> Result<String> {

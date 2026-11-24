@@ -290,11 +290,13 @@ impl App {
             return;
         }
 
-        let mut dialog = ExportDialog::new(&self.session.editor.path);
-        if let Some(project) = self.projects.project_for(&self.session.editor.path) {
-            dialog.set_folder(&project.root);
+        let document = &self.session.editor.path;
+        let project = self.projects.project_for(document);
+        let mut dialog = ExportDialog::new(document, project);
+
+        if let Some(project) = project {
             dialog.context = format!(
-                "{} · {}",
+                "{} ({})",
                 project.manifest.name,
                 project.manifest.entrypoint.display()
             );

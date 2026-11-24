@@ -212,16 +212,22 @@ pub struct ExportDialog {
 }
 
 impl ExportDialog {
-    pub fn new(document: &Path) -> Self {
-        let filename = export_files::document_filename(document);
+    pub fn new(document: &Path, project: Option<&Project>) -> Self {
+        let filename = match project {
+            Some(project) => export_files::resume_filename(project, document),
+            None => export_files::document_filename(document),
+        };
         let mut input = TextArea::new(vec![filename]);
         input.set_style(theme::dialog());
         input.set_cursor_line_style(Style::default());
         input.set_cursor_style(Style::default().bg(theme::ACCENT).fg(theme::BACKGROUND));
         input.move_cursor(CursorMove::End);
 
+        let directory = project
+            .map(|project| project.root.as_path())
+            .or_else(|| document.parent());
         let folder = TextArea::new(vec![crate::workspace::display_path(
-            document.parent().unwrap_or(Path::new(".")),
+            directory.unwrap_or(Path::new(".")),
         )]);
 
         Self {
@@ -236,10 +242,6 @@ impl ExportDialog {
             message: String::new(),
             overwrite_path: None,
         }
-    }
-
-    pub fn set_folder(&mut self, folder: &Path) {
-        self.folder = TextArea::new(vec![crate::workspace::display_path(folder)]);
     }
 
     pub fn edited(&mut self) {
@@ -280,7 +282,7 @@ impl ExportDialog {
             .context("The destination directory does not exist")?;
         let destination = parent.join(destination.file_name().context("Enter a filename")?);
         ensure!(
-            destination != source.canonicalize()?,
+            !export_files::is_build_output(&destination, source),
             "Choose a destination different from the build output"
         );
         if destination.exists() && self.overwrite_path.as_ref() != Some(&destination) {
@@ -504,7 +506,7 @@ mod tests {
         let destination = directory.path().join("main-export.pdf");
         fs::write(&source, "new pdf")?;
         fs::write(&destination, "old pdf")?;
-        let mut dialog = ExportDialog::new(&document);
+        let mut dialog = ExportDialog::new(&document, None);
         assert!(dialog.export(&source, &document)?.is_none());
         assert_eq!(fs::read_to_string(&destination)?, "old pdf");
         assert_eq!(
@@ -525,7 +527,7 @@ mod tests {
         let document = directory.path().join("main.tex");
         fs::write(&source, "pdf")?;
         fs::write(directory.path().join("main-export.pdf"), "existing")?;
-        let mut dialog = ExportDialog::new(&document);
+        let mut dialog = ExportDialog::new(&document, None);
         assert!(dialog.export(&source, &document)?.is_none());
 
         let screen = Rect::new(0, 0, 100, 30);
@@ -560,7 +562,7 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
 
         let mut menu = ActionMenu::for_resume("Example");
-        let mut export = ExportDialog::new(Path::new("/tmp/main.tex"));
+        let mut export = ExportDialog::new(Path::new("/tmp/main.tex"), None);
         for (width, height) in [(100, 30), (40, 16), (20, 8), (1, 1)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height))?;
             terminal.draw(|frame| menu.draw(frame))?;
