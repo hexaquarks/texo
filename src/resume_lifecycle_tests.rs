@@ -520,21 +520,24 @@ fn external_source_change_blocks_save_and_reload_cancels_pending_work() -> Resul
         replace_text("Software engineer.", "Backend engineer."),
     )?;
     app.apply_proposal();
+
     let accepted = app.session.editor.source();
     let external = FULL_RESUME.replace("Software engineer.", "External edit.");
     fs::write(&document, &external)?;
+
     app.handle_control_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
     assert_eq!(fs::read_to_string(&document)?, external);
     assert_eq!(app.session.editor.source(), accepted);
     assert!(app.session.editor.is_modified());
-    assert!(app.diagnostic_details_open());
-    press(&mut app, KeyCode::Esc);
+    assert!(app.save_conflict.is_some());
 
     let sender = app.session.assistant.pending_request(accepted);
-    app.perform_action(Action::ReloadSource);
+    press(&mut app, KeyCode::Char('l'));
+    assert!(app.project_dialog.is_some());
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Enter);
     wait_for_reviews(&mut app)?;
+
     assert!(
         sender
             .send(CompletedTask::failed(anyhow::anyhow!("Late result")))

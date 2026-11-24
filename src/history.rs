@@ -218,6 +218,41 @@ fn read_source(document: &Path) -> Result<Option<String>> {
     }
 }
 
+pub fn preserve_draft(document: &Path, source: &str) -> Result<()> {
+    let mut store = Store::open(document)?;
+    let latest = store.journal.revisions.last();
+    if latest.is_some_and(|entry| entry.kind == RevisionKind::Recovery && entry.source == source) {
+        return Ok(());
+    }
+
+    store.commit_revision(Revision::new(source, RevisionKind::Recovery));
+    store
+        .persist()
+        .context("Could not preserve the local draft")
+}
+
+#[derive(Debug)]
+pub struct SourceChanged {
+    pub disk_source: String,
+}
+
+impl std::fmt::Display for SourceChanged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Source changed on disk")
+    }
+}
+
+// Carry the exact disk text that blocked the save into the comparison dialog.
+fn read_expected_source(document: &Path, expected: Option<&str>) -> Result<Option<String>> {
+    let current = read_source(document)?;
+    if current.as_deref() != expected {
+        let disk_source = current.context("Source is missing from disk")?;
+        return Err(anyhow::Error::msg(SourceChanged { disk_source }));
+    }
+
+    Ok(current)
+}
+
 /// Persist history before touching the source. A final metadata failure leaves a
 /// recoverable pending entry and is reported as a warning after the successful save.
 pub fn save(
@@ -227,12 +262,11 @@ pub fn save(
     kind: RevisionKind,
     recovery: Option<&str>,
 ) -> Result<Option<String>> {
-    let mut store = Store::open(document)?;
-    let previous = read_source(document)?;
-    ensure!(
-        previous.as_deref() == expected,
-        "Source changed on disk; reload before saving or restoring"
-    );
+    // Keep the lock when available, but let users compare readable source even if history is damaged.
+    let store = Store::open(document);
+    let previous = read_expected_source(document, expected)?;
+
+    let mut store = store?;
     store.initial(previous.as_deref())?;
 
     let latest = store
@@ -294,11 +328,8 @@ fn publish_source(document: &Path, source: &str, expected: Option<&str>) -> Resu
     let mut temporary = tempfile::NamedTempFile::new_in(document.parent().unwrap())?;
     temporary.write_all(source.as_bytes())?;
     temporary.as_file().sync_all()?;
-    ensure!(
-        read_source(document)?.as_deref() == expected,
-        "Source changed while saving; nothing was overwritten"
-    );
 
+    read_expected_source(document, expected)?;
     if expected.is_some() {
         temporary
             .persist(document)

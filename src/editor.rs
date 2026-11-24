@@ -637,9 +637,16 @@ impl Editor {
         }
     }
 
-    pub fn reload(&mut self) -> Result<()> {
+    pub fn reload(&mut self, reviewed: Option<&str>) -> Result<()> {
         let source = fs::read_to_string(&self.path)
             .context("Could not reload source; your editor text is preserved")?;
+
+        if reviewed.is_some_and(|expected| expected != source) {
+            return Err(anyhow::Error::msg(crate::history::SourceChanged {
+                disk_source: source,
+            }));
+        }
+
         self.replace_source(&source);
         self.saved_source = Some(source);
         Ok(())
@@ -1060,7 +1067,7 @@ mod external_change_tests {
         assert_eq!(fs::read_to_string(&path)?, "External");
         assert!(editor.source().contains("Unsaved"));
 
-        editor.reload()?;
+        editor.reload(None)?;
         assert_eq!(editor.source(), "External");
         assert!(!editor.is_modified());
 

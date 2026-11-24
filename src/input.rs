@@ -84,6 +84,11 @@ impl App {
             }
         }
 
+        if self.save_conflict.is_some() {
+            self.handle_save_conflict(event, area);
+            return false;
+        }
+
         if self.session.history.dialog.is_some() {
             self.handle_history_dialog(event, area);
             return false;
@@ -684,7 +689,7 @@ impl App {
                     self.refresh_history();
                     self.projects.select_path(&self.session.editor.path);
                 }
-                Err(error) => self.report_error(error),
+                Err(error) => self.handle_save_error(error),
             },
             _ if self.focus == Focus::Assistant => {
                 self.session.assistant.input.input(key);

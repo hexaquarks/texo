@@ -45,6 +45,7 @@ struct App {
     projects_visible: bool,
     actions: Option<ActionMenu>,
     project_dialog: Option<ProjectDialog>,
+    save_conflict: Option<save_conflict::SaveConflict>,
     label_dialog: Option<LabelDialog>,
     sessions: HashMap<PathBuf, ResumeSession>,
     settings: Option<SettingsDialog>,
@@ -113,6 +114,7 @@ impl App {
             projects_visible: true,
             actions: None,
             project_dialog: None,
+            save_conflict: None,
             label_dialog: None,
             sessions: HashMap::new(),
             settings: None,
@@ -166,6 +168,7 @@ impl App {
             || self.session.history.dialog.is_some()
             || self.shortcuts_open
             || self.diagnostic_details_open()
+            || self.save_conflict.is_some()
             || self.project_dialog.is_some()
             || self.label_dialog.is_some()
             || self.actions.is_some()
@@ -179,6 +182,9 @@ impl App {
         was_open && !self.overlay_open() && self.active_preview().uses_inline_graphics()
     }
 }
+
+#[path = "save_conflict.rs"]
+mod save_conflict;
 
 #[path = "diagnostic_details.rs"]
 mod diagnostic_details;
