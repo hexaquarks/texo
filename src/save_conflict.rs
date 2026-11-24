@@ -18,6 +18,7 @@ const MAX_HEIGHT: u16 = 26;
 const DIFF_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub(super) struct SaveConflict {
+    disk_source: String,
     comparison: Vec<Line<'static>>,
     top: usize,
     left: u16,
@@ -60,10 +61,10 @@ impl ConflictLayout {
 }
 
 impl SaveConflict {
-    fn new(disk: &str, draft: &str) -> Self {
+    fn new(disk: String, draft: &str) -> Self {
         let diff = TextDiff::configure()
             .timeout(DIFF_TIMEOUT)
-            .diff_lines(disk, draft);
+            .diff_lines(disk.as_str(), draft);
         let mut comparison = Vec::new();
         for change in diff.iter_all_changes() {
             let (marker, color) = match change.tag() {
@@ -86,6 +87,7 @@ impl SaveConflict {
         }
 
         Self {
+            disk_source: disk,
             comparison,
             top: 0,
             left: 0,
@@ -174,12 +176,18 @@ impl App {
         match error.downcast::<history::SourceChanged>() {
             Ok(changed) => {
                 self.save_conflict = Some(SaveConflict::new(
-                    &changed.disk_source,
+                    changed.disk_source,
                     &self.session.editor.source(),
                 ));
             }
             Err(error) => self.report_error(error),
         }
+    }
+
+    pub(super) fn review_updated_conflict(&mut self, changed: history::SourceChanged) {
+        let mut conflict = SaveConflict::new(changed.disk_source, &self.session.editor.source());
+        conflict.message = "Disk changed again. Review before reloading.".into();
+        self.save_conflict = Some(conflict);
     }
 
     pub(super) fn handle_save_conflict(&mut self, event: Event, screen: Rect) {
@@ -210,8 +218,14 @@ impl App {
         match key {
             KeyCode::Esc => self.save_conflict = None,
             KeyCode::Char('l') => {
-                self.save_conflict = None;
+                let reviewed = self
+                    .save_conflict
+                    .take()
+                    .map(|conflict| conflict.disk_source);
                 self.open_project_dialog(Action::ReloadSource);
+                if let Some(dialog) = &mut self.project_dialog {
+                    dialog.reviewed_disk_source = reviewed;
+                }
             }
             KeyCode::Char('p') => {
                 match history::preserve_draft(

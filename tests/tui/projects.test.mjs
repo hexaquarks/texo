@@ -153,9 +153,21 @@ test('standalone save conflicts preserve the draft in history and reload directl
         await terminal.getByText('Draft preserved in History').expect();
         await terminal.press('p', 'l');
         await terminal.getByText('Reload from disk?').expect();
+
+        const latest = external.replace('Maintained the search service.', 'Released the search service.');
+        await writeFile(document, latest);
         await terminal.press('Right', 'Enter');
-        await terminal.getByText('Maintained the search service.').expect();
-        assert.equal(await readFile(document, 'utf8'), external);
+        await terminal.getByText('Disk changed again. Review before reloading.').expect();
+        await terminal.getByText('− Released the search service.').expect();
+        await terminal.getByText('+ Designed a faster search index.').expect();
+        await terminal.screenshot(join(ARTIFACTS, 'review-updated-save-conflict.png'));
+
+        await terminal.press('l');
+        await terminal.getByText('Reload from disk?').expect();
+        await terminal.press('Right', 'Enter');
+        await terminal.getByText('Reload from disk?').expect({ not: true });
+        await terminal.getByText('Released the search service.').expect();
+        assert.equal(await readFile(document, 'utf8'), latest);
 
         await restart({ path: document });
         await terminal.getByText('revision-2').click();
@@ -167,6 +179,45 @@ test('standalone save conflicts preserve the draft in history and reload directl
         const recoveries = journal.revisions.filter(entry => entry.kind === 'Recovery');
         assert.deepEqual(recoveries.map(entry => entry.source), [draft]);
     }, { env: { NO_COLOR: '' } });
+});
+
+test('damaged history permits conflict comparison and confirmed reload', async () => {
+    await withTexo('conflict-damaged-history', async ({ terminal, root, restart }) => {
+        const document = join(root, 'review.tex');
+        const historyPath = join(root, '.texo-history/review.tex.json');
+        const damaged = '{';
+        const external = RESUME.replace('Terminal workflow', 'Disk');
+        const draft = RESUME.replace('Terminal workflow', 'Local');
+
+        await writeFile(document, RESUME);
+        await restart({ path: document });
+        await terminal.getByText('Terminal workflow resume.').expect();
+        await terminal.press('Ctrl+a');
+        await paste(terminal, draft);
+        await writeFile(historyPath, damaged);
+        await writeFile(document, external);
+
+        await terminal.press('Ctrl+s');
+        await terminal.getByText('− Disk resume.').expect();
+        await terminal.getByText('+ Local resume.').expect();
+        await terminal.press('p');
+        await terminal.getByText('Source history is damaged').expect();
+        await terminal.press('Escape');
+        await terminal.getByText('Save conflict').expect({ not: true });
+        await terminal.getByText('Local resume.').expect();
+        assert.equal(await readFile(document, 'utf8'), external);
+
+        await terminal.press('Ctrl+s');
+        await terminal.getByText('Save conflict').expect();
+        await terminal.press('l');
+        await terminal.getByText('Reload from disk?').expect();
+        await terminal.press('Right', 'Enter');
+        await terminal.getByText('Reload from disk?').expect({ not: true });
+        await terminal.getByText('Disk resume.').expect();
+        await terminal.getByText('Unsaved changes').expect({ not: true });
+        assert.equal(await readFile(historyPath, 'utf8'), damaged);
+        assert.equal(await readFile(document, 'utf8'), external);
+    });
 });
 
 test('settings reject unavailable folders, switch workspaces, and persist mode across restart', async () => {

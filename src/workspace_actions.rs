@@ -601,7 +601,14 @@ impl App {
                     dialog.reset_confirmation();
                     return Ok(false);
                 }
-                self.session.editor.reload()?;
+
+                let reviewed = dialog.reviewed_disk_source.as_deref();
+                if let Err(error) = self.session.editor.reload(reviewed) {
+                    let changed = error.downcast::<crate::history::SourceChanged>()?;
+                    self.review_updated_conflict(changed);
+                    return Ok(true);
+                }
+
                 self.return_to_working_copy();
                 self.refresh_history();
                 self.session.assistant.cancel();

@@ -262,8 +262,11 @@ pub fn save(
     kind: RevisionKind,
     recovery: Option<&str>,
 ) -> Result<Option<String>> {
-    let mut store = Store::open(document)?;
+    // Keep the lock when available, but let users compare readable source even if history is damaged.
+    let store = Store::open(document);
     let previous = read_expected_source(document, expected)?;
+
+    let mut store = store?;
     store.initial(previous.as_deref())?;
 
     let latest = store

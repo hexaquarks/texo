@@ -35,6 +35,7 @@ pub struct ProjectDialog {
     focus: Control,
     gallery: Option<TemplateGallery>,
     context: String,
+    pub reviewed_disk_source: Option<String>,
     pub losses: Vec<&'static str>,
     pub plan: Option<ImportPlan>,
     pub selection: ListState,
@@ -92,6 +93,7 @@ impl ProjectDialog {
                     )
                 })
                 .unwrap_or_default(),
+            reviewed_disk_source: None,
             losses: Vec::new(),
             plan: None,
             selection: ListState::default().with_selected(Some(0)),
