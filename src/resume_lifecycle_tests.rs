@@ -68,6 +68,7 @@ fn scripted_revision(context: &str, document: &Path, edit: ToolCall) -> Result<C
     )?;
 
     Ok(CompletedTask {
+        created_for_review: None,
         reply,
         build: tools.take_build(),
     })

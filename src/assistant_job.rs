@@ -19,7 +19,7 @@ use texo::{
     agent::{self, AgentTurn},
     auth::{CODEX_STATUS_TIMEOUT, Keychain, Profile, Provider, codex_command, resolve_key},
     llm,
-    resume_tools::{DocumentWorkspace, ResumeTools},
+    resume_tools::{DocumentSummary, DocumentWorkspace, ResumeTools},
 };
 
 const REQUEST_TIMEOUT: Duration = llm::REQUEST_TIMEOUT;
@@ -57,7 +57,9 @@ const ASSISTANT_INSTRUCTIONS: &str = "You are Texo, a concise resume editing ass
 const DOCUMENT_INSTRUCTIONS: &str = "When no resume is open, current_tex is empty and tools for editing \
     the open resume are unavailable. Use list_resumes to identify other resumes when the user asks to work \
     with them. Only create a new resume or copy when requested. Report a new resume as saved only after \
-    create_resume succeeds. If the user asks for a copy before editing, confirm that create_resume succeeds \
+    create_resume succeeds. When its result says preview_on_completion, Texo opens and builds the saved resume \
+    automatically. Summarize the content and let Texo report the build outcome. No manual open or compile is needed. \
+    If the user asks for a copy before editing, confirm that create_resume succeeds \
     in its own tool round before staging the edit. Edits to the open resume always require review.";
 
 #[derive(Clone, Serialize)]
@@ -67,6 +69,7 @@ pub struct ConversationMessage {
 }
 
 pub struct CompletedTask {
+    pub created_for_review: Option<DocumentSummary>,
     pub reply: AssistantReply,
     pub build: Option<texo::sandbox::CompiledDraft>,
 }
@@ -106,16 +109,7 @@ impl AssistantJob {
         let worker = thread::Builder::new()
             .name("texo-assistant".into())
             .spawn(move || {
-                let reply = request_selected_provider(&prompt, &mut tools, &worker_cancelled);
-                let completed = reply.map(|reply| {
-                    let build = if reply.proposed_tex.is_some() {
-                        tools.take_build()
-                    } else {
-                        None
-                    };
-
-                    CompletedTask { reply, build }
-                });
+                let completed = complete_task(&prompt, tools, &worker_cancelled);
                 let _ = sender.send(completed);
             })?;
 
@@ -156,6 +150,35 @@ impl Drop for AssistantJob {
             let _ = worker.join();
         }
     }
+}
+
+fn complete_task(
+    prompt: &str,
+    mut tools: ResumeTools,
+    cancelled: &AtomicBool,
+) -> Result<CompletedTask> {
+    let reply = request_selected_provider(prompt, &mut tools, cancelled).map_err(|error| {
+        if let Some(created) = &tools.created_for_review {
+            return error.context(format!(
+                "Saved {}. The assistant stopped before opening its preview",
+                created.name
+            ));
+        }
+
+        error
+    })?;
+
+    let build = if reply.proposed_tex.is_some() {
+        tools.take_build()
+    } else {
+        None
+    };
+
+    Ok(CompletedTask {
+        reply,
+        build,
+        created_for_review: tools.created_for_review,
+    })
 }
 
 fn request_selected_provider(

@@ -100,6 +100,7 @@ fn chat_link_opens_only_on_click_after_the_assistant_reply_is_drawn() -> anyhow:
     app.focus = Focus::Assistant;
     let sender = app.session.assistant.pending_request(source);
     sender.send(Ok(CompletedTask {
+        created_for_review: None,
         reply: AssistantReply {
             reply: format!("Read the [license]({url})."),
             proposed_tex: None,

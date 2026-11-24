@@ -89,7 +89,7 @@ impl App {
 
         if let Some(result) = self.session.assistant.poll() {
             match result {
-                Ok(()) if self.session.assistant.proposal().is_some() => {
+                Ok(_) if self.session.assistant.proposal().is_some() => {
                     let mut edit = self.session.assistant.proposal().cloned().unwrap();
 
                     // Refinements use the pending draft as context, but review against the original.
@@ -99,13 +99,48 @@ impl App {
 
                     self.stage_proposal(edit);
                 }
-                Ok(()) => {
+                Ok(Some(created)) => self.review_created_resume(created),
+                Ok(None) => {
                     self.session.status = "Assistant replied without changing the document.".into()
                 }
                 Err(_) => {
                     self.session.status = "Assistant failed. See its message for details.".into()
                 }
             }
+        }
+    }
+
+    fn review_created_resume(&mut self, created: texo::resume_tools::DocumentSummary) {
+        let editor_changed = !self.session.empty_workspace
+            && (self.session.editor.is_modified()
+                || self.session.editor.source() != self.session.assistant.requested_source());
+
+        if editor_changed
+            || self.session.proposal_review.is_some()
+            || self.overlay_open()
+            || self.session.assistant.login_open()
+            || self.session.history.view.is_some()
+        {
+            self.session.status = format!("Saved {}. Kept your current view open.", created.name);
+            return;
+        }
+
+        let entrypoint = self
+            .assistant_workspace()
+            .and_then(|workspace| workspace.review_entrypoint(&created.id));
+
+        let path = match entrypoint {
+            Ok(relative) => self.projects.root().join(relative),
+            Err(error) => {
+                self.session.status =
+                    format!("Saved {}. Could not open preview: {error}", created.name);
+                return;
+            }
+        };
+
+        self.open_document(path.clone());
+        if self.session.editor.path == path && self.session.job.is_some() {
+            self.session.review_created_build = true;
         }
     }
 

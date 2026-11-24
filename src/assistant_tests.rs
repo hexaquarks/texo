@@ -158,6 +158,7 @@ fn request_states_render_distinct_markers_in_the_same_column() {
 
     reply
         .send(Ok(CompletedTask {
+            created_for_review: None,
             reply: AssistantReply {
                 reply: "A reply can mention an error.".into(),
                 proposed_tex: None,

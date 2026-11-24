@@ -165,6 +165,7 @@ fn late_assistant_reply_stays_with_its_resume_and_rejects_newer_edits() -> anyho
     app.open_document(second.document());
     app.session.job = None;
     sender.send(Ok(CompletedTask {
+        created_for_review: None,
         reply: AssistantReply {
             reply: "First resume revised".into(),
             proposed_tex: Some("Old response".into()),
@@ -376,6 +377,7 @@ fn concurrent_assistant_requests_remain_owned_by_their_resumes() -> anyhow::Resu
     // Complete the second request first, while the first resume is visible.
     app.open_document(first.clone());
     second_reply.send(Ok(CompletedTask {
+        created_for_review: None,
         reply: AssistantReply {
             reply: "Second answer".into(),
             proposed_tex: None,
@@ -405,6 +407,7 @@ fn concurrent_assistant_requests_remain_owned_by_their_resumes() -> anyhow::Resu
     assert!(app.sessions[&second].assistant.is_running());
 
     first_followup.send(Ok(CompletedTask {
+        created_for_review: None,
         reply: AssistantReply {
             reply: "New first answer".into(),
             proposed_tex: Some("Old first edit".into()),
@@ -414,6 +417,7 @@ fn concurrent_assistant_requests_remain_owned_by_their_resumes() -> anyhow::Resu
     app.session.editor.replace_source("Newer first edit");
     app.open_document(second);
     second_followup.send(Ok(CompletedTask {
+        created_for_review: None,
         reply: AssistantReply {
             reply: "New second answer".into(),
             proposed_tex: None,

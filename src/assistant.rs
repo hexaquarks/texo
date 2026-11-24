@@ -10,7 +10,7 @@ use ratatui::{
 use ratatui_textarea::{TextArea, WrapMode};
 use texo::{
     auth::{Keychain, Profile, Provider, disconnect},
-    resume_tools::DocumentWorkspace,
+    resume_tools::{DocumentSummary, DocumentWorkspace},
     theme,
 };
 
@@ -320,7 +320,7 @@ impl Assistant {
         sender
     }
 
-    pub fn poll(&mut self) -> Option<Result<()>> {
+    pub fn poll(&mut self) -> Option<Result<Option<DocumentSummary>>> {
         if let Some(profile) = self.login.as_mut().and_then(LoginDialog::poll) {
             self.connected(profile);
         }
@@ -338,7 +338,7 @@ impl Assistant {
                     source_after,
                 });
                 self.messages.push(Message::reply(response.reply));
-                Some(Ok(()))
+                Some(Ok(completed.created_for_review))
             }
             Err(error) => {
                 self.messages
@@ -346,6 +346,10 @@ impl Assistant {
                 Some(Err(error))
             }
         }
+    }
+
+    pub fn requested_source(&self) -> &str {
+        &self.source_snapshot
     }
 
     /// Append the review outcome without rewriting the assistant's earlier summary.

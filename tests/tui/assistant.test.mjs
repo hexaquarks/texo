@@ -145,18 +145,48 @@ test('assistant copies unsaved text before proposing an edit to the open resume'
     }, { prepare });
 });
 
-test('assistant can create and read the first resume from an empty workspace', async () => {
+test('assistant opens and compiles the first resume for review in one turn', async () => {
     await withTexo('assistant-bootstrap', async ({ terminal, workspace }) => {
         await terminal.resize(160, 50);
         await ask(terminal, 'bootstrap');
 
-        await terminal.getByText('Fixture completed bootstrap').expect();
+        await terminal.getByText('The PDF is ready for review.').expect();
         const document = await documentPath(workspace);
         assert.match(await readFile(document, 'utf8'), /My first shared resume/);
 
-        await terminal.getByText('First shared resume').first().click();
         await terminal.getByText('My first shared resume').expect();
         await terminal.getByText('PDF current').expect();
+    }, { prepare });
+});
+
+test('a newly created resume with invalid TeX opens with diagnostics', async () => {
+    await withTexo('assistant-create-failure', async ({ terminal, workspace }) => {
+        await terminal.resize(160, 50);
+        await ask(terminal, 'broken-create');
+
+        await terminal.getByText('Resume saved. PDF build failed.').expect();
+        await terminal.getByText('ready for review').expect({ not: true });
+
+        const document = await documentPath(workspace);
+        assert.match(await readFile(document, 'utf8'), /unknownResumeCommand/);
+        await assert.rejects(readFile(join(workspace, 'broken-resume', 'main.pdf')), { code: 'ENOENT' });
+    }, { prepare });
+});
+
+test('creating a resume preserves a dirty editor and its saved source', async () => {
+    await withTexo('assistant-create-dirty', async ({ terminal, workspace }) => {
+        await terminal.resize(160, 50);
+        await createResume(terminal, 'Original');
+
+        const original = await documentPath(workspace);
+        const saved = await readFile(original, 'utf8');
+        await terminal.press('Ctrl+End');
+        await paste(terminal, '\n% Unsaved inventory work');
+
+        await ask(terminal, 'broken-create');
+        await terminal.getByText('Kept your current view open').expect();
+        await terminal.getByText('Unsaved inventory work').first().expect();
+        assert.equal(await readFile(original, 'utf8'), saved);
     }, { prepare });
 });
 

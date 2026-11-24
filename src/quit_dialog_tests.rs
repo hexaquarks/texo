@@ -95,6 +95,7 @@ fn a_late_ai_reply_requires_a_fresh_quit_confirmation() -> anyhow::Result<()> {
     assert!(!app.handle_event(key(KeyCode::Right), SCREEN));
 
     sender.send(Ok(CompletedTask {
+        created_for_review: None,
         reply: AssistantReply {
             reply: "Finished answer".into(),
             proposed_tex: None,

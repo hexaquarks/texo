@@ -9,7 +9,9 @@ import { fileURLToPath } from 'node:url';
 const WAIT_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 20;
 const MARKDOWN_PROMPT = '**markdown**';
-const SCENARIOS = new Set(['first', 'refine', 'repair', 'advice', 'hold', 'fail', 'copy', 'bootstrap', MARKDOWN_PROMPT]);
+const SCENARIOS = new Set([
+    'first', 'refine', 'repair', 'advice', 'hold', 'fail', 'copy', 'bootstrap', 'broken-create', MARKDOWN_PROMPT,
+]);
 const FIRST_RESUME = '\\documentclass{article}\n\\begin{document}\nMy first shared resume.\n\\end{document}\n';
 const MARKDOWN_REPLY = [
     '## License check',
@@ -176,6 +178,16 @@ async function respond() {
     const isAdvice = prompt === 'advice' || prompt === MARKDOWN_PROMPT;
     if (prompt === 'copy') {
         calls = copyAndEdit(history);
+    } else if (prompt === 'broken-create' && history.length === 0) {
+        calls = [{
+            id: 'broken-resume',
+            name: 'create_resume',
+            arguments_json: JSON.stringify({
+                name: 'Broken resume',
+                tex: FIRST_RESUME.replace('My first shared resume.', '\\unknownResumeCommand'),
+                source_document_id: null,
+            }),
+        }];
     } else if (prompt === 'bootstrap') {
         calls = createFirstResume(history, tools);
     } else if (!isAdvice && history.length === 0) {
