@@ -99,7 +99,7 @@ impl App {
 
                     self.stage_proposal(edit);
                 }
-                Ok(Some(created)) => self.review_created_resume(created),
+                Ok(Some(review)) => self.session.pending_created_review = Some(review),
                 Ok(None) => {
                     self.session.status = "Assistant replied without changing the document.".into()
                 }
@@ -108,17 +108,23 @@ impl App {
                 }
             }
         }
+
+        if !self.overlay_open()
+            && !self.session.assistant.login_open()
+            && let Some(review) = self.session.pending_created_review.take()
+        {
+            self.review_created_resume(review);
+        }
     }
 
-    fn review_created_resume(&mut self, created: texo::resume_tools::DocumentSummary) {
+    fn review_created_resume(&mut self, review: crate::assistant::CreatedReview) {
+        let created = &review.document;
         let editor_changed = !self.session.empty_workspace
             && (self.session.editor.is_modified()
-                || self.session.editor.source() != self.session.assistant.requested_source());
+                || self.session.editor.source() != review.source_before);
 
         if editor_changed
             || self.session.proposal_review.is_some()
-            || self.overlay_open()
-            || self.session.assistant.login_open()
             || self.session.history.view.is_some()
         {
             self.session.status = format!("Saved {}. Kept your current view open.", created.name);
@@ -139,8 +145,9 @@ impl App {
         };
 
         self.open_document(path.clone());
-        if self.session.editor.path == path && self.session.job.is_some() {
-            self.session.review_created_build = true;
+        if self.session.editor.path == path {
+            self.session.assistant.receive_creation_turn(review);
+            self.session.review_created_build = self.session.job.is_some();
         }
     }
 

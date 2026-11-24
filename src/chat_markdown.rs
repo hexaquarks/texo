@@ -10,6 +10,7 @@ const TAB_SPACES: &str = "    ";
 const LIST_INDENT: &str = "  ";
 const BLOCK_BREAKS: usize = 2;
 
+#[derive(Clone)]
 pub(super) struct Markdown {
     pub(super) text: String,
     pub(super) styles: Vec<StyledText>,
@@ -17,11 +18,13 @@ pub(super) struct Markdown {
     links: Vec<Link>,
 }
 
+#[derive(Clone)]
 pub(super) struct StyledText {
     pub(super) bytes: Range<usize>,
     pub(super) style: Style,
 }
 
+#[derive(Clone)]
 struct Link {
     bytes: Range<usize>,
     url: Url,

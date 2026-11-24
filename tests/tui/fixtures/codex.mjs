@@ -10,6 +10,7 @@ const WAIT_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 20;
 const MARKDOWN_PROMPT = '**markdown**';
 const SCENARIOS = new Set([
+    'create then disconnect', 'create and ask', 'Alder City',
     'first', 'refine', 'repair', 'advice', 'hold', 'fail', 'copy', 'bootstrap', 'broken-create', MARKDOWN_PROMPT,
 ]);
 const FIRST_RESUME = '\\documentclass{article}\n\\begin{document}\nMy first shared resume.\n\\end{document}\n';
@@ -175,7 +176,7 @@ async function respond() {
     }
 
     let calls = [];
-    const isAdvice = prompt === 'advice' || prompt === MARKDOWN_PROMPT;
+    const isAdvice = ['advice', MARKDOWN_PROMPT, 'Alder City'].includes(prompt);
     if (prompt === 'copy') {
         calls = copyAndEdit(history);
     } else if (prompt === 'broken-create' && history.length === 0) {
@@ -188,8 +189,21 @@ async function respond() {
                 source_document_id: null,
             }),
         }];
-    } else if (prompt === 'bootstrap') {
+    } else if (['bootstrap', 'create then disconnect', 'create and ask'].includes(prompt)) {
         calls = createFirstResume(history, tools);
+
+        if (calls.length === 0 && prompt === 'create then disconnect') {
+            process.exitCode = 1;
+            return;
+        }
+
+        if (calls.length === 0 && prompt === 'create and ask') {
+            calls.push({
+                id: 'ask-location',
+                name: 'ask_user',
+                arguments_json: JSON.stringify({ question: 'Which city should appear on the resume?' }),
+            });
+        }
     } else if (!isAdvice && history.length === 0) {
         let content = 'First draft';
         if (prompt === 'refine') {

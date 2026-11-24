@@ -94,14 +94,14 @@ fn a_late_ai_reply_requires_a_fresh_quit_confirmation() -> anyhow::Result<()> {
     assert!(!app.request_quit());
     assert!(!app.handle_event(key(KeyCode::Right), SCREEN));
 
-    sender.send(Ok(CompletedTask {
+    sender.send(CompletedTask {
         created_for_review: None,
-        reply: AssistantReply {
+        reply: Ok(AssistantReply {
             reply: "Finished answer".into(),
             proposed_tex: None,
-        },
+        }),
         build: None,
-    }))?;
+    })?;
     app.receive_assistant();
     assert!(!app.handle_event(key(KeyCode::Enter), SCREEN));
     assert!(app.quit_dialog.as_ref().unwrap().focus == ButtonFocus::Cancel);

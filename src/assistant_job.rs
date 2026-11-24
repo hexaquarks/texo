@@ -70,12 +70,22 @@ pub struct ConversationMessage {
 
 pub struct CompletedTask {
     pub created_for_review: Option<DocumentSummary>,
-    pub reply: AssistantReply,
+    pub reply: Result<AssistantReply>,
     pub build: Option<texo::sandbox::CompiledDraft>,
 }
 
+impl CompletedTask {
+    pub fn failed(error: anyhow::Error) -> Self {
+        Self {
+            created_for_review: None,
+            reply: Err(error),
+            build: None,
+        }
+    }
+}
+
 pub struct AssistantJob {
-    result: Receiver<Result<CompletedTask>>,
+    result: Receiver<CompletedTask>,
     cancelled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -121,7 +131,7 @@ impl AssistantJob {
     }
 
     #[cfg(test)]
-    pub fn pending() -> (Self, mpsc::Sender<Result<CompletedTask>>) {
+    pub fn pending() -> (Self, mpsc::Sender<CompletedTask>) {
         let (sender, result) = mpsc::channel();
         let job = Self {
             result,
@@ -132,13 +142,13 @@ impl AssistantJob {
         (job, sender)
     }
 
-    pub fn poll(&self) -> Option<Result<CompletedTask>> {
+    pub fn poll(&self) -> Option<CompletedTask> {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                Some(Err(anyhow!("The assistant worker stopped unexpectedly")))
-            }
+            Err(TryRecvError::Disconnected) => Some(CompletedTask::failed(anyhow!(
+                "The assistant worker stopped unexpectedly"
+            ))),
         }
     }
 }
@@ -152,33 +162,23 @@ impl Drop for AssistantJob {
     }
 }
 
-fn complete_task(
-    prompt: &str,
-    mut tools: ResumeTools,
-    cancelled: &AtomicBool,
-) -> Result<CompletedTask> {
-    let reply = request_selected_provider(prompt, &mut tools, cancelled).map_err(|error| {
-        if let Some(created) = &tools.created_for_review {
-            return error.context(format!(
-                "Saved {}. The assistant stopped before opening its preview",
-                created.name
-            ));
-        }
-
-        error
-    })?;
-
-    let build = if reply.proposed_tex.is_some() {
+fn complete_task(prompt: &str, mut tools: ResumeTools, cancelled: &AtomicBool) -> CompletedTask {
+    let reply = request_selected_provider(prompt, &mut tools, cancelled);
+    let has_proposal = reply
+        .as_ref()
+        .is_ok_and(|response| response.proposed_tex.is_some());
+    let build = if has_proposal {
         tools.take_build()
     } else {
         None
     };
 
-    Ok(CompletedTask {
+    // Saving a project is a completed tool action even if the next provider round fails.
+    CompletedTask {
         reply,
         build,
         created_for_review: tools.created_for_review,
-    })
+    }
 }
 
 fn request_selected_provider(

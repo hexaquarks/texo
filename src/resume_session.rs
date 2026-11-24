@@ -21,6 +21,7 @@ pub(super) struct ResumeSession {
     pub(super) proposed_render_failed: bool,
 
     pub(super) assistant: Assistant,
+    pub(super) pending_created_review: Option<crate::assistant::CreatedReview>,
     pub(super) column_expansion: Option<super::Focus>,
 
     pub(super) proposal_review: Option<ProposalReview>,
@@ -164,6 +165,7 @@ impl ResumeSession {
             proposed_render_failed: false,
 
             assistant: Assistant::new(),
+            pending_created_review: None,
             column_expansion: None,
 
             proposal_review: None,

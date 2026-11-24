@@ -164,14 +164,14 @@ fn late_assistant_reply_stays_with_its_resume_and_rejects_newer_edits() -> anyho
     app.session.editor.replace_source("Newer local edit");
     app.open_document(second.document());
     app.session.job = None;
-    sender.send(Ok(CompletedTask {
+    sender.send(CompletedTask {
         created_for_review: None,
-        reply: AssistantReply {
+        reply: Ok(AssistantReply {
             reply: "First resume revised".into(),
             proposed_tex: Some("Old response".into()),
-        },
+        }),
         build: None,
-    }))?;
+    })?;
 
     app.receive_assistant();
     assert!(app.session.proposal_review.is_none());
@@ -376,14 +376,14 @@ fn concurrent_assistant_requests_remain_owned_by_their_resumes() -> anyhow::Resu
 
     // Complete the second request first, while the first resume is visible.
     app.open_document(first.clone());
-    second_reply.send(Ok(CompletedTask {
+    second_reply.send(CompletedTask {
         created_for_review: None,
-        reply: AssistantReply {
+        reply: Ok(AssistantReply {
             reply: "Second answer".into(),
             proposed_tex: None,
-        },
+        }),
         build: None,
-    }))?;
+    })?;
     app.receive_assistant();
     assert!(app.session.assistant.is_running());
     assert_eq!(app.session.editor.source(), first_source);
@@ -401,29 +401,29 @@ fn concurrent_assistant_requests_remain_owned_by_their_resumes() -> anyhow::Resu
     let first_followup = app.session.assistant.pending_request(first_source.clone());
     assert!(
         first_reply
-            .send(Err(anyhow::anyhow!("Cancelled response")))
+            .send(CompletedTask::failed(anyhow::anyhow!("Cancelled response")))
             .is_err()
     );
     assert!(app.sessions[&second].assistant.is_running());
 
-    first_followup.send(Ok(CompletedTask {
+    first_followup.send(CompletedTask {
         created_for_review: None,
-        reply: AssistantReply {
+        reply: Ok(AssistantReply {
             reply: "New first answer".into(),
             proposed_tex: Some("Old first edit".into()),
-        },
+        }),
         build: None,
-    }))?;
+    })?;
     app.session.editor.replace_source("Newer first edit");
     app.open_document(second);
-    second_followup.send(Ok(CompletedTask {
+    second_followup.send(CompletedTask {
         created_for_review: None,
-        reply: AssistantReply {
+        reply: Ok(AssistantReply {
             reply: "New second answer".into(),
             proposed_tex: None,
-        },
+        }),
         build: None,
-    }))?;
+    })?;
     app.receive_assistant();
     assert_eq!(app.session.editor.source(), second_source);
 

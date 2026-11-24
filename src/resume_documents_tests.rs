@@ -27,6 +27,47 @@ fn document_tools(app: &App) -> Result<ResumeTools> {
 }
 
 #[test]
+fn shortcuts_defer_creation_review_until_the_dialog_closes() -> Result<()> {
+    use crate::assistant_job::CompletedTask;
+
+    let workspace = tempfile::tempdir()?;
+    let root = workspace.path().canonicalize()?;
+    let editor = Editor::placeholder(Workspace::placeholder_path(&root))?;
+    let mut app = App::with_workspace(editor, Preview::default(), root)?;
+    app.session.empty_workspace = true;
+    app.shortcuts_open = true;
+
+    let mut tools = document_tools(&app)?;
+    let request = json!({
+        "name": "Deferred resume",
+        "tex": crate::editor::STARTER_DOCUMENT,
+    });
+    tools.execute("create_resume", &request, &AtomicBool::new(false))?;
+
+    let sender = app.session.assistant.pending_request(String::new());
+    sender.send(CompletedTask {
+        created_for_review: tools.created_for_review,
+        reply: Ok(AssistantReply {
+            reply: "Created the resume.".into(),
+            proposed_tex: None,
+        }),
+        build: None,
+    })?;
+
+    app.receive_assistant();
+    assert!(app.session.empty_workspace);
+    assert!(app.session.pending_created_review.is_some());
+    assert!(app.session.job.is_none());
+
+    app.shortcuts_open = false;
+    app.receive_assistant();
+    assert!(!app.session.empty_workspace);
+    assert!(app.session.pending_created_review.is_none());
+    assert!(app.session.job.is_some());
+    Ok(())
+}
+
+#[test]
 fn list_read_and_copy_use_the_catalog_and_preserve_the_live_editor() -> Result<()> {
     let workspace = tempfile::tempdir()?;
     let root = workspace.path().canonicalize()?;

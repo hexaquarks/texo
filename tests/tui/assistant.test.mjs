@@ -5,7 +5,7 @@ import { join, delimiter } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { createResume, documentPath, paste, prefix, withTexo } from './helpers.mjs';
+import { ARTIFACTS, createResume, documentPath, paste, prefix, withTexo } from './helpers.mjs';
 
 const run = promisify(execFile);
 const POLL_INTERVAL_MS = 20;
@@ -156,6 +156,44 @@ test('assistant opens and compiles the first resume for review in one turn', asy
 
         await terminal.getByText('My first shared resume').expect();
         await terminal.getByText('PDF current').expect();
+    }, { prepare });
+});
+
+test('a saved resume reaches preview even when the provider disconnects', async () => {
+    await withTexo('assistant-create-disconnect', async ({ terminal }) => {
+        await terminal.resize(160, 50);
+        await ask(terminal, 'create then disconnect');
+
+        await terminal.getByText('The PDF is ready for review.').expect();
+        await terminal.getByText('Codex could not complete').expect();
+        await terminal.getByText('PDF current').expect();
+    }, { prepare });
+});
+
+test('the new resume carries the question and sends it with the next answer', async () => {
+    await withTexo('assistant-create-clarification', async ({ terminal, root }) => {
+        await terminal.resize(160, 50);
+        await ask(terminal, 'create and ask');
+
+        const question = 'Which city should appear on the resume?';
+        await terminal.getByText('The PDF is ready for review.').expect();
+        await terminal.getByText(question).expect();
+        await terminal.getByText('PDF current').expect();
+        await terminal.screenshot(join(ARTIFACTS, 'created-resume-question.png'));
+
+        await ask(terminal, 'Alder City');
+        await terminal.getByText('Fixture completed Alder City').expect();
+        const context = JSON.parse(await readFile(join(root, 'bin/context.json'), 'utf8'));
+        assert.match(context.current_tex, /My first shared resume/);
+
+        const conversation = context.conversation.filter(message =>
+            ['create and ask', question, 'Alder City'].includes(message.content)
+        );
+        assert.deepEqual(conversation, [
+            { role: 'user', content: 'create and ask' },
+            { role: 'assistant', content: question },
+            { role: 'user', content: 'Alder City' },
+        ]);
     }, { prepare });
 });
 

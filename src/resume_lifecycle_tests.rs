@@ -69,7 +69,7 @@ fn scripted_revision(context: &str, document: &Path, edit: ToolCall) -> Result<C
 
     Ok(CompletedTask {
         created_for_review: None,
-        reply,
+        reply: Ok(reply),
         build: tools.take_build(),
     })
 }
@@ -82,7 +82,7 @@ fn request_revision(app: &mut App, expected_context: &str, edit: ToolCall) -> Re
     let sender = app.session.assistant.pending_request(context.clone());
     let completed = scripted_revision(&context, &app.session.editor.path, edit)?;
 
-    sender.send(Ok(completed))?;
+    sender.send(completed)?;
     app.receive_assistant();
     wait_for_reviews(app)?;
 
@@ -262,7 +262,7 @@ fn export_rechecks_pending_review_before_overwriting_an_existing_pdf() -> Result
         &app.session.editor.path,
         replace_text("Software engineer.", "Backend engineer."),
     )?;
-    sender.send(Ok(completed))?;
+    sender.send(completed)?;
     app.receive_assistant();
     wait_for_reviews(&mut app)?;
     press(&mut app, KeyCode::Enter);
@@ -421,7 +421,7 @@ fn late_refinement_follows_its_project_and_preserves_the_other_resume() -> Resul
     app.open_document(second.document());
     wait_for_reviews(&mut app)?;
     let second_pdf = fs::read(second.document().with_extension("pdf"))?;
-    sender.send(Ok(completed))?;
+    sender.send(completed)?;
     app.receive_assistant();
     assert!(app.session.proposal_review.is_none());
     assert_eq!(app.session.editor.source(), crate::editor::STARTER_DOCUMENT);
@@ -478,7 +478,7 @@ fn failed_refinement_and_cancelled_reply_cannot_destroy_an_existing_draft() -> R
         replace_text("Backend engineer.", r"\undefinedResumeCommand"),
     );
     assert!(failed.is_err());
-    sender.send(failed)?;
+    sender.send(failed.unwrap_or_else(CompletedTask::failed))?;
     app.receive_assistant();
     assert_eq!(app.assistant_source(), pending);
     assert!(draft_pdf.is_file());
@@ -491,7 +491,7 @@ fn failed_refinement_and_cancelled_reply_cannot_destroy_an_existing_draft() -> R
         replace_text("Rust, Python, SQL.", "Rust, Python, SQL, Git."),
     )?;
     app.discard_proposal();
-    assert!(sender.send(Ok(late_reply)).is_err());
+    assert!(sender.send(late_reply).is_err());
     app.receive_assistant();
     assert!(!draft_pdf.exists());
     assert!(app.session.proposal_review.is_none());
@@ -535,7 +535,11 @@ fn external_source_change_blocks_save_and_reload_cancels_pending_work() -> Resul
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Enter);
     wait_for_reviews(&mut app)?;
-    assert!(sender.send(Err(anyhow::anyhow!("Late result"))).is_err());
+    assert!(
+        sender
+            .send(CompletedTask::failed(anyhow::anyhow!("Late result")))
+            .is_err()
+    );
     assert!(!app.session.assistant.is_running());
     assert!(!app.session.editor.is_modified());
     assert_eq!(app.session.editor.source(), external);
